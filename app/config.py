@@ -1,0 +1,62 @@
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class RulesConfig:
+	high_value_threshold: float = 10000
+	velocity_threshold: int = 5
+	restricted_categories: dict[str, float] | None = None
+
+	def __post_init__(self):
+		if self.restricted_categories is None:
+			object.__setattr__(
+				self,
+				"restricted_categories",
+				{"GAMBLING": 5000, "CRYPTO": 5000},
+			)
+
+
+def load_rules_config(path: str | None = None) -> RulesConfig:
+	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", "rules.json"))
+	if not config_path.exists():
+		return RulesConfig()
+
+	with config_path.open(encoding="utf-8") as config_file:
+		values = json.load(config_file)
+
+	return RulesConfig(
+		high_value_threshold=float(values.get("high_value_threshold", 10000)),
+		velocity_threshold=int(values.get("velocity_threshold", 5)),
+		restricted_categories={
+			str(category).upper(): float(limit)
+			for category, limit in values.get(
+				"restricted_categories", {"GAMBLING": 5000, "CRYPTO": 5000}
+			).items()
+		},
+	)
+
+
+class RulesConfigProvider:
+	"""Reload rules when the mounted config file changes."""
+
+	def __init__(self, path: str | None = None):
+		self._configured_path = path
+		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", "rules.json"))
+		self._modified_at = None
+		self._config = RulesConfig()
+
+	def get(self) -> RulesConfig:
+		configured_path = self._configured_path or os.getenv(
+			"FRAUD_RULES_CONFIG_PATH", "rules.json"
+		)
+		if str(self.path) != configured_path:
+			self.path = Path(configured_path)
+			self._modified_at = None
+		modified_at = self.path.stat().st_mtime_ns if self.path.exists() else None
+		if modified_at != self._modified_at:
+			self._config = load_rules_config(str(self.path))
+			self._modified_at = modified_at
+		return self._config
