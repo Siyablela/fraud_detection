@@ -11,6 +11,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 async def startup_event():
     app.state.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
 
+
+@app.get("/health")
+async def health():
+    try:
+        await app.state.redis.ping()
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Redis is unavailable")
+
 @app.get("/api/v1/transactions/{transaction_id}")
 async def get_transaction(transaction_id: str):
     tx_data = await app.state.redis.get(f"tx:{transaction_id}")

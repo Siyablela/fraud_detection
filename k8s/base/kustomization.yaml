@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fraud-detection
+
+resources:
+  - namespace.yaml
+  - redis-secret.yaml
+  - rules-configmap.yaml
+  - redis-service.yaml
+  - redis-statefulset.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - producer-deployment.yaml
+  - producer-service.yaml
+  - worker-deployment.yaml
+  - network-policy.yaml
+
+images:
+  - name: fraud-detection
+    newName: ghcr.io/siyablela/fraud_detection
+    newTag: IMAGE_TAG

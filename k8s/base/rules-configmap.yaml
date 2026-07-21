@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-rules
+  labels:
+    app.kubernetes.io/part-of: fraud-detection
+data:
+  rules.json: |
+    {
+      "high_value_threshold": 10000,
+      "velocity_threshold": 5,
+      "restricted_categories": {
+        "GAMBLING": 5000,
+        "CRYPTO": 5000
+      }
+    }
