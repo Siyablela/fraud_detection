@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          imagePullPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-producer
+spec:
+  template:
+    spec:
+      containers:
+        - name: producer
+          imagePullPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-worker
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          imagePullPolicy: Never

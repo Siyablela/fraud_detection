@@ -16,7 +16,3 @@ resources:
   - worker-deployment.yaml
   - network-policy.yaml
 
-images:
-  - name: fraud-detection
-    newName: ghcr.io/siyablela/fraud_detection
-    newTag: IMAGE_TAG

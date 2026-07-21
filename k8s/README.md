@@ -1,6 +1,6 @@
 # Kubernetes deployment
 
-The manifests are split into a reusable base and a production overlay.
+The manifests are split into a reusable base, a local overlay, and a production overlay.
 
 ## Prerequisites
 
@@ -17,6 +17,40 @@ The `REDIS_URL` value must use the same password as `REDIS_PASSWORD`:
 
 ```text
 redis://:<password>@redis:6379
+```
+
+## Local Kubernetes testing
+
+The local overlay uses the image built into the local Docker engine:
+
+```powershell
+docker build -t fraud-detection:dev .
+kubectl apply -k k8s/overlays/local
+```
+
+The local overlay sets `imagePullPolicy: Never`, so Kubernetes does not try to pull `fraud-detection:dev` from a registry. This requires Docker Desktop Kubernetes or another local cluster configured to access the local image.
+
+Check the local rollout:
+
+```powershell
+kubectl -n fraud-detection get pods
+kubectl -n fraud-detection rollout status statefulset/redis
+kubectl -n fraud-detection rollout status deployment/fraud-api
+kubectl -n fraud-detection rollout status deployment/fraud-producer
+kubectl -n fraud-detection rollout status deployment/fraud-worker
+```
+
+Use port forwarding to test the services:
+
+```powershell
+kubectl -n fraud-detection port-forward service/fraud-producer 8001:8001
+kubectl -n fraud-detection port-forward service/fraud-api 8000:8000
+```
+
+Remove the local deployment with:
+
+```powershell
+kubectl delete -k k8s/overlays/local
 ```
 
 ## Render the production manifests
