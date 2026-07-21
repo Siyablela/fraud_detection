@@ -21,16 +21,36 @@ redis://:<password>@redis:6379
 
 ## Local Kubernetes testing
 
-The local overlay uses the image built into the local Docker engine:
+The local overlay uses the locally built `fraud-detection:dev` image. The following steps assume Minikube is using Docker as its driver.
+
+### 1. Start Minikube
+
+```powershell
+minikube start --driver=docker
+kubectl config use-context minikube
+kubectl get nodes
+```
+
+If `kubectl apply` reports that the API server at `127.0.0.1` is unavailable, Minikube is stopped. Run the start command again.
+
+### 2. Build and load the application image
 
 ```powershell
 docker build -t fraud-detection:dev .
+minikube image load fraud-detection:dev
+```
+
+Minikube has its own container runtime, so loading the image is required even when the image exists in the host Docker engine.
+
+### 3. Deploy the local overlay
+
+```powershell
 kubectl apply -k k8s/overlays/local
 ```
 
-The local overlay sets `imagePullPolicy: Never`, so Kubernetes does not try to pull `fraud-detection:dev` from a registry. This requires Docker Desktop Kubernetes or another local cluster configured to access the local image.
+The local overlay sets `imagePullPolicy: Never`, so Kubernetes uses the loaded local image instead of pulling from a registry.
 
-Check the local rollout:
+### 4. Verify the deployment
 
 ```powershell
 kubectl -n fraud-detection get pods
@@ -40,17 +60,75 @@ kubectl -n fraud-detection rollout status deployment/fraud-producer
 kubectl -n fraud-detection rollout status deployment/fraud-worker
 ```
 
-Use port forwarding to test the services:
+All pods should show `Running` and ready containers, for example `1/1` or `2/2`.
+
+### 5. Forward the application ports
+
+Run each command in a separate PowerShell window and leave both running:
 
 ```powershell
 kubectl -n fraud-detection port-forward service/fraud-producer 8001:8001
+```
+
+```powershell
 kubectl -n fraud-detection port-forward service/fraud-api 8000:8000
 ```
 
-Remove the local deployment with:
+The producer accepts transactions on `http://127.0.0.1:8001`; the query API is available on `http://127.0.0.1:8000`.
+
+### 6. Send a transaction
+
+In a third PowerShell window:
+
+```powershell
+$body = @{
+	transaction_id = "local-k8s-001"
+	user_id        = "user-1"
+	amount         = 12500
+	category       = "RETAIL"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+	-Uri http://127.0.0.1:8001/api/v1/transactions `
+	-Method Post `
+	-ContentType "application/json" `
+	-Body $body
+```
+
+Expected response:
+
+```json
+{
+  "status": "queued",
+  "transaction_id": "local-k8s-001",
+  "queue": "transactions_queue"
+}
+```
+
+### 7. Query the processed result
+
+Wait a second for the worker, then run:
+
+```powershell
+Invoke-RestMethod `
+	http://127.0.0.1:8000/api/v1/transactions/local-k8s-001 | `
+	ConvertTo-Json -Depth 5
+```
+
+The high-value transaction should contain `"is_fraud": true` and `HIGH_VALUE_TRANSACTION` in `triggered_rules`.
+
+Check service health directly:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/health
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+### Stop the local deployment
 
 ```powershell
 kubectl delete -k k8s/overlays/local
+minikube stop
 ```
 
 ## Render the production manifests
