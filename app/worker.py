@@ -3,6 +3,7 @@ import json
 import os
 import redis.asyncio as aioredis
 from redis.exceptions import TimeoutError as RedisTimeoutError
+from app.database import create_pool, save_transaction
 from app.rule import Transaction, evaluate_transaction
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -10,6 +11,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 async def main():
     # Establish async connection to Redis
     redis_conn = aioredis.from_url(REDIS_URL, decode_responses=True)
+    database = await create_pool()
     print("Fraud Processing Worker is active and waiting for events...")
     
     while True:
@@ -36,12 +38,8 @@ async def main():
             # Pass the velocity data directly into the evaluator
             result = evaluate_transaction(transaction, current_velocity)
             
-            # Store processed transactional state for API retrieval
-            # Storing under a hash table "tx:<id>" gives O(1) retrieval time
-            await redis_conn.set(f"tx:{transaction.transaction_id}", json.dumps(result))
-            
-            # Secondary Indexing: Append to a category list to allow API filtering
-            await redis_conn.sadd(f"category:{transaction.category.lower()}", transaction.transaction_id)
+            # PostgreSQL is the system of record; Redis only handles queueing and velocity.
+            await save_transaction(database, result)
             
             print(f"Processed Tx: {transaction.transaction_id} | Fraud: {result['is_fraud']}")
             

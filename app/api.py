@@ -1,41 +1,36 @@
-import os
-import json
-import redis.asyncio as aioredis
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
+from app.database import database_pool, get_transaction as find_transaction
+from app.database import get_transactions_by_category as find_by_category
 
-app = FastAPI(title="Fraud Detection Query Engine API")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with database_pool() as pool:
+        app.state.database = pool
+        yield
 
-# Global async Redis pool initiated at startup
-@app.on_event("startup")
-async def startup_event():
-    app.state.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+
+app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health():
     try:
-        await app.state.redis.ping()
+        await app.state.database.fetchval("SELECT 1")
         return {"status": "ok"}
     except Exception:
-        raise HTTPException(status_code=503, detail="Redis is unavailable")
+        raise HTTPException(status_code=503, detail="Database is unavailable")
 
 @app.get("/api/v1/transactions/{transaction_id}")
 async def get_transaction(transaction_id: str):
-    tx_data = await app.state.redis.get(f"tx:{transaction_id}")
-    if not tx_data:
+    transaction = await find_transaction(app.state.database, transaction_id)
+    if not transaction:
         raise HTTPException(status_code=404, detail="Transaction records not located.")
-    return json.loads(tx_data)
+    return transaction
 
 @app.get("/api/v1/categories/{category_name}")
 async def get_transactions_by_category(category_name: str, limit: int = 100):
-    # Retrieve transactional IDs matching this category using our secondary index
-    tx_ids = await app.state.redis.smembers(f"category:{category_name.lower()}")
-    
-    results = []
-    for tx_id in list(tx_ids)[:limit]:
-        tx_data = await app.state.redis.get(f"tx:{tx_id}")
-        if tx_data:
-            results.append(json.loads(tx_data))
-            
+    limit = max(1, min(limit, 1000))
+    results = await find_by_category(app.state.database, category_name, limit)
     return {"category": category_name, "count": len(results), "data": results}

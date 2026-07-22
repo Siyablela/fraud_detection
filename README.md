@@ -38,7 +38,7 @@ Query API :8000
 Client
 ```
 
-The producer and query API are HTTP services. The worker is a background process that consumes Redis queue messages. Redis is internal to the Docker Compose and Kubernetes networks.
+The producer and query API are HTTP services. The worker is a background process that consumes Redis queue messages. PostgreSQL is the system of record; Redis is internal infrastructure for queueing and short-lived velocity state.
 
 ## Project structure
 
@@ -123,7 +123,8 @@ The services are:
 |---|---|---|
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
-| Redis | Internal only | Queue and result storage |
+| PostgreSQL | Internal only | Durable transaction storage |
+| Redis | Internal only | Queue and velocity counters |
 | Worker | Internal only | Evaluates transactions |
 
 ### Send a transaction
@@ -243,9 +244,11 @@ See [k8s/README.md](k8s/README.md) for the full Kubernetes deployment runbook.
 
 | Variable | Purpose | Default |
 |---|---|---|
+| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
 | `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
+| `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
 
@@ -261,10 +264,11 @@ The tests cover loading rules from a file and evaluating a transaction with conf
 
 ## Queue behavior
 
-The current implementation uses a Redis list:
+The current implementation uses a Redis list only as a transient work queue:
 
 - Producer: `LPUSH transactions_queue`
 - Worker: blocking `BLPOP transactions_queue`
+- Persistence: PostgreSQL `transactions` table
 
 This processes newer messages first. If FIFO ordering is required, change the producer to `RPUSH` while keeping `BLPOP` in the worker.
 
@@ -276,7 +280,8 @@ Before treating this as production-ready, add or confirm:
 
 - CI tests, image builds, vulnerability scanning, and registry publishing.
 - Immutable image tags or image digests.
-- Managed Redis or a highly available Redis deployment.
+- Managed PostgreSQL with backups, migrations, and a high-availability strategy.
+- Managed Redis or a highly available Redis deployment for queueing and velocity state.
 - External Secret management.
 - Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
 - Redis and application NetworkPolicies.
