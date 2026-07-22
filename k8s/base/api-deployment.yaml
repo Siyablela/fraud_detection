@@ -36,6 +36,11 @@ spec:
                 secretKeyRef:
                   name: fraud-redis
                   key: REDIS_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-postgres
+                  key: DATABASE_URL
             - name: FRAUD_RULES_CONFIG_PATH
               value: /config/rules.json
           volumeMounts:

@@ -8,6 +8,7 @@ The manifests are split into a reusable base, a local overlay, and a production 
 - `kubectl` with Kustomize support.
 - Access to `ghcr.io/siyablela/fraud_detection`.
 - A real Redis password supplied before deployment.
+- A real PostgreSQL password supplied before deployment.
 
 ## Configure the Redis Secret
 
@@ -17,6 +18,14 @@ The `REDIS_URL` value must use the same password as `REDIS_PASSWORD`:
 
 ```text
 redis://:<password>@redis:6379
+```
+
+## Configure the PostgreSQL Secret
+
+Replace the placeholders in `base/postgres-secret.yaml`, or create the Secret through an external Secret manager. The `DATABASE_URL` must use the same PostgreSQL password as `POSTGRES_PASSWORD`:
+
+```text
+postgresql://fraud_user:<password>@postgres:5432/fraud_detection
 ```
 
 ## Local Kubernetes testing
@@ -155,8 +164,9 @@ Before applying manually, replace `IMAGE_TAG` in the production overlay with the
 
 - `fraud-api`: internal ClusterIP on port `8000`.
 - `fraud-producer`: internal ClusterIP on port `8001`; expose it through an Ingress or API gateway when external access is required.
-- `redis`: internal ClusterIP on port `6379` with a persistent volume.
+- `postgres`: internal ClusterIP on port `5432` with a persistent volume; durable transaction storage.
+- `redis`: internal ClusterIP on port `6379` with a persistent volume; queue and velocity state only.
 
 The rules are stored in `base/rules-configmap.yaml` and mounted at `/config/rules.json`. Updating the ConfigMap allows the application rule provider to reload the rules without rebuilding the image.
 
-For production, prefer a managed Redis service and an external Secret manager over running Redis in the cluster with a repository-managed Secret template.
+Transactions are stored in PostgreSQL. Redis is used for the work queue and short-lived velocity counters, not as the transaction database. For production, prefer managed PostgreSQL and Redis services plus an external Secret manager over running stateful databases in the cluster with repository-managed Secret templates.

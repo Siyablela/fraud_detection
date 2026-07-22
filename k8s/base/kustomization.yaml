@@ -6,7 +6,10 @@ namespace: fraud-detection
 resources:
   - namespace.yaml
   - redis-secret.yaml
+  - postgres-secret.yaml
   - rules-configmap.yaml
+  - postgres-service.yaml
+  - postgres-statefulset.yaml
   - redis-service.yaml
   - redis-statefulset.yaml
   - api-deployment.yaml
