@@ -1,24 +1,31 @@
 import json
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
-import redis.asyncio as aioredis
+from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.rule import Transaction
 
-# Redis connection details are supplied by Compose or Kubernetes environment variables.
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+# Kafka connection details supplied by environment variables.
+# For local Windows Kubernetes port-forwarding, defaults to localhost:9092.
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+TOPIC_NAME = "transactions_topic"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create one async Redis client for the lifetime of the service.
-    app.state.redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    # Initialize the async Kafka producer.
+    app.state.kafka_producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS
+    )
+    # Start the producer (connects to the cluster).
+    await app.state.kafka_producer.start()
     yield
-    # Close the client cleanly when the application shuts down.
-    await app.state.redis.aclose()
+    # Cleanly flush remaining messages and close the connection on shutdown.
+    await app.state.kafka_producer.stop()
 
 
 app = FastAPI(title="Fraud Detection Transaction Producer", lifespan=lifespan)
@@ -26,24 +33,41 @@ app = FastAPI(title="Fraud Detection Transaction Producer", lifespan=lifespan)
 
 @app.post("/api/v1/transactions", status_code=status.HTTP_202_ACCEPTED)
 async def emit_transaction(transaction: Transaction, request: Request):
-    # FastAPI/Pydantic validates the incoming JSON against the Transaction model.
+    # Convert Pydantic model to JSON string, then encode to bytes for Kafka.
     payload = transaction.model_dump_json()
+    payload_bytes = payload.encode("utf-8")
 
-    # LPUSH adds the event to the queue consumed by the fraud-processing worker.
-    await request.app.state.redis.lpush("transactions_queue", payload)
+    # Use the transaction_id as the Kafka message key.
+    # This guarantees that transactions for the same ID always go to the same 
+    # Kafka partition, preserving exact chronological processing order.
+    message_key = str(transaction.transaction_id).encode("utf-8")
+
+    # Send the message asynchronously.
+    # send_and_wait() ensures the message is acknowledged by the broker.
+    producer = request.app.state.kafka_producer
+    await producer.send_and_wait(
+        topic=TOPIC_NAME, 
+        value=payload_bytes, 
+        key=message_key
+    )
 
     return {
         "status": "queued",
         "transaction_id": transaction.transaction_id,
-        "queue": "transactions_queue",
+        "topic": TOPIC_NAME,
     }
 
 
 @app.get("/health")
 async def health(request: Request):
-    # Check Redis as well as the HTTP process so orchestrators can detect dependency failures.
+    # Verifies Kafka's health by making a lightweight request for cluster metadata.
     try:
-        await request.app.state.redis.ping()
+        producer = request.app.state.kafka_producer
+        # If the client can fetch metadata, the connection to the broker is healthy.
+        await producer.client.fetch_all_metadata()
         return {"status": "ok"}
     except Exception:
-        return JSONResponse(status_code=503, content={"status": "unavailable"})
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
+            content={"status": "unavailable"}
+        )

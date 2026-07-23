@@ -31,11 +31,9 @@ spec:
             - name: http
               containerPort: 8001
           env:
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: fraud-redis
-                  key: REDIS_URL
+            # Swapped from REDIS_URL to Kafka connection parameters
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-service:9092"
           readinessProbe:
             httpGet:
               path: /health

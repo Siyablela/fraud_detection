@@ -6,9 +6,13 @@ metadata:
     app.kubernetes.io/name: fraud-worker
     app.kubernetes.io/part-of: fraud-detection
 spec:
-  replicas: 1
+  # Upgraded: Safe to run multiple worker instances now using Kafka Consumer Groups
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: fraud-worker
@@ -25,11 +29,16 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["python", "-u", "-m", "app.worker"]
           env:
+            # Added: Connection to the Kubernetes Kafka ClusterIP Service
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-service:9092"
+            # Preserved: Redis remains for microsecond-level state tracking
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
                   name: fraud-redis
                   key: REDIS_URL
+            # Preserved: System-of-record connection database strings
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
