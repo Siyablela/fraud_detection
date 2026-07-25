@@ -18,17 +18,14 @@ Client
 	▼
 Transaction Producer :8001
 	│
-	│ Redis LPUSH transactions_queue
+	│ Kafka produce transactions_topic
 	▼
-Redis
-	│
-	│ Worker BLPOP
+Kafka
 	▼
 Fraud Worker
 	│
 	├── Evaluates configurable rules
-	├── Stores tx:<transaction_id>
-	└── Updates category:<category>
+	└── Stores results in PostgreSQL
 	│
 	▼
 Query API :8000
@@ -38,7 +35,7 @@ Query API :8000
 Client
 ```
 
-The producer and query API are HTTP services. The worker is a background process that consumes Redis queue messages. PostgreSQL is the system of record; Redis is internal infrastructure for queueing and short-lived velocity state.
+The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record; Redis is internal infrastructure for short-lived velocity state.
 
 ## Project structure
 
@@ -172,38 +169,41 @@ Use `docker compose down -v` only when you also want to remove the Redis data vo
 
 ## Run with local Kubernetes
 
-The local overlay is documented in [k8s/README.md](k8s/README.md). The short version for Minikube is:
+The local Kubernetes runbook is documented in [k8s/README.md](k8s/README.md). The short version for the Helm chart on Minikube is:
 
 ```powershell
 minikube start --driver=docker
-docker build -t fraud-detection:dev .
-minikube image load fraud-detection:dev
-kubectl apply -k k8s/overlays/local
+docker build -t fraud-api:latest .
+docker build -t fraud-worker:latest .
+docker build -t fraud-producer:latest .
+minikube image load fraud-api:latest
+minikube image load fraud-worker:latest
+minikube image load fraud-producer:latest
+helm upgrade --install fraud-system .\fraud-detection --namespace default
 ```
 
 Verify the deployment:
 
 ```powershell
-kubectl -n fraud-detection get pods
-kubectl -n fraud-detection rollout status statefulset/redis
-kubectl -n fraud-detection rollout status deployment/fraud-api
-kubectl -n fraud-detection rollout status deployment/fraud-producer
-kubectl -n fraud-detection rollout status deployment/fraud-worker
+kubectl get pods
+kubectl get svc postgres redis kafka api producer
 ```
 
 Forward the HTTP services in separate terminal windows:
 
 ```powershell
-kubectl -n fraud-detection port-forward service/fraud-producer 8001:8001
-kubectl -n fraud-detection port-forward service/fraud-api 8000:8000
+kubectl port-forward service/producer 8001:8001
+kubectl port-forward service/api 8000:8000
 ```
+
+Swagger "Failed to fetch" almost always means a missing local port-forward. Keep both commands running while testing in the browser.
 
 Then use the same producer and query commands shown in the Docker Compose section.
 
 Remove the local deployment with:
 
 ```powershell
-kubectl delete -k k8s/overlays/local
+helm uninstall fraud-system --namespace default
 minikube stop
 ```
 
@@ -225,7 +225,7 @@ Before applying production resources:
 
 1. Replace the placeholder Redis values in `k8s/base/redis-secret.yaml`, or create the Secret through an external secret manager.
 2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
-3. Ensure the cluster has a default StorageClass, or configure the Redis volume claim for the cluster.
+3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
 4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
 
 Apply and verify:
@@ -264,15 +264,13 @@ The tests cover loading rules from a file and evaluating a transaction with conf
 
 ## Queue behavior
 
-The current implementation uses a Redis list only as a transient work queue:
+The current implementation uses Kafka for the transaction queue:
 
-- Producer: `LPUSH transactions_queue`
-- Worker: blocking `BLPOP transactions_queue`
+- Producer: writes to `transactions_topic`
+- Worker: consumes from `transactions_topic`
 - Persistence: PostgreSQL `transactions` table
 
-This processes newer messages first. If FIFO ordering is required, change the producer to `RPUSH` while keeping `BLPOP` in the worker.
-
-For production workloads requiring acknowledgements, retries, consumer groups, and replay, Redis Streams or a managed messaging service should be considered instead of a basic Redis list.
+Consumer-group behavior, retries, and partition ordering are handled by Kafka rather than Redis list operations.
 
 ## Production considerations
 

@@ -4,7 +4,7 @@ The manifests are split into a reusable base, a local overlay, and a production 
 
 ## Prerequisites
 
-- A Kubernetes cluster with a default StorageClass.
+- A Kubernetes cluster.
 - `kubectl` with Kustomize support.
 - Access to `ghcr.io/siyablela/fraud_detection`.
 - A real Redis password supplied before deployment.
@@ -110,7 +110,7 @@ Expected response:
 {
   "status": "queued",
   "transaction_id": "local-k8s-001",
-  "queue": "transactions_queue"
+	"topic": "transactions_topic"
 }
 ```
 
@@ -164,8 +164,8 @@ Before applying manually, replace `IMAGE_TAG` in the production overlay with the
 
 - `fraud-api`: internal ClusterIP on port `8000`.
 - `fraud-producer`: internal ClusterIP on port `8001`; expose it through an Ingress or API gateway when external access is required.
-- `postgres`: internal ClusterIP on port `5432` with a persistent volume; durable transaction storage.
-- `redis`: internal ClusterIP on port `6379` with a persistent volume; queue and velocity state only.
+- `postgres`: internal ClusterIP on port `5432`; durable transaction storage.
+- `redis`: internal ClusterIP on port `6379`; velocity and short-lived cache state.
 
 The rules are stored in `base/rules-configmap.yaml` and mounted at `/config/rules.json`. Updating the ConfigMap allows the application rule provider to reload the rules without rebuilding the image.
 
