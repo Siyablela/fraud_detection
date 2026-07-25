@@ -1,0 +1,66 @@
+global:
+  environment: production
+
+# Application Secrets (Change these in production)
+secrets:
+  postgresPassword: "change-me"
+  redisPassword: "change-me"
+
+# Custom Internal Applications (Built from your local context)
+worker:
+  replicaCount: 1
+  image:
+    repository: fraud-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+
+api:
+  replicaCount: 1
+  image:
+    repository: fraud-api
+    tag: latest
+    pullPolicy: IfNotPresent
+
+producer:
+  replicaCount: 1
+  image:
+    repository: fraud-producer
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# Infrastructure Components (Third-Party Images)
+postgres:
+  image: postgres:16-alpine
+redis:
+  image: redis:latest
+kafka:
+  image: apache/kafka:latest
+keycloak:
+  image: quay.io/keycloak/keycloak:26.0
+kong:
+  image: kong:3.8
+kafkaUi:
+  image: ghcr.io/kafbat/kafka-ui:latest
+
+# Application Configurations (Injected via ConfigMap)
+rulesConfig: |
+  {
+    "example_rule": "fraud_rules_go_here"
+  }
+
+kongConfig: |
+  _format_version: "3.0"
+  services: []
+
+# Storage Configurations
+postgres:
+  image: postgres:16-alpine
+  storage:
+    size: 2Gi
+    # storageClass: "gp3" # Uncomment and set if your cloud requires a specific class
+
+redis:
+  image: redis:latest
+  storage:
+    size: 2Gi
+    # storageClass: "gp3" # Uncomment and set if your cloud requires a specific class

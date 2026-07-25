@@ -36,3 +36,5 @@ redis_data/
 # Development TLS certificates
 certs/*
 !certs/.gitkeep
+
+.continue/*
