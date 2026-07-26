@@ -1,6 +1,4 @@
 import json
-import os
-import asyncio
 from contextlib import asynccontextmanager
 
 from aiokafka import AIOKafkaProducer
@@ -8,11 +6,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.rule import Transaction
+from app.settings import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC_NAME
 
-# Kafka connection details supplied by environment variables.
-# For local Windows Kubernetes port-forwarding, defaults to localhost:9092.
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-TOPIC_NAME = "transactions_topic"
+TOPIC_NAME = KAFKA_TOPIC_NAME
 
 
 @asynccontextmanager

@@ -1,16 +1,19 @@
 import asyncio
 import json
-import os
 from aiokafka import AIOKafkaConsumer
 import redis.asyncio as aioredis
 from app.database import create_pool, save_transaction
 from app.rule import Transaction, evaluate_transaction
+from app.settings import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_CONSUMER_GROUP_ID,
+    KAFKA_TOPIC_NAME,
+    REDIS_URL,
+    VELOCITY_WINDOW_SECONDS,
+)
 
-# Configuration variables from environment variables
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-TOPIC_NAME = "transactions_topic"
-CONSUMER_GROUP_ID = "fraud-worker-group"
+TOPIC_NAME = KAFKA_TOPIC_NAME
+CONSUMER_GROUP_ID = KAFKA_CONSUMER_GROUP_ID
 
 async def main():
     # Initialize infrastructure connections
@@ -46,7 +49,7 @@ async def main():
                 velocity_key = f"velocity:{transaction.user_id}"
                 current_velocity = await redis_conn.incr(velocity_key)
                 if current_velocity == 1:
-                    await redis_conn.expire(velocity_key, 60)
+                    await redis_conn.expire(velocity_key, VELOCITY_WINDOW_SECONDS)
 
                 # Execute fraud logic
                 result = evaluate_transaction(transaction, current_velocity)

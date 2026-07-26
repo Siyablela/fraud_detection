@@ -1,14 +1,9 @@
 import json
-import os
 from contextlib import asynccontextmanager
 from typing import Any
 
 import asyncpg
-
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://fraud_user:change-me@localhost:5432/fraud_detection",
-)
+from app.settings import DATABASE_URL, DB_POOL_MAX_SIZE, DB_POOL_MIN_SIZE
 
 CREATE_TRANSACTIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS transactions (
@@ -25,7 +20,11 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 
 async def create_pool() -> asyncpg.Pool:
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=DB_POOL_MIN_SIZE,
+        max_size=DB_POOL_MAX_SIZE,
+    )
     async with pool.acquire() as connection:
         await connection.execute(CREATE_TRANSACTIONS_TABLE)
     return pool

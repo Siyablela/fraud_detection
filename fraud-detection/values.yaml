@@ -52,15 +52,3 @@ kongConfig: |
   _format_version: "3.0"
   services: []
 
-# Storage Configurations
-postgres:
-  image: postgres:16-alpine
-  storage:
-    size: 2Gi
-    # storageClass: "gp3" # Uncomment and set if your cloud requires a specific class
-
-redis:
-  image: redis:latest
-  storage:
-    size: 2Gi
-    # storageClass: "gp3" # Uncomment and set if your cloud requires a specific class

@@ -1,0 +1,23 @@
+global:
+  environment: dev
+
+worker:
+  replicaCount: 1
+  image:
+    repository: fraud-detection
+    tag: dev
+    pullPolicy: Never
+
+api:
+  replicaCount: 1
+  image:
+    repository: fraud-detection
+    tag: dev
+    pullPolicy: Never
+
+producer:
+  replicaCount: 1
+  image:
+    repository: fraud-detection
+    tag: dev
+    pullPolicy: Never

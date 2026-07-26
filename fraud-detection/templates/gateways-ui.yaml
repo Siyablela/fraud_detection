@@ -112,7 +112,7 @@ spec:
               value: "true"
             - name: KAFKA_CLUSTERS_0_NAME
               value: "Local-Fraud-Cluster"
-            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS:
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
               value: "kafka:9092"
 ---
 apiVersion: v1

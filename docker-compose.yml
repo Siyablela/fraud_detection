@@ -3,11 +3,11 @@ services:
     image: postgres:16-alpine
     container_name: fraud_postgres
     environment:
-      POSTGRES_DB: fraud_detection
-      POSTGRES_USER: fraud_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fraud_user -d fraud_detection"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,7 +20,7 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --requirepass ${REDIS_PASSWORD:-change-me}
+      --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
 
@@ -50,17 +50,25 @@ services:
       --bootstrap-server kafka:9092
       --partitions 3
       --replication-factor 1
-      --topic transactions_topic
+      --topic ${KAFKA_TOPIC_NAME}
 
   worker:
     build: .
     container_name: fraud_worker
     command: python -u -m app.worker
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      REDIS_URL: redis://:${REDIS_PASSWORD:-change-me}@redis:6379
-      DATABASE_URL: postgresql://fraud_user:${POSTGRES_PASSWORD:-change-me}@postgres:5432/fraud_detection
-      FRAUD_RULES_CONFIG_PATH: /config/rules.json
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME}
+      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
+      REDIS_URL: ${REDIS_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
+      VELOCITY_WINDOW_SECONDS: ${VELOCITY_WINDOW_SECONDS}
+      DEFAULT_HIGH_VALUE_THRESHOLD: ${DEFAULT_HIGH_VALUE_THRESHOLD}
+      DEFAULT_VELOCITY_THRESHOLD: ${DEFAULT_VELOCITY_THRESHOLD}
+      DEFAULT_RESTRICTED_CATEGORIES: ${DEFAULT_RESTRICTED_CATEGORIES}
     volumes:
       - ./rules.json:/config/rules.json:ro
     depends_on:
@@ -76,9 +84,14 @@ services:
     container_name: fraud_api
     command: uvicorn app.api:app --host 0.0.0.0 --port 8000
     environment:
-      REDIS_URL: redis://:${REDIS_PASSWORD:-change-me}@redis:6379
-      DATABASE_URL: postgresql://fraud_user:${POSTGRES_PASSWORD:-change-me}@postgres:5432/fraud_detection
-      FRAUD_RULES_CONFIG_PATH: /config/rules.json
+      REDIS_URL: ${REDIS_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
+      DEFAULT_HIGH_VALUE_THRESHOLD: ${DEFAULT_HIGH_VALUE_THRESHOLD}
+      DEFAULT_VELOCITY_THRESHOLD: ${DEFAULT_VELOCITY_THRESHOLD}
+      DEFAULT_RESTRICTED_CATEGORIES: ${DEFAULT_RESTRICTED_CATEGORIES}
     volumes:
       - ./rules.json:/config/rules.json:ro
     depends_on:
@@ -92,7 +105,8 @@ services:
     container_name: fraud_producer
     command: uvicorn app.producer:app --host 0.0.0.0 --port 8001
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -104,28 +118,28 @@ services:
     ports:
       - "8081:8080"
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD}
 
-  kong:
-    image: kong:3.8
-    container_name: fraud_gateway
-    ports:
-      - "80:8000"
-      - "8001:8001" # Kong Admin API (development only)
-    environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_LISTEN: 0.0.0.0:8001
-    volumes:
-      - ./kong/kong.yml:/kong/kong.yml:ro
-    depends_on:
-      - api
-      - producer
+  # kong:
+  #   image: kong:3.8
+  #   container_name: fraud_gateway
+  #   ports:
+  #     - "80:8000"
+  #     - "8001:8001" # Kong Admin API (development only)
+  #   environment:
+  #     KONG_DATABASE: "off"
+  #     KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+  #     KONG_PROXY_ACCESS_LOG: /dev/stdout
+  #     KONG_ADMIN_ACCESS_LOG: /dev/stdout
+  #     KONG_PROXY_ERROR_LOG: /dev/stderr
+  #     KONG_ADMIN_ERROR_LOG: /dev/stderr
+  #     KONG_ADMIN_LISTEN: 0.0.0.0:8001
+  #   volumes:
+  #     - ./kong/kong.yml:/kong/kong.yml:ro
+  #   depends_on:
+  #     - api
+  #     - producer
 
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:latest

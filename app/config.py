@@ -3,11 +3,18 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.settings import (
+	DEFAULT_HIGH_VALUE_THRESHOLD,
+	DEFAULT_RESTRICTED_CATEGORIES,
+	DEFAULT_VELOCITY_THRESHOLD,
+	FRAUD_RULES_CONFIG_PATH,
+)
+
 
 @dataclass(frozen=True)
 class RulesConfig:
-	high_value_threshold: float = 10000
-	velocity_threshold: int = 5
+	high_value_threshold: float = DEFAULT_HIGH_VALUE_THRESHOLD
+	velocity_threshold: int = DEFAULT_VELOCITY_THRESHOLD
 	restricted_categories: dict[str, float] | None = None
 
 	def __post_init__(self):
@@ -15,12 +22,12 @@ class RulesConfig:
 			object.__setattr__(
 				self,
 				"restricted_categories",
-				{"GAMBLING": 5000, "CRYPTO": 5000},
+				DEFAULT_RESTRICTED_CATEGORIES,
 			)
 
 
 def load_rules_config(path: str | None = None) -> RulesConfig:
-	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", "rules.json"))
+	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH))
 	if not config_path.exists():
 		return RulesConfig()
 
@@ -28,12 +35,12 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
 		values = json.load(config_file)
 
 	return RulesConfig(
-		high_value_threshold=float(values.get("high_value_threshold", 10000)),
-		velocity_threshold=int(values.get("velocity_threshold", 5)),
+		high_value_threshold=float(values.get("high_value_threshold", DEFAULT_HIGH_VALUE_THRESHOLD)),
+		velocity_threshold=int(values.get("velocity_threshold", DEFAULT_VELOCITY_THRESHOLD)),
 		restricted_categories={
 			str(category).upper(): float(limit)
 			for category, limit in values.get(
-				"restricted_categories", {"GAMBLING": 5000, "CRYPTO": 5000}
+				"restricted_categories", DEFAULT_RESTRICTED_CATEGORIES
 			).items()
 		},
 	)
@@ -44,13 +51,13 @@ class RulesConfigProvider:
 
 	def __init__(self, path: str | None = None):
 		self._configured_path = path
-		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", "rules.json"))
+		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH))
 		self._modified_at = None
 		self._config = RulesConfig()
 
 	def get(self) -> RulesConfig:
 		configured_path = self._configured_path or os.getenv(
-			"FRAUD_RULES_CONFIG_PATH", "rules.json"
+			"FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH
 		)
 		if str(self.path) != configured_path:
 			self.path = Path(configured_path)

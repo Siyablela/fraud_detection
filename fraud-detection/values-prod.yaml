@@ -1,0 +1,23 @@
+global:
+  environment: prod
+
+worker:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: IMAGE_TAG
+    pullPolicy: IfNotPresent
+
+api:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: IMAGE_TAG
+    pullPolicy: IfNotPresent
+
+producer:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: IMAGE_TAG
+    pullPolicy: IfNotPresent

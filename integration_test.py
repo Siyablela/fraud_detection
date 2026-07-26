@@ -1,11 +1,13 @@
 import asyncio
+import os
 import random
 import uuid
 import time
 import httpx
 
-# The address of your FastAPI producer service
-PRODUCER_URL = "http://localhost:8001/api/v1/transactions"
+PRODUCER_URL = os.getenv("INTEGRATION_PRODUCER_URL")
+if not PRODUCER_URL:
+    raise RuntimeError("Missing required environment variable: INTEGRATION_PRODUCER_URL")
 
 def generate_mock_transaction(user_id: int, amount: float = None) -> dict:
     """Generates a structured dictionary matching your Pydantic Transaction model."""

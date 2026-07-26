@@ -2,12 +2,13 @@
 
 A containerized fraud-detection service that accepts transaction events, evaluates configurable rules, and stores the results for later lookup.
 
-The project supports:
+The project currently supports:
 
-- Local development with Docker Compose.
-- Local Kubernetes testing with Minikube.
-- Production Kubernetes deployment using CI-built container images.
+- Local development on your machine with Docker Compose.
+- Production deployment with Kubernetes and CI-built container images.
 - Runtime rule changes through a mounted JSON file or Kubernetes ConfigMap.
+
+The Kubernetes deployment now lives in the Helm chart at [fraud-detection](fraud-detection). The intended end state is to move the infrastructure code into a separate repository and keep this repo focused on the application.
 
 ## Architecture
 
@@ -46,12 +47,10 @@ fraud_detection/
 │   ├── config.py                 # Runtime rule configuration
 │   ├── producer.py               # Transaction ingestion API
 │   ├── rule.py                   # Transaction model and fraud rules
-│   └── worker.py                 # Redis queue consumer
-├── k8s/
-│   ├── base/                     # Shared Kubernetes resources
-│   ├── overlays/local/           # Local image deployment
-│   ├── overlays/production/      # CI image deployment
-│   └── README.md                 # Kubernetes runbook
+│   └── worker.py                 # Kafka consumer and transaction processor
+├── fraud-detection/              # Helm chart for Kubernetes deployment
+├── infra/
+│   └── README.md                 # Infrastructure runbook and split guidance
 ├── tests/                        # Automated tests
 ├── Dockerfile                    # Application image definition
 ├── docker-compose.yml            # Local multi-container deployment
@@ -110,7 +109,9 @@ The worker reloads the rule file when its modification time changes. In Kubernet
 From the repository root:
 
 ```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
+# Create local config from the template the first time.
+Copy-Item .env.example .env
+
 docker compose up --build
 ```
 
@@ -121,7 +122,7 @@ The services are:
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
 | PostgreSQL | Internal only | Durable transaction storage |
-| Redis | Internal only | Queue and velocity counters |
+| Redis | Internal only | Velocity counters and short-lived state |
 | Worker | Internal only | Evaluates transactions |
 
 ### Send a transaction
@@ -167,88 +168,61 @@ docker compose down
 
 Use `docker compose down -v` only when you also want to remove the Redis data volume.
 
-## Run with local Kubernetes
+## Run locally on your machine
 
-The local Kubernetes runbook is documented in [k8s/README.md](k8s/README.md). The short version for the Helm chart on Minikube is:
-
-```powershell
-minikube start --driver=docker
-docker build -t fraud-api:latest .
-docker build -t fraud-worker:latest .
-docker build -t fraud-producer:latest .
-minikube image load fraud-api:latest
-minikube image load fraud-worker:latest
-minikube image load fraud-producer:latest
-helm upgrade --install fraud-system .\fraud-detection --namespace default
-```
-
-Verify the deployment:
+Use Docker Compose for local development. The short version is:
 
 ```powershell
-kubectl get pods
-kubectl get svc postgres redis kafka api producer
+Copy-Item .env.example .env
+docker compose up --build
 ```
 
-Forward the HTTP services in separate terminal windows:
+Open a browser or second terminal to verify the health endpoints:
 
 ```powershell
-kubectl port-forward service/producer 8001:8001
-kubectl port-forward service/api 8000:8000
+Invoke-RestMethod http://127.0.0.1:8001/health
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Swagger "Failed to fetch" almost always means a missing local port-forward. Keep both commands running while testing in the browser.
+Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
 
-Then use the same producer and query commands shown in the Docker Compose section.
+## Infrastructure
 
-Remove the local deployment with:
+Kubernetes and cluster operations live in [infra/README.md](infra/README.md).
 
-```powershell
-helm uninstall fraud-system --namespace default
-minikube stop
-```
-
-## Kubernetes production deployment
-
-The production overlay expects an image built and published by CI:
-
-```text
-ghcr.io/siyablela/fraud_detection:<immutable-tag>
-```
-
-Render the manifests before deployment:
-
-```powershell
-kubectl kustomize k8s/overlays/production
-```
-
-Before applying production resources:
-
-1. Replace the placeholder Redis values in `k8s/base/redis-secret.yaml`, or create the Secret through an external secret manager.
-2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
-3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
-4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
-
-Apply and verify:
-
-```powershell
-kubectl apply -k k8s/overlays/production
-kubectl -n fraud-detection rollout status statefulset/redis
-kubectl -n fraud-detection rollout status deployment/fraud-api
-kubectl -n fraud-detection rollout status deployment/fraud-producer
-kubectl -n fraud-detection rollout status deployment/fraud-worker
-```
-
-See [k8s/README.md](k8s/README.md) for the full Kubernetes deployment runbook.
+The app repository keeps the local developer workflow, while the infra docs cover Helm-based deployment, dev/prod values files, rollout validation, and the eventual split into a separate infrastructure repository.
 
 ## Configuration
 
+All runtime configuration is loaded from `.env` (for Python services) and from the same `.env` file by Docker Compose variable substitution.
+
+Start by creating your local file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 | Variable | Purpose | Default |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
-| `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
-| `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
+| `POSTGRES_DB` | PostgreSQL database name | in `.env.example` |
+| `POSTGRES_USER` | PostgreSQL username | in `.env.example` |
+| `POSTGRES_PASSWORD` | PostgreSQL password | in `.env.example` |
+| `REDIS_PASSWORD` | Redis password | in `.env.example` |
+| `DATABASE_URL` | App PostgreSQL connection URL | in `.env.example` |
+| `REDIS_URL` | App Redis connection URL | in `.env.example` |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka bootstrap servers | in `.env.example` |
+| `KAFKA_TOPIC_NAME` | Kafka topic for transactions | in `.env.example` |
+| `KAFKA_CONSUMER_GROUP_ID` | Kafka consumer group id | in `.env.example` |
+| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | in `.env.example` |
+| `DB_POOL_MIN_SIZE` | PostgreSQL pool minimum size | in `.env.example` |
+| `DB_POOL_MAX_SIZE` | PostgreSQL pool maximum size | in `.env.example` |
+| `VELOCITY_WINDOW_SECONDS` | Redis velocity counter TTL window | in `.env.example` |
+| `DEFAULT_HIGH_VALUE_THRESHOLD` | Default amount threshold when rules file is missing value | in `.env.example` |
+| `DEFAULT_VELOCITY_THRESHOLD` | Default velocity threshold when rules file is missing value | in `.env.example` |
+| `DEFAULT_RESTRICTED_CATEGORIES` | Default JSON object for restricted categories when rules file is missing value | in `.env.example` |
+| `INTEGRATION_PRODUCER_URL` | Producer endpoint used by `integration_test.py` | in `.env.example` |
+| `KC_BOOTSTRAP_ADMIN_USERNAME` | Keycloak admin username for local development | in `.env.example` |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Keycloak admin password for local development | in `.env.example` |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
 
