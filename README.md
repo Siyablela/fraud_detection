@@ -109,10 +109,14 @@ The worker reloads the rule file when its modification time changes. In Kubernet
 From the repository root:
 
 ```powershell
-# Create local config from the template the first time.
-Copy-Item .env.example .env
+$env:REDIS_PASSWORD = "use-a-strong-local-password"
+docker compose up -d --build
+```
 
-docker compose up --build
+Verify startup and health checks:
+
+```powershell
+docker compose ps
 ```
 
 The services are:
@@ -121,9 +125,12 @@ The services are:
 |---|---|---|
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
+| Prometheus | `http://127.0.0.1:9090` | Metrics scraping and query UI |
+| Grafana | `http://127.0.0.1:3000` | Dashboards (`admin/admin` by default) |
+| Kafka UI | `http://127.0.0.1:8080` | Kafka cluster/topic inspection |
 | PostgreSQL | Internal only | Durable transaction storage |
 | Redis | Internal only | Velocity counters and short-lived state |
-| Worker | Internal only | Evaluates transactions |
+| Worker metrics | `http://127.0.0.1:9100/metrics` | Worker Prometheus metrics |
 
 ### Send a transaction
 
@@ -160,6 +167,14 @@ Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
+Metrics endpoints:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8001/metrics
+Invoke-WebRequest http://127.0.0.1:8000/metrics
+Invoke-WebRequest http://127.0.0.1:9100/metrics
+```
+
 Stop the application with `Ctrl+C`, or run:
 
 ```powershell
@@ -170,11 +185,12 @@ Use `docker compose down -v` only when you also want to remove the Redis data vo
 
 ## Run locally on your machine
 
-Use Docker Compose for local development. The short version is:
+Use Docker Compose for local development. Quick start:
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up --build
+$env:REDIS_PASSWORD = "use-a-strong-local-password"
+docker compose up -d --build
+docker compose ps
 ```
 
 Open a browser or second terminal to verify the health endpoints:
@@ -182,6 +198,14 @@ Open a browser or second terminal to verify the health endpoints:
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+Optional observability checks:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8001/metrics
+Invoke-WebRequest http://127.0.0.1:8000/metrics
+Invoke-WebRequest http://127.0.0.1:9100/metrics
 ```
 
 Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
@@ -194,37 +218,44 @@ The app repository keeps the local developer workflow, while the infra docs cove
 
 ## Configuration
 
-All runtime configuration is loaded from `.env` (for Python services) and from the same `.env` file by Docker Compose variable substitution.
-
-Start by creating your local file:
-
-```powershell
-Copy-Item .env.example .env
-```
-
 | Variable | Purpose | Default |
 |---|---|---|
-| `POSTGRES_DB` | PostgreSQL database name | in `.env.example` |
-| `POSTGRES_USER` | PostgreSQL username | in `.env.example` |
-| `POSTGRES_PASSWORD` | PostgreSQL password | in `.env.example` |
-| `REDIS_PASSWORD` | Redis password | in `.env.example` |
-| `DATABASE_URL` | App PostgreSQL connection URL | in `.env.example` |
-| `REDIS_URL` | App Redis connection URL | in `.env.example` |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka bootstrap servers | in `.env.example` |
-| `KAFKA_TOPIC_NAME` | Kafka topic for transactions | in `.env.example` |
-| `KAFKA_CONSUMER_GROUP_ID` | Kafka consumer group id | in `.env.example` |
-| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | in `.env.example` |
-| `DB_POOL_MIN_SIZE` | PostgreSQL pool minimum size | in `.env.example` |
-| `DB_POOL_MAX_SIZE` | PostgreSQL pool maximum size | in `.env.example` |
-| `VELOCITY_WINDOW_SECONDS` | Redis velocity counter TTL window | in `.env.example` |
-| `DEFAULT_HIGH_VALUE_THRESHOLD` | Default amount threshold when rules file is missing value | in `.env.example` |
-| `DEFAULT_VELOCITY_THRESHOLD` | Default velocity threshold when rules file is missing value | in `.env.example` |
-| `DEFAULT_RESTRICTED_CATEGORIES` | Default JSON object for restricted categories when rules file is missing value | in `.env.example` |
-| `INTEGRATION_PRODUCER_URL` | Producer endpoint used by `integration_test.py` | in `.env.example` |
-| `KC_BOOTSTRAP_ADMIN_USERNAME` | Keycloak admin username for local development | in `.env.example` |
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Keycloak admin password for local development | in `.env.example` |
+| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
+| `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
+| `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
+| `OBSERVABILITY_LOG_LEVEL` | Service log level | `INFO` |
+| `OBSERVABILITY_ENABLE_TRACING` | Enables OTLP tracing setup when dependencies are present | `false` |
+| `WORKER_METRICS_PORT` | Worker Prometheus endpoint port | `9100` |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
+
+## Observability
+
+This repository includes a baseline observability stack for local development:
+
+- Structured service logs with request IDs (`x-request-id`) on API and producer.
+- Prometheus metrics on:
+	- Producer: `http://127.0.0.1:8001/metrics`
+	- Query API: `http://127.0.0.1:8000/metrics`
+	- Worker: `http://127.0.0.1:9100/metrics`
+- Local Prometheus UI: `http://127.0.0.1:9090`
+- Local Grafana UI: `http://127.0.0.1:3000` (default `admin/admin` unless overridden)
+
+Start the full local stack:
+
+```powershell
+$env:REDIS_PASSWORD = "use-a-strong-local-password"
+docker compose up -d --build
+```
+
+Optional distributed tracing can be enabled by setting:
+
+- `OBSERVABILITY_ENABLE_TRACING=true`
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://<collector-host>:4318/v1/traces`
+
+Tracing setup is optional, so local development still runs without an OpenTelemetry collector.
 
 ## Testing
 
@@ -257,7 +288,7 @@ Before treating this as production-ready, add or confirm:
 - External Secret management.
 - Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
 - Redis and application NetworkPolicies.
-- Structured logs, metrics, tracing, and alerting.
+- Alerting and SLO dashboards for business and infrastructure signals.
 - Dead-letter handling and retry policy for malformed or failed messages.
 - Database/data retention and disaster-recovery policies.
 - Horizontal scaling and load testing for the producer and worker.

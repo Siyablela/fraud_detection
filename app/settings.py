@@ -31,6 +31,22 @@ def _required_env_json_object(name: str) -> dict[str, float]:
     return {str(key).upper(): float(limit) for key, limit in value.items()}
 
 
+def _optional_env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _optional_env_int(name: str, default: int) -> int:
+    return int(_optional_env(name, str(default)))
+
+
+def _optional_env_bool(name: str, default: bool) -> bool:
+    value = _optional_env(name, str(default)).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 DATABASE_URL = _required_env("DATABASE_URL")
 REDIS_URL = _required_env("REDIS_URL")
 KAFKA_BOOTSTRAP_SERVERS = _required_env("KAFKA_BOOTSTRAP_SERVERS")
@@ -47,3 +63,7 @@ DEFAULT_VELOCITY_THRESHOLD = _required_env_int("DEFAULT_VELOCITY_THRESHOLD")
 DEFAULT_RESTRICTED_CATEGORIES = _required_env_json_object(
     "DEFAULT_RESTRICTED_CATEGORIES"
 )
+
+OBSERVABILITY_LOG_LEVEL = _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO")
+OBSERVABILITY_ENABLE_TRACING = _optional_env_bool("OBSERVABILITY_ENABLE_TRACING", False)
+WORKER_METRICS_PORT = _optional_env_int("WORKER_METRICS_PORT", 9100)

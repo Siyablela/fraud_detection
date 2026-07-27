@@ -1,14 +1,27 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 
 from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.observability import apply_tracing, configure_logging, install_fastapi_observability, setup_tracing
 from app.rule import Transaction
-from app.settings import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC_NAME
+from app.settings import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_TOPIC_NAME,
+    OBSERVABILITY_ENABLE_TRACING,
+    OBSERVABILITY_LOG_LEVEL,
+)
 
 TOPIC_NAME = KAFKA_TOPIC_NAME
+SERVICE_NAME = "fraud-producer-api"
+configure_logging(SERVICE_NAME, OBSERVABILITY_LOG_LEVEL)
+if OBSERVABILITY_ENABLE_TRACING:
+    setup_tracing(SERVICE_NAME)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -25,6 +38,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Fraud Detection Transaction Producer", lifespan=lifespan)
+install_fastapi_observability(app, SERVICE_NAME)
+apply_tracing(app)
 
 
 @app.post("/api/v1/transactions", status_code=status.HTTP_202_ACCEPTED)
@@ -47,6 +62,14 @@ async def emit_transaction(transaction: Transaction, request: Request):
         key=message_key
     )
 
+    logger.info(
+        "Queued transaction_id=%s user_id=%s amount=%s category=%s",
+        transaction.transaction_id,
+        transaction.user_id,
+        transaction.amount,
+        transaction.category,
+    )
+
     return {
         "status": "queued",
         "transaction_id": transaction.transaction_id,
@@ -61,8 +84,10 @@ async def health(request: Request):
         producer = request.app.state.kafka_producer
         # If the client can fetch metadata, the connection to the broker is healthy.
         await producer.client.fetch_all_metadata()
+        logger.info("Health check passed")
         return {"status": "ok"}
     except Exception:
+        logger.exception("Health check failed: kafka is unavailable")
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
             content={"status": "unavailable"}
