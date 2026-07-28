@@ -110,13 +110,7 @@ From the repository root:
 
 ```powershell
 $env:REDIS_PASSWORD = "use-a-strong-local-password"
-docker compose up -d --build
-```
-
-Verify startup and health checks:
-
-```powershell
-docker compose ps
+docker compose up --build
 ```
 
 The services are:
@@ -125,10 +119,9 @@ The services are:
 |---|---|---|
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
-| Kafka UI | `http://127.0.0.1:8080` | Kafka cluster/topic inspection |
 | PostgreSQL | Internal only | Durable transaction storage |
 | Redis | Internal only | Velocity counters and short-lived state |
-| Worker metrics | `http://127.0.0.1:9100/metrics` | Worker metrics endpoint |
+| Worker | Internal only | Evaluates transactions |
 
 ### Send a transaction
 
@@ -165,14 +158,6 @@ Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Metrics endpoints:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8001/metrics
-Invoke-WebRequest http://127.0.0.1:8000/metrics
-Invoke-WebRequest http://127.0.0.1:9100/metrics
-```
-
 Stop the application with `Ctrl+C`, or run:
 
 ```powershell
@@ -183,12 +168,11 @@ Use `docker compose down -v` only when you also want to remove the Redis data vo
 
 ## Run locally on your machine
 
-Use Docker Compose for local development. Quick start:
+Use Docker Compose for local development. The short version is:
 
 ```powershell
 $env:REDIS_PASSWORD = "use-a-strong-local-password"
-docker compose up -d --build
-docker compose ps
+docker compose up --build
 ```
 
 Open a browser or second terminal to verify the health endpoints:
@@ -196,14 +180,6 @@ Open a browser or second terminal to verify the health endpoints:
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-Optional observability checks:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8001/metrics
-Invoke-WebRequest http://127.0.0.1:8000/metrics
-Invoke-WebRequest http://127.0.0.1:9100/metrics
 ```
 
 Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
@@ -223,35 +199,8 @@ The app repository keeps the local developer workflow, while the infra docs cove
 | `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
 | `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
 | `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
-| `OBSERVABILITY_LOG_LEVEL` | Service log level | `INFO` |
-| `OBSERVABILITY_ENABLE_TRACING` | Enables OTLP tracing setup when dependencies are present | `false` |
-| `WORKER_METRICS_PORT` | Worker metrics endpoint port | `9100` |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
-
-## Observability
-
-This repository includes baseline observability hooks for local development:
-
-- Structured service logs with request IDs (`x-request-id`) on API and producer.
-- Metrics endpoints on:
-	- Producer: `http://127.0.0.1:8001/metrics`
-	- Query API: `http://127.0.0.1:8000/metrics`
-	- Worker: `http://127.0.0.1:9100/metrics`
-
-Start the full local stack:
-
-```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
-docker compose up -d --build
-```
-
-Optional distributed tracing can be enabled by setting:
-
-- `OBSERVABILITY_ENABLE_TRACING=true`
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://<collector-host>:4318/v1/traces`
-
-Tracing setup is optional, so local development still runs without an OpenTelemetry collector.
 
 ## Testing
 
@@ -284,7 +233,7 @@ Before treating this as production-ready, add or confirm:
 - External Secret management.
 - Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
 - Redis and application NetworkPolicies.
-- Alerting and SLO dashboards for business and infrastructure signals.
+- Structured logs, metrics, tracing, and alerting.
 - Dead-letter handling and retry policy for malformed or failed messages.
 - Database/data retention and disaster-recovery policies.
 - Horizontal scaling and load testing for the producer and worker.

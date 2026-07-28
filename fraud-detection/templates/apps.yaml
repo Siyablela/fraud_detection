@@ -1,6 +1,3 @@
-{{- $tracingEnabled := or .Values.observability.enableTracing .Values.instana.enabled -}}
-{{- $otlpEndpoint := ternary .Values.instana.otlpEndpoint .Values.observability.otlpEndpoint .Values.instana.enabled -}}
-
 # --- WORKER ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,16 +27,9 @@ spec:
           image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           command: ["python", "-u", "-m", "app.worker"]
-          ports:
-            - containerPort: {{ .Values.observability.workerMetricsPort }}
-              name: metrics
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
-            - name: KAFKA_TOPIC_NAME
-              value: {{ .Values.appConfig.kafkaTopicName | quote }}
-            - name: KAFKA_CONSUMER_GROUP_ID
-              value: {{ .Values.appConfig.kafkaConsumerGroupId | quote }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -56,38 +46,6 @@ spec:
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
               value: "/config/rules.json"
-            - name: DB_POOL_MIN_SIZE
-              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
-            - name: DB_POOL_MAX_SIZE
-              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
-            - name: VELOCITY_WINDOW_SECONDS
-              value: {{ .Values.appConfig.velocityWindowSeconds | quote }}
-            - name: DEFAULT_HIGH_VALUE_THRESHOLD
-              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
-            - name: DEFAULT_VELOCITY_THRESHOLD
-              value: {{ .Values.appConfig.defaultVelocityThreshold | quote }}
-            - name: DEFAULT_RESTRICTED_CATEGORIES
-              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
-            - name: OBSERVABILITY_LOG_LEVEL
-              value: {{ .Values.observability.logLevel | quote }}
-            - name: OBSERVABILITY_ENABLE_TRACING
-              value: {{ ternary "true" "false" $tracingEnabled | quote }}
-            - name: WORKER_METRICS_PORT
-              value: {{ .Values.observability.workerMetricsPort | quote }}
-            {{- if and $tracingEnabled $otlpEndpoint }}
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $otlpEndpoint | quote }}
-            {{- end }}
-          livenessProbe:
-            tcpSocket:
-              port: metrics
-            initialDelaySeconds: 20
-            periodSeconds: 10
-          readinessProbe:
-            tcpSocket:
-              port: metrics
-            initialDelaySeconds: 10
-            periodSeconds: 10
           volumeMounts:
             - name: rules-volume
               mountPath: /config/rules.json
@@ -96,18 +54,6 @@ spec:
         - name: rules-volume
           configMap:
             name: fraud-configs
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: worker-metrics
-spec:
-  ports:
-    - name: metrics
-      port: {{ .Values.observability.workerMetricsPort }}
-      targetPort: metrics
-  selector:
-    app: fraud-worker
 
 ---
 # --- API ---
@@ -159,36 +105,6 @@ spec:
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
               value: "/config/rules.json"
-            - name: DB_POOL_MIN_SIZE
-              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
-            - name: DB_POOL_MAX_SIZE
-              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
-            - name: DEFAULT_HIGH_VALUE_THRESHOLD
-              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
-            - name: DEFAULT_VELOCITY_THRESHOLD
-              value: {{ .Values.appConfig.defaultVelocityThreshold | quote }}
-            - name: DEFAULT_RESTRICTED_CATEGORIES
-              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
-            - name: OBSERVABILITY_LOG_LEVEL
-              value: {{ .Values.observability.logLevel | quote }}
-            - name: OBSERVABILITY_ENABLE_TRACING
-              value: {{ ternary "true" "false" $tracingEnabled | quote }}
-            {{- if and $tracingEnabled $otlpEndpoint }}
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $otlpEndpoint | quote }}
-            {{- end }}
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: api-port
-            initialDelaySeconds: 20
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: api-port
-            initialDelaySeconds: 10
-            periodSeconds: 10
           volumeMounts:
             - name: rules-volume
               mountPath: /config/rules.json
@@ -204,9 +120,7 @@ metadata:
   name: api
 spec:
   ports:
-    - name: http
-      port: 8000
-      targetPort: api-port
+    - port: 8000
   selector:
     app: fraud-api
 
@@ -231,34 +145,9 @@ spec:
           image: "{{ .Values.producer.image.repository }}:{{ .Values.producer.image.tag }}"
           imagePullPolicy: {{ .Values.producer.image.pullPolicy }}
           command: ["uvicorn", "app.producer:app", "--host", "0.0.0.0", "--port", "8001"]
-          ports:
-            - containerPort: 8001
-              name: producer-port
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
-            - name: KAFKA_TOPIC_NAME
-              value: {{ .Values.appConfig.kafkaTopicName | quote }}
-            - name: OBSERVABILITY_LOG_LEVEL
-              value: {{ .Values.observability.logLevel | quote }}
-            - name: OBSERVABILITY_ENABLE_TRACING
-              value: {{ ternary "true" "false" $tracingEnabled | quote }}
-            {{- if and $tracingEnabled $otlpEndpoint }}
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $otlpEndpoint | quote }}
-            {{- end }}
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: producer-port
-            initialDelaySeconds: 20
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: producer-port
-            initialDelaySeconds: 10
-            periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
@@ -266,8 +155,6 @@ metadata:
   name: producer
 spec:
   ports:
-    - name: http
-      port: 8001
-      targetPort: producer-port
+    - port: 8001
   selector:
     app: fraud-producer

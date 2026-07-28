@@ -21,23 +21,3 @@ producer:
     repository: ghcr.io/siyablela/fraud_detection
     tag: IMAGE_TAG
     pullPolicy: IfNotPresent
-
-appConfig:
-  kafkaTopicName: transactions_topic
-  kafkaConsumerGroupId: fraud-worker-group
-  dbPoolMinSize: 2
-  dbPoolMaxSize: 20
-  velocityWindowSeconds: 60
-  defaultHighValueThreshold: 10000
-  defaultVelocityThreshold: 5
-  defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
-
-observability:
-  logLevel: INFO
-  enableTracing: false
-  workerMetricsPort: 9100
-  otlpEndpoint: ""
-
-instana:
-  enabled: false
-  otlpEndpoint: "http://instana-agent.instana-agent.svc.cluster.local:4318/v1/traces"
