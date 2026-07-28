@@ -125,12 +125,10 @@ The services are:
 |---|---|---|
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
-| Prometheus | `http://127.0.0.1:9090` | Metrics scraping and query UI |
-| Grafana | `http://127.0.0.1:3000` | Dashboards (`admin/admin` by default) |
 | Kafka UI | `http://127.0.0.1:8080` | Kafka cluster/topic inspection |
 | PostgreSQL | Internal only | Durable transaction storage |
 | Redis | Internal only | Velocity counters and short-lived state |
-| Worker metrics | `http://127.0.0.1:9100/metrics` | Worker Prometheus metrics |
+| Worker metrics | `http://127.0.0.1:9100/metrics` | Worker metrics endpoint |
 
 ### Send a transaction
 
@@ -227,21 +225,19 @@ The app repository keeps the local developer workflow, while the infra docs cove
 | `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
 | `OBSERVABILITY_LOG_LEVEL` | Service log level | `INFO` |
 | `OBSERVABILITY_ENABLE_TRACING` | Enables OTLP tracing setup when dependencies are present | `false` |
-| `WORKER_METRICS_PORT` | Worker Prometheus endpoint port | `9100` |
+| `WORKER_METRICS_PORT` | Worker metrics endpoint port | `9100` |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
 
 ## Observability
 
-This repository includes a baseline observability stack for local development:
+This repository includes baseline observability hooks for local development:
 
 - Structured service logs with request IDs (`x-request-id`) on API and producer.
-- Prometheus metrics on:
+- Metrics endpoints on:
 	- Producer: `http://127.0.0.1:8001/metrics`
 	- Query API: `http://127.0.0.1:8000/metrics`
 	- Worker: `http://127.0.0.1:9100/metrics`
-- Local Prometheus UI: `http://127.0.0.1:9090`
-- Local Grafana UI: `http://127.0.0.1:3000` (default `admin/admin` unless overridden)
 
 Start the full local stack:
 

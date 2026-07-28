@@ -7,10 +7,10 @@ Infrastructure workflow: the Helm chart in [fraud-detection](../fraud-detection)
 
 ## Current scope
 
-- Helm-based local parity checks with Minikube.
-- Helm-based production deployment with CI-built images.
-- Phase-specific values files for `dev` and `prod`.
-- Cluster-specific secrets and rollout checks.
+- Rancher-managed Kubernetes cluster operations.
+- Argo CD GitOps deployment from this repository.
+- Helm chart environment overlays for `dev` and `prod`.
+- Instana-friendly application observability toggles (logs + tracing endpoint wiring).
 
 ## Chart locations
 
@@ -19,33 +19,101 @@ Infrastructure workflow: the Helm chart in [fraud-detection](../fraud-detection)
 - Dev values: [fraud-detection/values-dev.yaml](../fraud-detection/values-dev.yaml)
 - Prod values: [fraud-detection/values-prod.yaml](../fraud-detection/values-prod.yaml)
 
-## Local deployment
+## Rancher cluster deployment
 
-Build the image once and load it into Minikube:
+1. Configure `kubectl` context to the target Rancher cluster and namespace:
 
 ```powershell
-docker build -t fraud-detection:dev .
-minikube image load fraud-detection:dev
-helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-dev.yaml --namespace fraud-detection --create-namespace
+kubectl config current-context
+kubectl create namespace fraud-detection --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Verify the deployment:
+2. Apply runtime secrets (or map them from your external secret manager):
 
 ```powershell
+kubectl -n fraud-detection create secret generic fraud-secrets `
+	--from-literal=postgres-password="<postgres-password>" `
+	--from-literal=redis-password="<redis-password>" `
+	--dry-run=client -o yaml | kubectl apply -f -
+```
+
+3. Validate the chart locally before Argo sync:
+
+```powershell
+helm template fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml > $null
+```
+
+4. (Optional) Manual Helm deploy for smoke checks before GitOps handoff:
+
+```powershell
+helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml --namespace fraud-detection --create-namespace
 kubectl -n fraud-detection get pods
-kubectl -n fraud-detection get svc postgres redis kafka api producer
 ```
 
-Forward the HTTP services in separate terminal windows:
+5. For direct endpoint debugging from your workstation:
 
 ```powershell
 kubectl -n fraud-detection port-forward service/producer 8001:8001
 kubectl -n fraud-detection port-forward service/api 8000:8000
 ```
 
+## Argo CD GitOps workflow
+
+Argo install manifest is committed at [argocd-install.yaml](../argocd-install.yaml).
+
+Application resource for this chart is committed at [argocd/applications/fraud-detection.yaml](../argocd/applications/fraud-detection.yaml).
+
+1. Install or update Argo CD in your Rancher cluster:
+
+```powershell
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -n argocd -f .\argocd-install.yaml
+```
+
+2. Deploy this application through Argo CD:
+
+```powershell
+kubectl apply -f .\argocd\applications\fraud-detection.yaml
+kubectl -n argocd get applications.argoproj.io fraud-detection
+```
+
+3. In Argo CD UI, confirm:
+
+- `Sync Status: Synced`
+- `Health Status: Healthy`
+
+If your default branch or repo URL differs, update `targetRevision` and `repoURL` in [argocd/applications/fraud-detection.yaml](../argocd/applications/fraud-detection.yaml).
+
+## Instana integration notes
+
+The chart now supports environment-driven tracing setup via values:
+
+- `observability.enableTracing`
+- `observability.otlpEndpoint`
+- `instana.enabled`
+- `instana.otlpEndpoint`
+
+Recommended production approach:
+
+1. Install Instana agent/operator in the Rancher cluster.
+2. Set `instana.enabled=true` in your environment values file.
+3. Set `instana.otlpEndpoint` to your Instana OTLP ingest endpoint.
+4. Keep `observability.logLevel=INFO` (or tighter in high-volume workloads).
+
+You can override these values at deploy time:
+
+```powershell
+helm upgrade --install fraud-system .\fraud-detection `
+	-f .\fraud-detection\values.yaml `
+	-f .\fraud-detection\values-prod.yaml `
+	--set instana.enabled=true `
+	--set instana.otlpEndpoint="http://instana-agent.instana-agent.svc.cluster.local:4318/v1/traces" `
+	--namespace fraud-detection --create-namespace
+```
+
 ## Production deployment
 
-Use the production values file when deploying to a cluster:
+Use production values with immutable image tags:
 
 ```powershell
 helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml --namespace fraud-detection --create-namespace
@@ -61,6 +129,7 @@ Before applying production resources:
 2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
 3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
 4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
+5. Confirm Argo CD `automated.prune` and `automated.selfHeal` align with your change-control policy.
 
 ## Split plan
 
