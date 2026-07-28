@@ -28,6 +28,26 @@ producer:
     tag: latest
     pullPolicy: IfNotPresent
 
+appConfig:
+  kafkaTopicName: transactions_topic
+  kafkaConsumerGroupId: fraud-worker-group
+  dbPoolMinSize: 1
+  dbPoolMaxSize: 10
+  velocityWindowSeconds: 60
+  defaultHighValueThreshold: 10000
+  defaultVelocityThreshold: 5
+  defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
+
+observability:
+  logLevel: INFO
+  enableTracing: false
+  workerMetricsPort: 9100
+  otlpEndpoint: ""
+
+instana:
+  enabled: false
+  otlpEndpoint: "http://instana-agent.instana-agent.svc.cluster.local:4318/v1/traces"
+
 # Infrastructure Components (Third-Party Images)
 postgres:
   image: postgres:16-alpine
