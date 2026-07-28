@@ -13,11 +13,10 @@ def generate_mock_transaction(user_id: int, amount: float = None) -> dict:
     """Generates a structured dictionary matching your Pydantic Transaction model."""
     return {
         "transaction_id": str(uuid.uuid4()),
-        "user_id": user_id,
+        "user_id": str(user_id),
         "amount": amount if amount else round(random.uniform(5.0, 2000.0), 2),
         "timestamp": int(time.time()),
-        "card_country": random.choice(["US", "ZA", "GB", "CA"]),
-        "merchant_category": random.choice(["groceries", "electronics", "entertainment", "gaming"])
+        "category": random.choice(["GROCERIES", "ELECTRONICS", "ENTERTAINMENT", "GAMING"])
     }
 
 async def send_transaction(client: httpx.AsyncClient, payload: dict, scenario: str):
