@@ -4,6 +4,7 @@ global:
 # Application Secrets (Change these in production)
 secrets:
   postgresPassword: "change-me"
+  auditHashSecret: "change-me-to-a-long-random-secret"
 
 # Custom Internal Applications (Built from your local context)
 worker:

@@ -44,6 +44,7 @@ class RulesConfigTests(unittest.TestCase):
         try:
             os.environ["FRAUD_RULES_CONFIG_PATH"] = temp_path
             transaction = Transaction(
+                audit_id="audit-1",
                 correlation_id="corr-1",
                 user_id="user-1",
                 amount=1500,

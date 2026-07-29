@@ -3,7 +3,7 @@ import json
 import logging
 from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
-from app.database import create_pool, save_transaction
+from app.database import create_audit_event, create_pool, save_transaction
 from app.observability import (
     configure_logging,
     setup_tracing,
@@ -65,9 +65,22 @@ async def main():
 
                     # Write to persistent database storage
                     await save_transaction(database, result)
+                    await create_audit_event(
+                        database,
+                        audit_id=transaction.audit_id,
+                        event_type="ASYNC_DECISION_PERSISTED",
+                        service_name=SERVICE_NAME,
+                        payload=result,
+                        actor_id=transaction.actor_id,
+                        actor_type=transaction.actor_type,
+                        source_ip=transaction.source_ip,
+                        user_agent=transaction.user_agent,
+                        request_id=transaction.request_id,
+                    )
 
                     logger.info(
-                        "Processed correlation_id=%s user_id=%s fraud=%s rules=%s",
+                        "Processed audit_id=%s correlation_id=%s user_id=%s fraud=%s rules=%s",
+                        transaction.audit_id,
                         transaction.correlation_id,
                         transaction.user_id,
                         result["is_fraud"],

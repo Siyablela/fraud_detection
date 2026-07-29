@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,16 @@ class RulesConfig:
 				"restricted_categories",
 				DEFAULT_RESTRICTED_CATEGORIES,
 			)
+
+	def to_dict(self) -> dict[str, object]:
+		return {
+			"high_value_threshold": self.high_value_threshold,
+			"restricted_categories": dict(sorted(self.restricted_categories.items())),
+		}
+
+	def fingerprint(self) -> str:
+		payload = json.dumps(self.to_dict(), separators=(",", ":"), sort_keys=True)
+		return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def load_rules_config(path: str | None = None) -> RulesConfig:

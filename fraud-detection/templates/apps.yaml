@@ -26,11 +26,34 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
+            - name: KAFKA_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaTopicName | quote }}
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: {{ .Values.appConfig.kafkaConsumerGroupId | quote }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: fraud-secrets
                   key: postgres-password
+            - name: DB_POOL_MIN_SIZE
+              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
+            - name: DB_POOL_MAX_SIZE
+              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_HIGH_VALUE_THRESHOLD
+              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
+            - name: DEFAULT_RESTRICTED_CATEGORIES
+              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
+            - name: OBSERVABILITY_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: OBSERVABILITY_ENABLE_TRACING
+              value: {{ .Values.observability.enableTracing | quote }}
+            - name: WORKER_METRICS_PORT
+              value: {{ .Values.observability.workerMetricsPort | quote }}
+            - name: AUDIT_HASH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-secrets
+                  key: audit-hash-secret
             - name: DATABASE_URL
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
@@ -79,6 +102,23 @@ spec:
                 secretKeyRef:
                   name: fraud-secrets
                   key: postgres-password
+            - name: DB_POOL_MIN_SIZE
+              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
+            - name: DB_POOL_MAX_SIZE
+              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_HIGH_VALUE_THRESHOLD
+              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
+            - name: DEFAULT_RESTRICTED_CATEGORIES
+              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
+            - name: OBSERVABILITY_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: OBSERVABILITY_ENABLE_TRACING
+              value: {{ .Values.observability.enableTracing | quote }}
+            - name: AUDIT_HASH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-secrets
+                  key: audit-hash-secret
             - name: DATABASE_URL
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
@@ -126,6 +166,34 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
+            - name: KAFKA_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaTopicName | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-secrets
+                  key: postgres-password
+            - name: DB_POOL_MIN_SIZE
+              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
+            - name: DB_POOL_MAX_SIZE
+              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DATABASE_URL
+              value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
+            - name: OBSERVABILITY_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: OBSERVABILITY_ENABLE_TRACING
+              value: {{ .Values.observability.enableTracing | quote }}
+            - name: AUDIT_HASH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-secrets
+                  key: audit-hash-secret
+            - name: FRAUD_RULES_CONFIG_PATH
+              value: "/config/rules.json"
+            - name: DEFAULT_HIGH_VALUE_THRESHOLD
+              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
+            - name: DEFAULT_RESTRICTED_CATEGORIES
+              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
 ---
 apiVersion: v1
 kind: Service
