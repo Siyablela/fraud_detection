@@ -1,6 +1,6 @@
 param(
     [int]$Tail = 80,
-    [string[]]$Services = @("postgres", "redis", "kafka", "kafka-init", "api", "producer", "worker", "keycloak", "kafka-ui")
+    [string[]]$Services = @("postgres", "redis", "kafka", "api", "producer", "worker", "keycloak", "kafka-ui")
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +23,18 @@ function Require-RancherDocker {
     }
 
     Write-Host "Docker endpoint: $ver" -ForegroundColor Green
+}
+
+function Show-RancherContext {
+    Write-Step "Rancher Desktop context check"
+
+    try {
+        $settings = & "C:\Program Files\Rancher Desktop\resources\resources\win32\bin\rdctl.exe" list-settings | ConvertFrom-Json
+        Write-Host ("Container engine: {0}" -f $settings.containerEngine.name) -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Could not read Rancher Desktop settings: $($_.Exception.Message)"
+    }
 }
 
 function Show-ComposePs {
@@ -101,6 +113,7 @@ function Show-QuickChecks {
 try {
     Write-Step "Preflight"
     Require-RancherDocker
+    Show-RancherContext
 
     Show-ComposePs
     Show-ContainerHealth

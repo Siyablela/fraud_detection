@@ -23,17 +23,6 @@ function Test-RdTools {
     }
 }
 
-function Stop-DockerDesktop {
-    Write-Step "Stopping Docker Desktop process to avoid CLI/proxy conflicts"
-    try {
-        Get-Process -Name "Docker Desktop" -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Seconds 2
-    }
-    catch {
-        Write-Warning "Could not stop Docker Desktop process: $($_.Exception.Message)"
-    }
-}
-
 function Set-KubeContext {
     Write-Step "Switching kubectl context to rancher-desktop"
     if (Get-Command kubectl -ErrorAction SilentlyContinue) {
@@ -77,15 +66,6 @@ function Wait-DockerReady {
     throw "Rancher Docker daemon did not become ready in time"
 }
 
-function Set-RancherDns {
-    Write-Step "Applying stable DNS inside rancher-desktop distro"
-    $dnsCmd = "printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf; cat /etc/resolv.conf"
-    wsl -d rancher-desktop sh -lc $dnsCmd | Out-Host
-
-    Write-Step "Validating Docker Hub DNS resolution from rancher-desktop"
-    wsl -d rancher-desktop sh -lc "nslookup auth.docker.io && nslookup registry-1.docker.io" | Out-Host
-}
-
 function Invoke-ComposeWithRetry {
     Write-Step "Running compose with Rancher docker CLI"
 
@@ -108,13 +88,6 @@ function Invoke-ComposeWithRetry {
             continue
         }
 
-        if ($text -match "lookup .* no such host") {
-            Write-Warning "DNS lookup error detected; reapplying Rancher DNS before retry"
-            Set-RancherDns
-            Start-Sleep -Seconds 2
-            continue
-        }
-
         throw "Compose failed with a non-retryable error"
     }
 
@@ -125,11 +98,9 @@ try {
     Write-Step "Preflight checks"
     Test-RdTools
 
-    Stop-DockerDesktop
     Set-KubeContext
     Restart-Rancher
     Wait-DockerReady
-    Set-RancherDns
     Invoke-ComposeWithRetry
 
     Write-Host "`nAll done." -ForegroundColor Green
