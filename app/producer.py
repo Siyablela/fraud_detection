@@ -48,10 +48,10 @@ async def emit_transaction(transaction: Transaction, request: Request):
     payload = transaction.model_dump_json()
     payload_bytes = payload.encode("utf-8")
 
-    # Use the transaction_id as the Kafka message key.
-    # This guarantees that transactions for the same ID always go to the same 
+    # Use the correlation_id as the Kafka message key.
+    # This guarantees that messages for the same ID always go to the same
     # Kafka partition, preserving exact chronological processing order.
-    message_key = str(transaction.transaction_id).encode("utf-8")
+    message_key = str(transaction.correlation_id).encode("utf-8")
 
     # Send the message asynchronously.
     # send_and_wait() ensures the message is acknowledged by the broker.
@@ -63,8 +63,8 @@ async def emit_transaction(transaction: Transaction, request: Request):
     )
 
     logger.info(
-        "Queued transaction_id=%s user_id=%s amount=%s category=%s",
-        transaction.transaction_id,
+        "Queued correlation_id=%s user_id=%s amount=%s category=%s",
+        transaction.correlation_id,
         transaction.user_id,
         transaction.amount,
         transaction.category,
@@ -72,7 +72,7 @@ async def emit_transaction(transaction: Transaction, request: Request):
 
     return {
         "status": "queued",
-        "transaction_id": transaction.transaction_id,
+        "correlation_id": transaction.correlation_id,
         "topic": TOPIC_NAME,
     }
 

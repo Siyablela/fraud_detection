@@ -12,7 +12,7 @@ if not PRODUCER_URL:
 def generate_mock_transaction(user_id: int, amount: float = None) -> dict:
     """Generates a structured dictionary matching your Pydantic Transaction model."""
     return {
-        "transaction_id": str(uuid.uuid4()),
+        "correlation_id": str(uuid.uuid4()),
         "user_id": str(user_id),
         "amount": amount if amount else round(random.uniform(5.0, 2000.0), 2),
         "timestamp": int(time.time()),
@@ -24,7 +24,7 @@ async def send_transaction(client: httpx.AsyncClient, payload: dict, scenario: s
     try:
         response = await client.post(PRODUCER_URL, json=payload, timeout=5.0)
         if response.status_code == 202:
-            print(f"[{scenario}] Sent Tx: {payload['transaction_id']} | User: {payload['user_id']} | Amt: ${payload['amount']}")
+            print(f"[{scenario}] Sent Corr: {payload['correlation_id']} | User: {payload['user_id']} | Amt: ${payload['amount']}")
         else:
             print(f"❌ Failed to queue transaction. Status: {response.status_code}")
     except Exception as e:
@@ -43,17 +43,17 @@ async def main():
             await send_transaction(client, payload, "NORMAL")
             await asyncio.sleep(1.5)  # Moderate delay between users
             
-        print("\n--- Running Scenario 2: High-Velocity Fraud Trigger ---")
-        # Target a single specific user to trip the Redis velocity sliding window counter
+        print("\n--- Running Scenario 2: Rule Trigger Validation ---")
         target_fraud_user = 9999
-        print(f"Targeting User {target_fraud_user} with 6 rapid transactions in under 2 seconds...")
+        print(f"Sending 6 high-risk transactions for User {target_fraud_user}...")
         
         tasks = []
         for i in range(6):
-            # Escalate the amounts to simulate a card testing/emptying pattern
-            amount = 100.0 * (i + 1)
+            # Escalate amounts in a restricted category to trigger rule checks
+            amount = 1000.0 * (i + 1)
             payload = generate_mock_transaction(user_id=target_fraud_user, amount=amount)
-            tasks.append(send_transaction(client, payload, "VELOCITY_BURST"))
+            payload["category"] = "GAMBLING"
+            tasks.append(send_transaction(client, payload, "RULE_TRIGGER"))
             
         # Fire them concurrently using asyncio to simulate an explosive bottleneck
         await asyncio.gather(*tasks)

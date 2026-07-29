@@ -33,7 +33,7 @@ Verify the deployment:
 
 ```powershell
 kubectl -n fraud-detection get pods
-kubectl -n fraud-detection get svc postgres redis kafka api producer
+kubectl -n fraud-detection get svc postgres kafka api producer
 ```
 
 Forward the HTTP services in separate terminal windows:
@@ -49,7 +49,6 @@ Use the production values file when deploying to a cluster:
 
 ```powershell
 helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml --namespace fraud-detection --create-namespace
-kubectl -n fraud-detection rollout status statefulset/redis
 kubectl -n fraud-detection rollout status deployment/fraud-api
 kubectl -n fraud-detection rollout status deployment/fraud-producer
 kubectl -n fraud-detection rollout status deployment/fraud-worker
@@ -57,10 +56,10 @@ kubectl -n fraud-detection rollout status deployment/fraud-worker
 
 Before applying production resources:
 
-1. Replace the placeholder Redis and PostgreSQL values in the release pipeline, or source them from an external secret manager.
+1. Replace the placeholder PostgreSQL values in the release pipeline, or source them from an external secret manager.
 2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
-3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
-4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
+3. Ensure stable PostgreSQL connectivity. For production, prefer managed services and store full connection URLs in Secrets.
+4. Expose only the producer through an Ingress or API gateway as required. Keep the query API internal by default.
 
 ## Split plan
 

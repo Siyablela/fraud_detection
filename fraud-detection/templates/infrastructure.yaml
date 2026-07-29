@@ -46,52 +46,6 @@ spec:
   selector:
     app: postgres
 
-# --- REDIS ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-        - name: redis
-          image: {{ .Values.redis.image }}
-          command: ["redis-server", "--appendonly", "yes", "--requirepass", "$(REDIS_PASSWORD)"]
-          env:
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: fraud-secrets
-                  key: redis-password
-          ports:
-            - containerPort: 6379
-          volumeMounts:
-            - name: redis-storage
-              mountPath: /data
-      volumes:
-        - name: redis-storage
-          emptyDir: {}
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-spec:
-  ports:
-    - port: 6379
-      targetPort: 6379
-  selector:
-    app: redis
-
 # --- KAFKA ---
 apiVersion: apps/v1
 kind: Deployment

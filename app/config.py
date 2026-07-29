@@ -6,7 +6,6 @@ from pathlib import Path
 from app.settings import (
 	DEFAULT_HIGH_VALUE_THRESHOLD,
 	DEFAULT_RESTRICTED_CATEGORIES,
-	DEFAULT_VELOCITY_THRESHOLD,
 	FRAUD_RULES_CONFIG_PATH,
 )
 
@@ -14,7 +13,6 @@ from app.settings import (
 @dataclass(frozen=True)
 class RulesConfig:
 	high_value_threshold: float = DEFAULT_HIGH_VALUE_THRESHOLD
-	velocity_threshold: int = DEFAULT_VELOCITY_THRESHOLD
 	restricted_categories: dict[str, float] | None = None
 
 	def __post_init__(self):
@@ -36,7 +34,6 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
 
 	return RulesConfig(
 		high_value_threshold=float(values.get("high_value_threshold", DEFAULT_HIGH_VALUE_THRESHOLD)),
-		velocity_threshold=int(values.get("velocity_threshold", DEFAULT_VELOCITY_THRESHOLD)),
 		restricted_categories={
 			str(category).upper(): float(limit)
 			for category, limit in values.get(

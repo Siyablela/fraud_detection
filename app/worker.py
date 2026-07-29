@@ -3,7 +3,6 @@ import json
 import logging
 from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
-import redis.asyncio as aioredis
 from app.database import create_pool, save_transaction
 from app.observability import (
     configure_logging,
@@ -19,8 +18,6 @@ from app.settings import (
     KAFKA_TOPIC_NAME,
     OBSERVABILITY_ENABLE_TRACING,
     OBSERVABILITY_LOG_LEVEL,
-    REDIS_URL,
-    VELOCITY_WINDOW_SECONDS,
     WORKER_METRICS_PORT,
 )
 
@@ -38,9 +35,6 @@ async def main():
     database = await create_pool()
     start_http_server(WORKER_METRICS_PORT)
     logger.info("Worker metrics endpoint listening on port %s", WORKER_METRICS_PORT)
-    
-    # Redis remains in place *only* as a high-speed state store for velocity checks
-    redis_conn = aioredis.from_url(REDIS_URL, decode_responses=True)
     
     # Configure the asynchronous Kafka consumer
     consumer = AIOKafkaConsumer(
@@ -66,21 +60,15 @@ async def main():
                     # Validate input structure using Pydantic
                     transaction = Transaction(**event_data)
 
-                    # Velocity calculations stay in Redis for microsecond performance
-                    velocity_key = f"velocity:{transaction.user_id}"
-                    current_velocity = await redis_conn.incr(velocity_key)
-                    if current_velocity == 1:
-                        await redis_conn.expire(velocity_key, VELOCITY_WINDOW_SECONDS)
-
                     # Execute fraud logic
-                    result = evaluate_transaction(transaction, current_velocity)
+                    result = evaluate_transaction(transaction)
 
                     # Write to persistent database storage
                     await save_transaction(database, result)
 
                     logger.info(
-                        "Processed transaction_id=%s user_id=%s fraud=%s rules=%s",
-                        transaction.transaction_id,
+                        "Processed correlation_id=%s user_id=%s fraud=%s rules=%s",
+                        transaction.correlation_id,
                         transaction.user_id,
                         result["is_fraud"],
                         ",".join(result["triggered_rules"]),
@@ -104,7 +92,6 @@ async def main():
         # Clean shutdown of engine dependencies
         logger.info("Shutting down worker clients")
         await consumer.stop()
-        await redis_conn.aclose()
 
 if __name__ == "__main__":
     asyncio.run(main())

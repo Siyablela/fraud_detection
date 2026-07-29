@@ -4,7 +4,6 @@ global:
 # Application Secrets (Change these in production)
 secrets:
   postgresPassword: "change-me"
-  redisPassword: "change-me"
 
 # Custom Internal Applications (Built from your local context)
 worker:
@@ -33,9 +32,7 @@ appConfig:
   kafkaConsumerGroupId: fraud-worker-group
   dbPoolMinSize: 1
   dbPoolMaxSize: 10
-  velocityWindowSeconds: 60
   defaultHighValueThreshold: 10000
-  defaultVelocityThreshold: 5
   defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
 
 observability:
@@ -51,8 +48,6 @@ instana:
 # Infrastructure Components (Third-Party Images)
 postgres:
   image: postgres:16-alpine
-redis:
-  image: redis:latest
 kafka:
   image: apache/kafka:latest
 keycloak:

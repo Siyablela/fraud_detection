@@ -31,12 +31,14 @@ Fraud Worker
 	▼
 Query API :8000
 	│
-	│ GET /api/v1/transactions/{transaction_id}
+	│ GET /api/v1/transactions/{correlation_id}
 	▼
 Client
 ```
 
-The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record; Redis is internal infrastructure for short-lived velocity state.
+The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record.
+
+For low-latency use cases, the query API also exposes a synchronous fraud decision endpoint that evaluates a transaction immediately.
 
 ## Project structure
 
@@ -65,7 +67,7 @@ The producer accepts JSON with these fields:
 
 ```json
 {
-	"transaction_id": "tx-1001",
+	"correlation_id": "corr-1001",
 	"user_id": "user-42",
 	"amount": 12500,
 	"category": "RETAIL"
@@ -81,7 +83,6 @@ The default configuration is in [rules.json](rules.json):
 ```json
 {
 	"high_value_threshold": 10000,
-	"velocity_threshold": 5,
 	"restricted_categories": {
 		"GAMBLING": 5000,
 		"CRYPTO": 5000
@@ -92,7 +93,6 @@ The default configuration is in [rules.json](rules.json):
 The rules currently flag:
 
 - `HIGH_VALUE_TRANSACTION` when the amount exceeds `high_value_threshold`.
-- `VELOCITY_LIMIT_EXCEEDED` when a user's count exceeds `velocity_threshold` within the worker's 60-second Redis window.
 - `RISKY_CATEGORY_LIMIT` when a configured restricted category exceeds its amount limit.
 
 The worker reloads the rule file when its modification time changes. In Kubernetes, update the `fraud-rules` ConfigMap and restart the relevant pods if the cluster's ConfigMap projection does not refresh the file quickly enough.
@@ -109,7 +109,6 @@ The worker reloads the rule file when its modification time changes. In Kubernet
 From the repository root:
 
 ```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
 docker compose up --build
 ```
 
@@ -120,7 +119,6 @@ The services are:
 | Producer | `http://127.0.0.1:8001` | Accepts transactions |
 | Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
 | PostgreSQL | Internal only | Durable transaction storage |
-| Redis | Internal only | Velocity counters and short-lived state |
 | Worker | Internal only | Evaluates transactions |
 
 ### Send a transaction
@@ -129,7 +127,7 @@ With Compose running, open another PowerShell window:
 
 ```powershell
 $body = @{
-		transaction_id = "compose-001"
+		correlation_id = "compose-001"
 		user_id        = "user-1"
 		amount         = 12500
 		category       = "RETAIL"
@@ -151,6 +149,39 @@ Invoke-RestMethod `
 		ConvertTo-Json -Depth 5
 ```
 
+Query recent transactions by user ID:
+
+```powershell
+Invoke-RestMethod `
+		http://127.0.0.1:8000/api/v1/users/user-1?limit=20 | `
+		ConvertTo-Json -Depth 5
+```
+
+### Run a real-time fraud check
+
+Use this when you need a decision in the same request/response cycle instead of waiting for Kafka worker processing.
+
+```powershell
+$body = @{
+		correlation_id = "realtime-001"
+		user_id        = "user-42"
+		amount         = 12000
+		category       = "RETAIL"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+		-Uri "http://127.0.0.1:8000/api/v1/fraud/check?persist=true" `
+		-Method Post `
+		-ContentType "application/json" `
+		-Body $body | ConvertTo-Json -Depth 5
+```
+
+Response includes:
+
+- `is_fraud`: boolean decision.
+- `triggered_rules`: matching rule IDs.
+- `persisted`: whether the result was written to PostgreSQL.
+
 Health checks:
 
 ```powershell
@@ -164,14 +195,11 @@ Stop the application with `Ctrl+C`, or run:
 docker compose down
 ```
 
-Use `docker compose down -v` only when you also want to remove the Redis data volume.
-
 ## Run locally on your machine
 
 Use Rancher Desktop with Docker Compose for local development. The short version is:
 
 ```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
 docker compose up --build
 ```
 
@@ -182,7 +210,7 @@ Invoke-RestMethod http://127.0.0.1:8001/health
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
+Use `docker compose down` to stop the stack.
 
 If image pulls or builds fail with `lookup ... no such host`, fix your upstream DNS first. In this setup that usually means the router/OpenWrt or host DNS, not the application stack itself.
 
@@ -197,9 +225,7 @@ The app repository keeps the local developer workflow, while the infra docs cove
 | Variable | Purpose | Default |
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
-| `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
 | `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
 
 Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
@@ -231,10 +257,8 @@ Before treating this as production-ready, add or confirm:
 - CI tests, image builds, vulnerability scanning, and registry publishing.
 - Immutable image tags or image digests.
 - Managed PostgreSQL with backups, migrations, and a high-availability strategy.
-- Managed Redis or a highly available Redis deployment for queueing and velocity state.
 - External Secret management.
 - Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
-- Redis and application NetworkPolicies.
 - Structured logs, metrics, tracing, and alerting.
 - Dead-letter handling and retry policy for malformed or failed messages.
 - Database/data retention and disaster-recovery policies.

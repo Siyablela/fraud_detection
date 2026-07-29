@@ -1,6 +1,5 @@
 {
   "high_value_threshold": 10000,
-  "velocity_threshold": 5,
   "restricted_categories": {
     "GAMBLING": 5000,
     "CRYPTO": 5000

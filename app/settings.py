@@ -48,7 +48,6 @@ def _optional_env_bool(name: str, default: bool) -> bool:
 
 
 DATABASE_URL = _required_env("DATABASE_URL")
-REDIS_URL = _required_env("REDIS_URL")
 KAFKA_BOOTSTRAP_SERVERS = _required_env("KAFKA_BOOTSTRAP_SERVERS")
 KAFKA_TOPIC_NAME = _required_env("KAFKA_TOPIC_NAME")
 KAFKA_CONSUMER_GROUP_ID = _required_env("KAFKA_CONSUMER_GROUP_ID")
@@ -56,10 +55,8 @@ FRAUD_RULES_CONFIG_PATH = _required_env("FRAUD_RULES_CONFIG_PATH")
 
 DB_POOL_MIN_SIZE = _required_env_int("DB_POOL_MIN_SIZE")
 DB_POOL_MAX_SIZE = _required_env_int("DB_POOL_MAX_SIZE")
-VELOCITY_WINDOW_SECONDS = _required_env_int("VELOCITY_WINDOW_SECONDS")
 
 DEFAULT_HIGH_VALUE_THRESHOLD = _required_env_float("DEFAULT_HIGH_VALUE_THRESHOLD")
-DEFAULT_VELOCITY_THRESHOLD = _required_env_int("DEFAULT_VELOCITY_THRESHOLD")
 DEFAULT_RESTRICTED_CATEGORIES = _required_env_json_object(
     "DEFAULT_RESTRICTED_CATEGORIES"
 )
