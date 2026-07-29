@@ -101,7 +101,7 @@ The worker reloads the rule file when its modification time changes. In Kubernet
 
 ### Prerequisites
 
-- Docker Desktop with the Docker engine running.
+- Rancher Desktop with the Moby container engine running.
 - Docker Compose v2.
 
 ### Start the application
@@ -168,7 +168,7 @@ Use `docker compose down -v` only when you also want to remove the Redis data vo
 
 ## Run locally on your machine
 
-Use Docker Compose for local development. The short version is:
+Use Rancher Desktop with Docker Compose for local development. The short version is:
 
 ```powershell
 $env:REDIS_PASSWORD = "use-a-strong-local-password"
@@ -183,6 +183,8 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
 Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
+
+If image pulls or builds fail with `lookup ... no such host`, fix your upstream DNS first. In this setup that usually means the router/OpenWrt or host DNS, not the application stack itself.
 
 ## Infrastructure
 
