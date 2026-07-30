@@ -4,7 +4,7 @@ kind: Deployment
 metadata:
   name: kong
 spec:
-  replicas: 1
+  replicas: {{ .Values.kong.replicaCount }}
   selector:
     matchLabels:
       app: kong
@@ -25,8 +25,12 @@ spec:
               value: /dev/stdout
             - name: KONG_ADMIN_ACCESS_LOG
               value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
             - name: KONG_ADMIN_LISTEN
-              value: 0.0.0.0:8001
+              value: 127.0.0.1:8001
           volumeMounts:
             - name: kong-volume
               mountPath: /kong/kong.yml
@@ -41,15 +45,51 @@ kind: Service
 metadata:
   name: kong
 spec:
-  type: NodePort # Allows local or load balancer mapping access
+  type: {{ .Values.kong.service.type }}
   ports:
     - name: proxy
-      port: 80
-      targetPort: 8000
-    - name: admin
-      port: 8001
+      port: {{ .Values.kong.service.port }}
+      targetPort: {{ .Values.kong.service.targetPort }}
+{{- if and (eq .Values.kong.service.type "NodePort") .Values.kong.service.nodePort }}
+      nodePort: {{ .Values.kong.service.nodePort }}
+{{- end }}
   selector:
     app: kong
+
+{{- if .Values.kong.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kong
+  {{- if .Values.kong.ingress.annotations }}
+  annotations:
+    {{- toYaml .Values.kong.ingress.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.kong.ingress.className }}
+  ingressClassName: {{ .Values.kong.ingress.className }}
+  {{- end }}
+  rules:
+  {{- range .Values.kong.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+        {{- range .paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: kong
+                port:
+                  number: {{ $.Values.kong.service.port }}
+        {{- end }}
+  {{- end }}
+  {{- if .Values.kong.ingress.tls }}
+  tls:
+    {{- toYaml .Values.kong.ingress.tls | nindent 4 }}
+  {{- end }}
+{{- end }}
 
 # --- KEYCLOAK ---
 apiVersion: apps/v1

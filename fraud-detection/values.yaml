@@ -59,6 +59,22 @@ keycloak:
   image: quay.io/keycloak/keycloak:26.0
 kong:
   image: kong:3.8
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+    nodePort: null
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: fraud-gateway.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
 kafkaUi:
   image: ghcr.io/kafbat/kafka-ui:latest
 
@@ -70,5 +86,114 @@ rulesConfig: |
 
 kongConfig: |
   _format_version: "3.0"
-  services: []
+  services:
+    - name: fraud-query-api
+      url: http://api:8000
+      routes:
+        - name: query-transactions
+          paths:
+            - /api/v1/transactions
+          methods:
+            - GET
+          strip_path: false
+          plugins:
+            - name: key-auth
+              config:
+                key_names:
+                  - x-api-key
+                hide_credentials: true
+            - name: acl
+              config:
+                allow:
+                  - readers
+                  - writers
+            - name: rate-limiting
+              config:
+                minute: 300
+                policy: local
+        - name: query-categories
+          paths:
+            - /api/v1/categories
+          methods:
+            - GET
+          strip_path: false
+          plugins:
+            - name: key-auth
+              config:
+                key_names:
+                  - x-api-key
+                hide_credentials: true
+            - name: acl
+              config:
+                allow:
+                  - readers
+                  - writers
+            - name: rate-limiting
+              config:
+                minute: 120
+                policy: local
+        - name: query-users
+          paths:
+            - /api/v1/users
+          methods:
+            - GET
+          strip_path: false
+          plugins:
+            - name: key-auth
+              config:
+                key_names:
+                  - x-api-key
+                hide_credentials: true
+            - name: acl
+              config:
+                allow:
+                  - readers
+                  - writers
+            - name: rate-limiting
+              config:
+                minute: 120
+                policy: local
+    - name: fraud-producer-api
+      url: http://producer:8001
+      routes:
+        - name: ingest-transactions
+          paths:
+            - /api/v1/transactions
+          methods:
+            - POST
+          strip_path: false
+          plugins:
+            - name: key-auth
+              config:
+                key_names:
+                  - x-api-key
+                hide_credentials: true
+            - name: acl
+              config:
+                allow:
+                  - writers
+            - name: rate-limiting
+              config:
+                minute: 120
+                policy: local
+
+  plugins:
+    - name: correlation-id
+      config:
+        header_name: x-request-id
+        generator: uuid
+        echo_downstream: true
+
+  consumers:
+    - username: fraud-reader-client
+      keyauth_credentials:
+        - key: replace-me-reader-key
+      acls:
+        - group: readers
+
+    - username: fraud-writer-client
+      keyauth_credentials:
+        - key: replace-me-writer-key
+      acls:
+        - group: writers
 

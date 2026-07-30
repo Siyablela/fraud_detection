@@ -38,6 +38,37 @@ Client
 
 The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record; Redis is internal infrastructure for short-lived velocity state.
 
+For local development, call the services directly through Docker Compose.
+For production, use the Kong gateway managed by the Helm chart.
+
+## API Gateway (Kong)
+
+The gateway is deployed by the Helm chart, not Docker Compose.
+
+- Helm chart gateway entrypoint: `kong` service in [fraud-detection/templates/gateways-ui.yaml](fraud-detection/templates/gateways-ui.yaml)
+- Declarative gateway config: [fraud-detection/values.yaml](fraud-detection/values.yaml)
+
+The gateway routes and secures:
+
+- `POST /api/v1/transactions` -> producer service (writer clients only)
+- `GET /api/v1/transactions/{transaction_id}` -> query API (reader or writer clients)
+- `GET /api/v1/categories/{category_name}` -> query API (reader or writer clients)
+- `GET /api/v1/users/{user_id}` -> query API (reader or writer clients)
+
+Baseline policies enabled on the gateway path:
+
+- API key authentication via `x-api-key`
+- ACL authorization (reader and writer groups)
+- Per-route rate limiting
+- Request correlation header propagation (`x-request-id`)
+
+First-pass client keys are declared in [fraud-detection/values.yaml](fraud-detection/values.yaml):
+
+- Reader key: `replace-me-reader-key`
+- Writer key: `replace-me-writer-key`
+
+Change these before sharing the environment.
+
 ## Project structure
 
 ```text
@@ -117,8 +148,8 @@ The services are:
 
 | Service | Address | Purpose |
 |---|---|---|
-| Producer | `http://127.0.0.1:8001` | Accepts transactions |
-| Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
+| Producer | `http://127.0.0.1:8001` | Direct development access |
+| Query API | `http://127.0.0.1:8000` | Direct development access |
 | PostgreSQL | Internal only | Durable transaction storage |
 | Redis | Internal only | Velocity counters and short-lived state |
 | Worker | Internal only | Evaluates transactions |
@@ -135,20 +166,28 @@ $body = @{
 		category       = "RETAIL"
 } | ConvertTo-Json
 
+# Direct development path
 Invoke-RestMethod `
 		-Uri http://127.0.0.1:8001/api/v1/transactions `
 		-Method Post `
 		-ContentType "application/json" `
 		-Body $body
+
+# Gateway path (production / Helm)
+# Use the gateway address from your cluster ingress or service exposure.
 ```
 
 ### Query the result
 
 ```powershell
 Start-Sleep -Seconds 2
+# Direct development path
 Invoke-RestMethod `
 		http://127.0.0.1:8000/api/v1/transactions/compose-001 | `
 		ConvertTo-Json -Depth 5
+
+# Gateway path (production / Helm)
+# Use the gateway address from your cluster ingress or service exposure.
 ```
 
 Health checks:
