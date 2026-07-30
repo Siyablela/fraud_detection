@@ -21,3 +21,12 @@ producer:
     repository: fraud-detection
     tag: dev
     pullPolicy: Never
+
+kong:
+  service:
+    type: NodePort
+    port: 80
+    targetPort: 8000
+    nodePort: null
+  ingress:
+    enabled: false

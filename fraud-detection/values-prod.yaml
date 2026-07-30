@@ -21,3 +21,22 @@ producer:
     repository: ghcr.io/siyablela/fraud_detection
     tag: IMAGE_TAG
     pullPolicy: IfNotPresent
+
+kong:
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    hosts:
+      - host: fraud-api.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []

@@ -33,7 +33,7 @@ Verify the deployment:
 
 ```powershell
 kubectl -n fraud-detection get pods
-kubectl -n fraud-detection get svc postgres redis kafka api producer
+kubectl -n fraud-detection get svc postgres redis kafka api producer kong
 ```
 
 Forward the HTTP services in separate terminal windows:
@@ -41,7 +41,10 @@ Forward the HTTP services in separate terminal windows:
 ```powershell
 kubectl -n fraud-detection port-forward service/producer 8001:8001
 kubectl -n fraud-detection port-forward service/api 8000:8000
+kubectl -n fraud-detection port-forward service/kong 8088:80
 ```
+
+For local parity, dev values keep Kong ingress disabled and expose Kong by service type.
 
 ## Production deployment
 
@@ -53,6 +56,8 @@ kubectl -n fraud-detection rollout status statefulset/redis
 kubectl -n fraud-detection rollout status deployment/fraud-api
 kubectl -n fraud-detection rollout status deployment/fraud-producer
 kubectl -n fraud-detection rollout status deployment/fraud-worker
+kubectl -n fraud-detection rollout status deployment/kong
+kubectl -n fraud-detection get ingress
 ```
 
 Before applying production resources:
@@ -60,7 +65,8 @@ Before applying production resources:
 1. Replace the placeholder Redis and PostgreSQL values in the release pipeline, or source them from an external secret manager.
 2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
 3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
-4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
+4. Configure `kong.ingress.hosts`, TLS, and ingress annotations in `values-prod.yaml` for your cluster and domain.
+5. Keep `api`, `producer`, and `redis` internal; expose traffic through Kong ingress only.
 
 ## Split plan
 
