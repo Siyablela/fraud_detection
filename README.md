@@ -1,284 +1,245 @@
 # Fraud Detection
 
-A containerized fraud-detection service that accepts transaction events, evaluates configurable rules, and stores the results for later lookup.
+Fraud Detection is an event-driven service built with FastAPI, Kafka, Redis, PostgreSQL, SQLAlchemy async, and Alembic.
 
-The project currently supports:
+It accepts transactions, evaluates configurable fraud rules, stores results in PostgreSQL, and exposes query endpoints for lookup.
 
-- Local development on your machine with Docker Compose.
-- Production deployment with Kubernetes and CI-built container images.
-- Runtime rule changes through a mounted JSON file or Kubernetes ConfigMap.
+## Quick commands
 
-The Kubernetes deployment now lives in the Helm chart at [fraud-detection](fraud-detection). The intended end state is to move the infrastructure code into a separate repository and keep this repo focused on the application.
+```powershell
+# 1) Start local stack
+docker compose up --build
 
-## Architecture
+# 2) Apply DB migrations (inside compose network)
+docker exec fraud_api python -m alembic upgrade head
+
+# 3) Send a sample transaction
+$body = @{
+  transaction_id = "quick-001"
+  user_id        = "user-1"
+  amount         = 12500
+  category       = "RETAIL"
+} | ConvertTo-Json
+Invoke-RestMethod -Uri http://127.0.0.1:8001/api/v1/transactions -Method Post -ContentType "application/json" -Body $body
+
+# 4) Query the stored result
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/transactions/quick-001 | ConvertTo-Json -Depth 5
+
+# 5) Deploy to Kubernetes (prod values)
+helm upgrade --install fraud-system .\fraud-detection `
+  -f .\fraud-detection\values.yaml `
+  -f .\fraud-detection\values-prod.yaml `
+  -n fraud-system --create-namespace
+```
+
+For Kubernetes deploys, create the credential secret first:
+
+```powershell
+kubectl -n fraud-system create secret generic fraud-secrets `
+  --from-literal=postgres-password="<strong-postgres-password>" `
+  --from-literal=redis-password="<strong-redis-password>" `
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+## System overview
 
 ```text
 Client
-	│
-	│ POST /api/v1/transactions
-	▼
-Transaction Producer :8001
-	│
-	│ Kafka produce transactions_topic
-	▼
+  |
+  | POST /api/v1/transactions
+  v
+Producer API (FastAPI :8001)
+  |
+  | Kafka publish (transactions_topic)
+  v
 Kafka
-	▼
-Fraud Worker
-	│
-	├── Evaluates configurable rules
-	└── Stores results in PostgreSQL
-	│
-	▼
-Query API :8000
-	│
-	│ GET /api/v1/transactions/{transaction_id}
-	▼
+  |
+  v
+Worker
+  |-- Redis velocity counter
+  |-- Rules evaluation
+  |-- PostgreSQL upsert
+  v
+Query API (FastAPI :8000)
+  |
+  | GET /api/v1/transactions/{transaction_id}
+  | GET /api/v1/categories/{category_name}?limit=N
+  v
 Client
 ```
 
-The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record; Redis is internal infrastructure for short-lived velocity state.
+## API endpoints
 
-For local development, call the services directly through Docker Compose.
-For production, use the Kong gateway managed by the Helm chart.
+Producer API:
 
-## API Gateway (Kong)
+- POST `/api/v1/transactions`
+- GET `/health`
 
-The gateway is deployed by the Helm chart, not Docker Compose.
+Query API:
 
-- Helm chart gateway entrypoint: `kong` service in [fraud-detection/templates/gateways-ui.yaml](fraud-detection/templates/gateways-ui.yaml)
-- Declarative gateway config: [fraud-detection/values.yaml](fraud-detection/values.yaml)
+- GET `/api/v1/transactions/{transaction_id}`
+- GET `/api/v1/categories/{category_name}`
+- GET `/health`
 
-The gateway routes and secures:
-
-- `POST /api/v1/transactions` -> producer service (writer clients only)
-- `GET /api/v1/transactions/{transaction_id}` -> query API (reader or writer clients)
-- `GET /api/v1/categories/{category_name}` -> query API (reader or writer clients)
-- `GET /api/v1/users/{user_id}` -> query API (reader or writer clients)
-
-Baseline policies enabled on the gateway path:
-
-- API key authentication via `x-api-key`
-- ACL authorization (reader and writer groups)
-- Per-route rate limiting
-- Request correlation header propagation (`x-request-id`)
-
-First-pass client keys are declared in [fraud-detection/values.yaml](fraud-detection/values.yaml):
-
-- Reader key: `replace-me-reader-key`
-- Writer key: `replace-me-writer-key`
-
-Change these before sharing the environment.
-
-## Project structure
-
-```text
-fraud_detection/
-├── app/
-│   ├── api.py                    # Query API
-│   ├── config.py                 # Runtime rule configuration
-│   ├── producer.py               # Transaction ingestion API
-│   ├── rule.py                   # Transaction model and fraud rules
-│   └── worker.py                 # Kafka consumer and transaction processor
-├── fraud-detection/              # Helm chart for Kubernetes deployment
-├── infra/
-│   └── README.md                 # Infrastructure runbook and split guidance
-├── tests/                        # Automated tests
-├── Dockerfile                    # Application image definition
-├── docker-compose.yml            # Local multi-container deployment
-├── rules.json                    # Default local rule configuration
-├── requirements.txt              # Python dependencies
-└── .gitignore
-```
-
-## Transaction format
-
-The producer accepts JSON with these fields:
+Transaction payload:
 
 ```json
 {
-	"transaction_id": "tx-1001",
-	"user_id": "user-42",
-	"amount": 12500,
-	"category": "RETAIL"
+  "transaction_id": "tx-1001",
+  "user_id": "user-42",
+  "amount": 12500,
+  "category": "RETAIL",
+  "timestamp": 1722435000
 }
 ```
 
-`timestamp` is optional and is generated automatically when omitted.
+`timestamp` is optional. If omitted, it is generated by the Pydantic model.
 
 ## Fraud rules
 
-The default configuration is in [rules.json](rules.json):
+Rules are loaded from [rules.json](rules.json) and can be overridden by environment defaults.
 
-```json
-{
-	"high_value_threshold": 10000,
-	"velocity_threshold": 5,
-	"restricted_categories": {
-		"GAMBLING": 5000,
-		"CRYPTO": 5000
-	}
-}
-```
+Default rule flags:
 
-The rules currently flag:
+- `HIGH_VALUE_TRANSACTION`
+- `VELOCITY_LIMIT_EXCEEDED`
+- `RISKY_CATEGORY_LIMIT`
 
-- `HIGH_VALUE_TRANSACTION` when the amount exceeds `high_value_threshold`.
-- `VELOCITY_LIMIT_EXCEEDED` when a user's count exceeds `velocity_threshold` within the worker's 60-second Redis window.
-- `RISKY_CATEGORY_LIMIT` when a configured restricted category exceeds its amount limit.
+Velocity tracking uses Redis with a configurable TTL window.
 
-The worker reloads the rule file when its modification time changes. In Kubernetes, update the `fraud-rules` ConfigMap and restart the relevant pods if the cluster's ConfigMap projection does not refresh the file quickly enough.
+## Local development (Docker Compose)
 
-## Run with Docker Compose
+Prerequisites:
 
-### Prerequisites
+- Docker or Rancher Desktop with Docker Compose v2
 
-- Rancher Desktop with the Moby container engine running.
-- Docker Compose v2.
-
-### Start the application
-
-From the repository root:
+Start the stack from repository root:
 
 ```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
 docker compose up --build
 ```
 
-The services are:
+Direct local endpoints:
 
-| Service | Address | Purpose |
-|---|---|---|
-| Producer | `http://127.0.0.1:8001` | Direct development access |
-| Query API | `http://127.0.0.1:8000` | Direct development access |
-| PostgreSQL | Internal only | Durable transaction storage |
-| Redis | Internal only | Velocity counters and short-lived state |
-| Worker | Internal only | Evaluates transactions |
+- Producer: `http://127.0.0.1:8001`
+- Query API: `http://127.0.0.1:8000`
 
-### Send a transaction
-
-With Compose running, open another PowerShell window:
+Quick test:
 
 ```powershell
 $body = @{
-		transaction_id = "compose-001"
-		user_id        = "user-1"
-		amount         = 12500
-		category       = "RETAIL"
+  transaction_id = "compose-001"
+  user_id        = "user-1"
+  amount         = 12500
+  category       = "RETAIL"
 } | ConvertTo-Json
 
-# Direct development path
-Invoke-RestMethod `
-		-Uri http://127.0.0.1:8001/api/v1/transactions `
-		-Method Post `
-		-ContentType "application/json" `
-		-Body $body
+Invoke-RestMethod -Uri http://127.0.0.1:8001/api/v1/transactions -Method Post -ContentType "application/json" -Body $body
 
-# Gateway path (production / Helm)
-# Use the gateway address from your cluster ingress or service exposure.
-```
-
-### Query the result
-
-```powershell
 Start-Sleep -Seconds 2
-# Direct development path
-Invoke-RestMethod `
-		http://127.0.0.1:8000/api/v1/transactions/compose-001 | `
-		ConvertTo-Json -Depth 5
-
-# Gateway path (production / Helm)
-# Use the gateway address from your cluster ingress or service exposure.
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/transactions/compose-001 | ConvertTo-Json -Depth 5
 ```
 
-Health checks:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8001/health
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-Stop the application with `Ctrl+C`, or run:
+Stop:
 
 ```powershell
 docker compose down
 ```
 
-Use `docker compose down -v` only when you also want to remove the Redis data volume.
+## Database layer and migrations
 
-## Run locally on your machine
+Database access is implemented with SQLAlchemy async in [app/database.py](app/database.py).
 
-Use Rancher Desktop with Docker Compose for local development. The short version is:
+Alembic configuration:
+
+- [alembic.ini](alembic.ini)
+- [alembic/env.py](alembic/env.py)
+- [alembic/versions](alembic/versions)
+
+Run migrations in local venv:
 
 ```powershell
-$env:REDIS_PASSWORD = "use-a-strong-local-password"
-docker compose up --build
+.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-Open a browser or second terminal to verify the health endpoints:
+Create a migration:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8001/health
-Invoke-RestMethod http://127.0.0.1:8000/health
+.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe change"
 ```
 
-Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
+Rollback one migration:
 
-If image pulls or builds fail with `lookup ... no such host`, fix your upstream DNS first. In this setup that usually means the router/OpenWrt or host DNS, not the application stack itself.
+```powershell
+.venv\Scripts\python.exe -m alembic downgrade -1
+```
 
-## Infrastructure
+If your `DATABASE_URL` host is `postgres` (Compose network hostname), run Alembic inside the container:
 
-Kubernetes and cluster operations live in [infra/README.md](infra/README.md).
-
-The app repository keeps the local developer workflow, while the infra docs cover Helm-based deployment, dev/prod values files, rollout validation, and the eventual split into a separate infrastructure repository.
+```powershell
+docker exec fraud_api python -m alembic upgrade head
+```
 
 ## Configuration
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
-| `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
-| `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
+Main environment variables (see [.env.example](.env.example)):
 
-Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
+- `DATABASE_URL`
+- `REDIS_URL`
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `KAFKA_TOPIC_NAME`
+- `KAFKA_CONSUMER_GROUP_ID`
+- `FRAUD_RULES_CONFIG_PATH`
+- `DB_POOL_MIN_SIZE`
+- `DB_POOL_MAX_SIZE`
+- `VELOCITY_WINDOW_SECONDS`
+- `DEFAULT_HIGH_VALUE_THRESHOLD`
+- `DEFAULT_VELOCITY_THRESHOLD`
+- `DEFAULT_RESTRICTED_CATEGORIES`
+- `OBSERVABILITY_LOG_LEVEL`
+- `OBSERVABILITY_ENABLE_TRACING`
+- `WORKER_METRICS_PORT`
 
-## Testing
+Do not commit real credentials.
 
-Configure the project virtual environment, then run:
+## Kubernetes and gateway
+
+Helm chart: [fraud-detection](fraud-detection)
+
+Relevant files:
+
+- [fraud-detection/templates/gateways-ui.yaml](fraud-detection/templates/gateways-ui.yaml)
+- [fraud-detection/values.yaml](fraud-detection/values.yaml)
+- [fraud-detection/values-dev.yaml](fraud-detection/values-dev.yaml)
+- [fraud-detection/values-prod.yaml](fraud-detection/values-prod.yaml)
+
+Development mode uses direct service access in Compose.
+Production mode is intended to route through Kong (and optional Ingress) from the Helm deployment.
+
+The chart expects an existing Kubernetes Secret referenced by `secrets.existingSecretName` (default: `fraud-secrets`).
+
+## Tests
+
+Run unit tests:
 
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The tests cover loading rules from a file and evaluating a transaction with configured thresholds.
+Integration stream test script:
 
-## Queue behavior
+- [integration_test.py](integration_test.py)
 
-The current implementation uses Kafka for the transaction queue:
+## Repository layout
 
-- Producer: writes to `transactions_topic`
-- Worker: consumes from `transactions_topic`
-- Persistence: PostgreSQL `transactions` table
-
-Consumer-group behavior, retries, and partition ordering are handled by Kafka rather than Redis list operations.
-
-## Production considerations
-
-Before treating this as production-ready, add or confirm:
-
-- CI tests, image builds, vulnerability scanning, and registry publishing.
-- Immutable image tags or image digests.
-- Managed PostgreSQL with backups, migrations, and a high-availability strategy.
-- Managed Redis or a highly available Redis deployment for queueing and velocity state.
-- External Secret management.
-- Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
-- Redis and application NetworkPolicies.
-- Structured logs, metrics, tracing, and alerting.
-- Dead-letter handling and retry policy for malformed or failed messages.
-- Database/data retention and disaster-recovery policies.
-- Horizontal scaling and load testing for the producer and worker.
-
-## Repository workflow
-
-The Kubernetes work is developed on the `feature/initial_k8_addition` branch and can be merged through a GitHub pull request. The production image should be built by CI after code review rather than built manually on a cluster node.
+```text
+app/                    Application services and core logic
+alembic/                Migration environment and revisions
+tests/                  Unit tests
+fraud-detection/        Helm chart
+infra/                  Deployment runbook
+docker-compose.yml      Local stack
+Dockerfile              Application container build
+requirements.txt        Python dependencies
+rules.json              Fraud rule configuration
+```

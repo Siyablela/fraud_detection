@@ -4,6 +4,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from app.database import database_pool, get_transaction as find_transaction
 from app.database import get_transactions_by_category as find_by_category
+from app.database import ping_database
 from app.observability import apply_tracing, configure_logging, install_fastapi_observability, setup_tracing
 from app.settings import OBSERVABILITY_ENABLE_TRACING, OBSERVABILITY_LOG_LEVEL
 
@@ -29,7 +30,7 @@ apply_tracing(app)
 @app.get("/health")
 async def health():
     try:
-        await app.state.database.fetchval("SELECT 1")
+        await ping_database(app.state.database)
         logger.info("Health check passed")
         return {"status": "ok"}
     except Exception:

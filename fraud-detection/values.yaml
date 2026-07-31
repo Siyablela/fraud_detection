@@ -1,10 +1,12 @@
 global:
   environment: production
 
-# Application Secrets (Change these in production)
+# Application secrets
 secrets:
-  postgresPassword: "change-me"
-  redisPassword: "change-me"
+  existingSecretName: fraud-secrets
+  create: false
+  postgresPassword: ""
+  redisPassword: ""
 
 # Custom Internal Applications (Built from your local context)
 worker:

@@ -24,7 +24,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: postgres-password
           ports:
             - containerPort: 5432
@@ -69,7 +69,7 @@ spec:
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: redis-password
           ports:
             - containerPort: 6379
