@@ -33,12 +33,12 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: postgres-password
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: redis-password
             - name: REDIS_URL
               value: "redis://:$(REDIS_PASSWORD)@redis:6379"
@@ -92,12 +92,12 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: postgres-password
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: fraud-secrets
+                  name: {{ .Values.secrets.existingSecretName }}
                   key: redis-password
             - name: REDIS_URL
               value: "redis://:$(REDIS_PASSWORD)@redis:6379"

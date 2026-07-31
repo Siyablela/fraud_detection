@@ -17,6 +17,10 @@ env/
 .env
 .env.*
 !.env.example
+*.secret.yaml
+*.secrets.yaml
+fraud-detection/secrets/
+infra/secrets/
 
 # IDE and OS files
 .vscode/

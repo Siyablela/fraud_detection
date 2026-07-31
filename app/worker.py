@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 async def main():
     # Initialize infrastructure connections
-    database = await create_pool()
+    database_engine, database = create_pool()
     start_http_server(WORKER_METRICS_PORT)
     logger.info("Worker metrics endpoint listening on port %s", WORKER_METRICS_PORT)
     
@@ -105,6 +105,7 @@ async def main():
         logger.info("Shutting down worker clients")
         await consumer.stop()
         await redis_conn.aclose()
+        await database_engine.dispose()
 
 if __name__ == "__main__":
     asyncio.run(main())
