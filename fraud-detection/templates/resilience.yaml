@@ -1,0 +1,159 @@
+{{- if .Values.resilience.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fraud-api-pdb
+spec:
+  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: fraud-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fraud-producer-pdb
+spec:
+  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: fraud-producer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fraud-worker-pdb
+spec:
+  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: fraud-worker
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kong-pdb
+spec:
+  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: kong
+{{- end }}
+
+{{- if .Values.resilience.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fraud-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fraud-api
+  minReplicas: {{ .Values.resilience.autoscaling.api.minReplicas }}
+  maxReplicas: {{ .Values.resilience.autoscaling.api.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.api.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.api.targetMemoryUtilizationPercentage }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fraud-producer-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fraud-producer
+  minReplicas: {{ .Values.resilience.autoscaling.producer.minReplicas }}
+  maxReplicas: {{ .Values.resilience.autoscaling.producer.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.producer.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.producer.targetMemoryUtilizationPercentage }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fraud-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fraud-worker
+  minReplicas: {{ .Values.resilience.autoscaling.worker.minReplicas }}
+  maxReplicas: {{ .Values.resilience.autoscaling.worker.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.worker.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.worker.targetMemoryUtilizationPercentage }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kong-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kong
+  minReplicas: {{ .Values.resilience.autoscaling.kong.minReplicas }}
+  maxReplicas: {{ .Values.resilience.autoscaling.kong.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.kong.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.resilience.autoscaling.kong.targetMemoryUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.certManager.enabled (.Capabilities.APIVersions.Has "cert-manager.io/v1/Certificate") }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fraud-api-tls
+spec:
+  secretName: {{ .Values.certManager.secretName }}
+  issuerRef:
+    kind: {{ .Values.certManager.issuerKind }}
+    name: {{ .Values.certManager.issuerName }}
+  dnsNames:
+    - {{ .Values.certManager.ingressHost }}
+{{- end }}

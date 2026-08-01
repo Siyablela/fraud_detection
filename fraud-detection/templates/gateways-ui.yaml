@@ -13,14 +13,32 @@ spec:
       labels:
         app: kong
     spec:
+      {{- if .Values.resilience.enablePreferredAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.resilience.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: kong
+      {{- end }}
       containers:
         - name: kong
           image: {{ .Values.kong.image }}
+          ports:
+            - containerPort: 8000
+              name: proxy
+            - containerPort: 8100
+              name: status
           env:
             - name: KONG_DATABASE
               value: "off"
             - name: KONG_DECLARATIVE_CONFIG
               value: /kong/kong.yml.tpl
+            - name: KONG_STATUS_LISTEN
+              value: 0.0.0.0:8100
             - name: KONG_PROXY_ACCESS_LOG
               value: /dev/stdout
             - name: KONG_ADMIN_ACCESS_LOG
@@ -31,6 +49,22 @@ spec:
               value: /dev/stderr
             - name: KONG_ADMIN_LISTEN
               value: 127.0.0.1:8001
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: kong-volume
               mountPath: /kong/kong.yml.tpl
