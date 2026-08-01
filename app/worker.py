@@ -5,6 +5,7 @@ from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
 import redis.asyncio as aioredis
 from app.database import create_pool, save_transaction
+from app.kafka_security import kafka_client_security_kwargs
 from app.observability import (
     configure_logging,
     setup_tracing,
@@ -48,7 +49,8 @@ async def main():
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         group_id=CONSUMER_GROUP_ID,
         auto_offset_reset="earliest",  # Read from start if no committed offsets exist
-        enable_auto_commit=False        # Manual commit for At-Least-Once delivery guarantees
+        enable_auto_commit=False,       # Manual commit for At-Least-Once delivery guarantees
+        **kafka_client_security_kwargs(),
     )
     
     await consumer.start()

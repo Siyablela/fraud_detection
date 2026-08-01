@@ -20,7 +20,7 @@ spec:
             - name: KONG_DATABASE
               value: "off"
             - name: KONG_DECLARATIVE_CONFIG
-              value: /kong/kong.yml
+              value: /kong/kong.yml.tpl
             - name: KONG_PROXY_ACCESS_LOG
               value: /dev/stdout
             - name: KONG_ADMIN_ACCESS_LOG
@@ -33,8 +33,8 @@ spec:
               value: 127.0.0.1:8001
           volumeMounts:
             - name: kong-volume
-              mountPath: /kong/kong.yml
-              subPath: kong.yml
+              mountPath: /kong/kong.yml.tpl
+              subPath: kong.yml.tpl
       volumes:
         - name: kong-volume
           configMap:

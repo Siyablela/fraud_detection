@@ -15,6 +15,20 @@ api:
     tag: IMAGE_TAG
     pullPolicy: IfNotPresent
 
+security:
+  jwtIssuer: https://auth.example.com/
+  jwtAudience: fraud-api
+  jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
+  jwtPublicKeyPath: ""
+  requiredReadScope: fraud:transactions:read
+  requiredWriteScope: fraud:transactions:write
+
+kafkaSecurity:
+  protocol: SSL
+  truststorePath: /etc/kafka/tls/kafka-ca.pem
+  keystoreCertPath: /etc/kafka/tls/kafka-client.crt
+  keystoreKeyPath: /etc/kafka/tls/kafka-client.key
+
 producer:
   replicaCount: 2
   image:

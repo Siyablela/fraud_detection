@@ -8,7 +8,7 @@ import httpx
 PRODUCER_URL = os.getenv("INTEGRATION_PRODUCER_URL")
 if not PRODUCER_URL:
     raise RuntimeError("Missing required environment variable: INTEGRATION_PRODUCER_URL")
-API_KEY = os.getenv("INTEGRATION_API_KEY")
+ACCESS_TOKEN = os.getenv("INTEGRATION_ACCESS_TOKEN")
 
 def generate_mock_transaction(user_id: int, amount: float = None) -> dict:
     """Generates a structured dictionary matching your Pydantic Transaction model."""
@@ -23,7 +23,7 @@ def generate_mock_transaction(user_id: int, amount: float = None) -> dict:
 async def send_transaction(client: httpx.AsyncClient, payload: dict, scenario: str):
     """Sends the JSON payload to the FastAPI producer endpoint."""
     try:
-        headers = {"x-api-key": API_KEY} if API_KEY else None
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"} if ACCESS_TOKEN else None
         response = await client.post(PRODUCER_URL, json=payload, headers=headers, timeout=5.0)
         if response.status_code == 202:
             print(f"[{scenario}] Sent Tx: {payload['transaction_id']} | User: {payload['user_id']} | Amt: ${payload['amount']}")

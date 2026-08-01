@@ -19,6 +19,7 @@ env/
 !.env.example
 *.secret.yaml
 *.secrets.yaml
+.secrets/
 fraud-detection/secrets/
 infra/secrets/
 
