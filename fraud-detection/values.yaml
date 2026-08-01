@@ -4,9 +4,6 @@ global:
 # Application secrets
 secrets:
   existingSecretName: fraud-secrets
-  create: false
-  postgresPassword: ""
-  redisPassword: ""
 
 # Custom Internal Applications (Built from your local context)
 worker:
@@ -22,6 +19,20 @@ api:
     repository: fraud-api
     tag: latest
     pullPolicy: IfNotPresent
+
+security:
+  jwtIssuer: https://auth.example.com/
+  jwtAudience: fraud-api
+  jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
+  jwtPublicKeyPath: ""
+  requiredReadScope: fraud:transactions:read
+  requiredWriteScope: fraud:transactions:write
+
+kafkaSecurity:
+  protocol: PLAINTEXT
+  truststorePath: .secrets/kafka-ca.pem
+  keystoreCertPath: .secrets/kafka-client.crt
+  keystoreKeyPath: .secrets/kafka-client.key
 
 producer:
   replicaCount: 1
@@ -99,16 +110,6 @@ kongConfig: |
             - GET
           strip_path: false
           plugins:
-            - name: key-auth
-              config:
-                key_names:
-                  - x-api-key
-                hide_credentials: true
-            - name: acl
-              config:
-                allow:
-                  - readers
-                  - writers
             - name: rate-limiting
               config:
                 minute: 300
@@ -120,16 +121,6 @@ kongConfig: |
             - GET
           strip_path: false
           plugins:
-            - name: key-auth
-              config:
-                key_names:
-                  - x-api-key
-                hide_credentials: true
-            - name: acl
-              config:
-                allow:
-                  - readers
-                  - writers
             - name: rate-limiting
               config:
                 minute: 120
@@ -141,16 +132,6 @@ kongConfig: |
             - GET
           strip_path: false
           plugins:
-            - name: key-auth
-              config:
-                key_names:
-                  - x-api-key
-                hide_credentials: true
-            - name: acl
-              config:
-                allow:
-                  - readers
-                  - writers
             - name: rate-limiting
               config:
                 minute: 120
@@ -165,15 +146,6 @@ kongConfig: |
             - POST
           strip_path: false
           plugins:
-            - name: key-auth
-              config:
-                key_names:
-                  - x-api-key
-                hide_credentials: true
-            - name: acl
-              config:
-                allow:
-                  - writers
             - name: rate-limiting
               config:
                 minute: 120
@@ -185,17 +157,4 @@ kongConfig: |
         header_name: x-request-id
         generator: uuid
         echo_downstream: true
-
-  consumers:
-    - username: fraud-reader-client
-      keyauth_credentials:
-        - key: replace-me-reader-key
-      acls:
-        - group: readers
-
-    - username: fraud-writer-client
-      keyauth_credentials:
-        - key: replace-me-writer-key
-      acls:
-        - group: writers
 

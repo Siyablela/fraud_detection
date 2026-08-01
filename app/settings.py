@@ -54,6 +54,28 @@ KAFKA_TOPIC_NAME = _required_env("KAFKA_TOPIC_NAME")
 KAFKA_CONSUMER_GROUP_ID = _required_env("KAFKA_CONSUMER_GROUP_ID")
 FRAUD_RULES_CONFIG_PATH = _required_env("FRAUD_RULES_CONFIG_PATH")
 
+JWT_ISSUER = _required_env("JWT_ISSUER")
+JWT_AUDIENCE = _required_env("JWT_AUDIENCE")
+JWT_JWKS_URL = _optional_env("JWT_JWKS_URL", "")
+JWT_PUBLIC_KEY_PATH = _optional_env("JWT_PUBLIC_KEY_PATH", "")
+JWT_ALGORITHMS = [
+    algorithm.strip()
+    for algorithm in _optional_env("JWT_ALGORITHMS", "RS256").split(",")
+    if algorithm.strip()
+]
+JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ = _optional_env(
+    "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
+)
+JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE = _optional_env(
+    "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE", "fraud:transactions:write"
+)
+
+KAFKA_SECURITY_PROTOCOL = _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
+KAFKA_SSL_TRUSTSTORE_PATH = _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", "")
+KAFKA_SSL_KEYSTORE_CERT_PATH = _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", "")
+KAFKA_SSL_KEYSTORE_KEY_PATH = _optional_env("KAFKA_SSL_KEYSTORE_KEY_PATH", "")
+KAFKA_SSL_KEYSTORE_PASSWORD = _optional_env("KAFKA_SSL_KEYSTORE_PASSWORD", "")
+
 DB_POOL_MIN_SIZE = _required_env_int("DB_POOL_MIN_SIZE")
 DB_POOL_MAX_SIZE = _required_env_int("DB_POOL_MAX_SIZE")
 VELOCITY_WINDOW_SECONDS = _required_env_int("VELOCITY_WINDOW_SECONDS")

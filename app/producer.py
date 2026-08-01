@@ -3,14 +3,17 @@ import logging
 from contextlib import asynccontextmanager
 
 from aiokafka import AIOKafkaProducer
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.kafka_security import kafka_client_security_kwargs
 from app.observability import apply_tracing, configure_logging, install_fastapi_observability, setup_tracing
 from app.rule import Transaction
+from app.security import require_scopes
 from app.settings import (
     KAFKA_BOOTSTRAP_SERVERS,
     KAFKA_TOPIC_NAME,
+    JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE,
     OBSERVABILITY_ENABLE_TRACING,
     OBSERVABILITY_LOG_LEVEL,
 )
@@ -28,7 +31,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Initialize the async Kafka producer.
     app.state.kafka_producer = AIOKafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        **kafka_client_security_kwargs(),
     )
     # Start the producer (connects to the cluster).
     await app.state.kafka_producer.start()
@@ -43,7 +47,11 @@ apply_tracing(app)
 
 
 @app.post("/api/v1/transactions", status_code=status.HTTP_202_ACCEPTED)
-async def emit_transaction(transaction: Transaction, request: Request):
+async def emit_transaction(
+    transaction: Transaction,
+    request: Request,
+    _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE)),
+):
     # Convert Pydantic model to JSON string, then encode to bytes for Kafka.
     payload = transaction.model_dump_json()
     payload_bytes = payload.encode("utf-8")
