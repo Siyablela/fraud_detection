@@ -28,3 +28,16 @@ Production notes:
 2. Keep application secrets out of Helm values and provision them externally as Kubernetes Secrets before Helm deploys.
 3. Configure `kong.ingress.hosts`, TLS, and ingress annotations in `values-prod.yaml` for your cluster and domain.
 4. Keep `api`, `producer`, and `redis` internal; expose traffic through Kong ingress only.
+
+## CI to Argo CD release flow
+
+- CI validation workflow: [.github/workflows/ci.yml](../.github/workflows/ci.yml)
+- GitOps release workflow: [.github/workflows/cd-gitops.yml](../.github/workflows/cd-gitops.yml)
+- Argo application definition: [argocd/applications/fraud-detection.yaml](../argocd/applications/fraud-detection.yaml)
+
+How it works:
+
+1. CI runs tests and Helm validation on pull requests and main.
+2. On merge to main, CD builds and pushes an immutable SHA image to GHCR.
+3. CD updates [fraud-detection/values-prod.yaml](../fraud-detection/values-prod.yaml) image tags and commits the change.
+4. Argo CD auto-sync reconciles the cluster to that commit.
