@@ -12,6 +12,9 @@ from app.rule import Transaction
 from app.security import require_scopes
 from app.settings import (
     KAFKA_BOOTSTRAP_SERVERS,
+    KAFKA_PRODUCER_ACKS,
+    KAFKA_PRODUCER_ENABLE_IDEMPOTENCE,
+    KAFKA_PRODUCER_MAX_IN_FLIGHT,
     KAFKA_TOPIC_NAME,
     JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE,
     OBSERVABILITY_ENABLE_TRACING,
@@ -32,6 +35,9 @@ async def lifespan(app: FastAPI):
     # Initialize the async Kafka producer.
     app.state.kafka_producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        acks=KAFKA_PRODUCER_ACKS,
+        enable_idempotence=KAFKA_PRODUCER_ENABLE_IDEMPOTENCE,
+        max_in_flight_requests_per_connection=KAFKA_PRODUCER_MAX_IN_FLIGHT,
         **kafka_client_security_kwargs(),
     )
     # Start the producer (connects to the cluster).

@@ -13,6 +13,17 @@ spec:
       labels:
         app: fraud-worker
     spec:
+      {{- if .Values.resilience.enablePreferredAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.resilience.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: fraud-worker
+      {{- end }}
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
@@ -27,6 +38,16 @@ spec:
           image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           command: ["python", "-u", "-m", "app.worker"]
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pgrep -f "python -u -m app.worker" >/dev/null
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
@@ -84,6 +105,17 @@ spec:
       labels:
         app: fraud-api
     spec:
+      {{- if .Values.resilience.enablePreferredAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.resilience.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: fraud-api
+      {{- end }}
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
@@ -101,6 +133,22 @@ spec:
           ports:
             - containerPort: 8000
               name: api-port
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           env:
             - name: JWT_ISSUER
               value: {{ .Values.security.jwtIssuer | quote }}
@@ -165,11 +213,41 @@ spec:
       labels:
         app: fraud-producer
     spec:
+      {{- if .Values.resilience.enablePreferredAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.resilience.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: fraud-producer
+      {{- end }}
       containers:
         - name: producer
           image: "{{ .Values.producer.image.repository }}:{{ .Values.producer.image.tag }}"
           imagePullPolicy: {{ .Values.producer.image.pullPolicy }}
           command: ["uvicorn", "app.producer:app", "--host", "0.0.0.0", "--port", "8001"]
+          ports:
+            - containerPort: 8001
+              name: producer-port
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"

@@ -1,4 +1,21 @@
 # --- POSTGRESQL ---
+{{- if .Values.persistence.postgres.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  accessModes:
+    - {{ .Values.persistence.postgres.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.postgres.size }}
+  {{- if .Values.persistence.postgres.storageClassName }}
+  storageClassName: {{ .Values.persistence.postgres.storageClassName | quote }}
+  {{- end }}
+
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,12 +45,31 @@ spec:
                   key: postgres-password
           ports:
             - containerPort: 5432
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
       volumes:
         - name: postgres-storage
+          {{- if .Values.persistence.postgres.enabled }}
+          persistentVolumeClaim:
+            claimName: postgres-data
+          {{- else }}
           emptyDir: {}
+          {{- end }}
 
 ---
 apiVersion: v1
@@ -47,6 +83,24 @@ spec:
     app: postgres
 
 # --- REDIS ---
+{{- if .Values.persistence.redis.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+spec:
+  accessModes:
+    - {{ .Values.persistence.redis.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.redis.size }}
+  {{- if .Values.persistence.redis.storageClassName }}
+  storageClassName: {{ .Values.persistence.redis.storageClassName | quote }}
+  {{- end }}
+{{- end }}
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,12 +127,31 @@ spec:
                   key: redis-password
           ports:
             - containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: redis-storage
               mountPath: /data
       volumes:
         - name: redis-storage
+          {{- if .Values.persistence.redis.enabled }}
+          persistentVolumeClaim:
+            claimName: redis-data
+          {{- else }}
           emptyDir: {}
+          {{- end }}
 
 ---
 apiVersion: v1
@@ -93,6 +166,24 @@ spec:
     app: redis
 
 # --- KAFKA ---
+{{- if .Values.persistence.kafka.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data
+spec:
+  accessModes:
+    - {{ .Values.persistence.kafka.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.kafka.size }}
+  {{- if .Values.persistence.kafka.storageClassName }}
+  storageClassName: {{ .Values.persistence.kafka.storageClassName | quote }}
+  {{- end }}
+{{- end }}
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,19 +217,45 @@ spec:
             - name: KAFKA_CONTROLLER_QUORUM_VOTERS   # <--- FIX: Ensure no trailing colon here
               value: "1@kafka:9093"
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
-              value: "1"
+              value: {{ .Values.kafka.durability.offsetsTopicReplicationFactor | quote }}
             - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
-              value: "1"
+              value: {{ .Values.kafka.durability.transactionStateLogReplicationFactor | quote }}
             - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
-              value: "1"
+              value: {{ .Values.kafka.durability.transactionStateLogMinIsr | quote }}
             - name: KAFKA_DEFAULT_REPLICATION_FACTOR
-              value: "1"
+              value: {{ .Values.kafka.durability.defaultReplicationFactor | quote }}
             - name: KAFKA_MIN_INSYNC_REPLICAS
-              value: "1"
+              value: {{ .Values.kafka.durability.minInSyncReplicas | quote }}
             - name: KAFKA_LOG_DIRS
-              value: "/tmp/kraft-combined-logs"
+              value: "/var/lib/kafka/data"
           ports:
             - containerPort: 9092
+            - containerPort: 9093
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: kafka-storage
+              mountPath: /var/lib/kafka/data
+      volumes:
+        - name: kafka-storage
+          {{- if .Values.persistence.kafka.enabled }}
+          persistentVolumeClaim:
+            claimName: kafka-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service

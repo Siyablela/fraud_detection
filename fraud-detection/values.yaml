@@ -41,6 +41,59 @@ producer:
     tag: latest
     pullPolicy: IfNotPresent
 
+resilience:
+  enablePreferredAntiAffinity: true
+  topologyKey: kubernetes.io/hostname
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  autoscaling:
+    enabled: false
+    api:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    producer:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    worker:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    kong:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+
+persistence:
+  postgres:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 20Gi
+    storageClassName: ""
+  redis:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 8Gi
+    storageClassName: ""
+  kafka:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 30Gi
+    storageClassName: ""
+
+certManager:
+  enabled: false
+  issuerKind: ClusterIssuer
+  issuerName: ""
+  ingressHost: fraud-api.example.com
+  secretName: fraud-api-tls
+
 appConfig:
   kafkaTopicName: transactions_topic
   kafkaConsumerGroupId: fraud-worker-group
@@ -68,6 +121,12 @@ redis:
   image: redis:latest
 kafka:
   image: apache/kafka:latest
+  durability:
+    offsetsTopicReplicationFactor: 1
+    transactionStateLogReplicationFactor: 1
+    transactionStateLogMinIsr: 1
+    defaultReplicationFactor: 1
+    minInSyncReplicas: 1
 keycloak:
   image: quay.io/keycloak/keycloak:26.0
 kong:

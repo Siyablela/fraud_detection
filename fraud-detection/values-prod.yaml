@@ -36,6 +36,42 @@ producer:
     tag: IMAGE_TAG
     pullPolicy: IfNotPresent
 
+resilience:
+  enablePreferredAntiAffinity: true
+  topologyKey: kubernetes.io/hostname
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  autoscaling:
+    enabled: true
+    api:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    producer:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    worker:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    kong:
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+
+certManager:
+  enabled: true
+  issuerKind: ClusterIssuer
+  issuerName: letsencrypt-prod
+  ingressHost: fraud-api.example.com
+  secretName: fraud-api-tls
+
 kong:
   service:
     type: ClusterIP
@@ -53,4 +89,7 @@ kong:
         paths:
           - path: /
             pathType: Prefix
-    tls: []
+    tls:
+      - hosts:
+          - fraud-api.example.com
+        secretName: fraud-api-tls

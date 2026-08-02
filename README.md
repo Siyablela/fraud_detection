@@ -185,6 +185,14 @@ Main environment variables (see [.env.example](.env.example)):
 - `DATABASE_URL`
 - `REDIS_URL`
 - `KAFKA_BOOTSTRAP_SERVERS`
+- `KAFKA_SECURITY_PROTOCOL`
+- `KAFKA_SSL_TRUSTSTORE_PATH`
+- `KAFKA_SSL_KEYSTORE_CERT_PATH`
+- `KAFKA_SSL_KEYSTORE_KEY_PATH`
+- `KAFKA_SSL_KEYSTORE_PASSWORD`
+- `KAFKA_PRODUCER_ACKS`
+- `KAFKA_PRODUCER_ENABLE_IDEMPOTENCE`
+- `KAFKA_PRODUCER_MAX_IN_FLIGHT`
 - `KAFKA_TOPIC_NAME`
 - `KAFKA_CONSUMER_GROUP_ID`
 - `FRAUD_RULES_CONFIG_PATH`
@@ -215,6 +223,32 @@ Development mode uses direct service access in Compose.
 Production mode is intended to route through Kong (and optional Ingress) from the Helm deployment.
 
 Production secrets are provisioned externally and exposed to the chart as Kubernetes Secret data.
+
+## CI and CD
+
+This repository uses GitHub Actions for CI and GitOps release updates, and Argo CD for cluster reconciliation.
+
+- CI workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml)
+  - Runs unit tests.
+  - Compiles key Python modules for syntax validation.
+  - Runs Helm lint and Helm template checks with production values.
+- CD workflow: [.github/workflows/cd-gitops.yml](.github/workflows/cd-gitops.yml)
+  - Builds and pushes a container image to GHCR.
+  - Updates image repository and immutable SHA tag in [fraud-detection/values-prod.yaml](fraud-detection/values-prod.yaml).
+  - Commits the values change back to main so Argo CD auto-sync deploys it.
+
+Required repository settings:
+
+1. Actions permission to read and write repository contents.
+2. Package permission to write GHCR images.
+3. Protected branch rules on main so only passing CI can merge.
+
+Deployment flow:
+
+1. Open a PR and pass CI checks.
+2. Merge to main.
+3. CD workflow builds and publishes image, then commits updated Helm values.
+4. Argo CD detects Git change and reconciles the cluster.
 
 ## Tests
 
