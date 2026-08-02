@@ -194,6 +194,7 @@ Main environment variables (see [.env.example](.env.example)):
 - `KAFKA_PRODUCER_ENABLE_IDEMPOTENCE`
 - `KAFKA_PRODUCER_MAX_IN_FLIGHT`
 - `KAFKA_TOPIC_NAME`
+- `KAFKA_DLQ_TOPIC_NAME`
 - `KAFKA_CONSUMER_GROUP_ID`
 - `FRAUD_RULES_CONFIG_PATH`
 - `DB_POOL_MIN_SIZE`
@@ -207,6 +208,11 @@ Main environment variables (see [.env.example](.env.example)):
 - `WORKER_METRICS_PORT`
 
 Do not commit real credentials.
+
+Dead-letter behavior:
+
+- Worker processing failures are published to `KAFKA_DLQ_TOPIC_NAME` as JSON payloads containing source topic/partition/offset and error details.
+- The worker commits the source offset only after successful DLQ publication to prevent poison-message retry loops.
 
 ## Kubernetes and gateway
 

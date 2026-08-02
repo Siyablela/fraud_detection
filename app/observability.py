@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+import structlog
 
 _request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
 
@@ -48,6 +49,17 @@ class RequestContextFilter(logging.Filter):
         return True
 
 
+class ServiceNameFilter(logging.Filter):
+    def __init__(self, service_name: str):
+        super().__init__()
+        self.service_name = service_name
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "service"):
+            record.service = self.service_name
+        return True
+
+
 class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: FastAPI, service_name: str):
         super().__init__(app)
@@ -56,6 +68,7 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("x-request-id") or str(uuid4())
         token = _request_id_context.set(request_id)
+        structlog.contextvars.bind_contextvars(request_id=request_id)
         start_time = time.perf_counter()
         status_code = 500
         route = request.url.path
@@ -80,6 +93,14 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
                 method=request.method,
                 route=route,
             ).observe(elapsed)
+            get_logger("fraud.http").info(
+                "http_request_completed",
+                method=request.method,
+                route=route,
+                status_code=status_code,
+                duration_ms=round(elapsed * 1000, 2),
+            )
+            structlog.contextvars.clear_contextvars()
             _request_id_context.reset(token)
 
 
@@ -89,25 +110,49 @@ def configure_logging(service_name: str, level: str = "INFO") -> None:
         return
 
     log_level = getattr(logging, level.upper(), logging.INFO)
-    formatter = logging.Formatter(
-        fmt="%(asctime)s %(levelname)s service=%(service)s request_id=%(request_id)s logger=%(name)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
-    )
+
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+    ]
 
     handler = logging.StreamHandler()
-    handler.setFormatter(formatter)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=shared_processors,
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+        )
+    )
     handler.addFilter(RequestContextFilter())
-
-    class ServiceNameFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            record.service = service_name
-            return True
-
-    handler.addFilter(ServiceNameFilter())
+    handler.addFilter(ServiceNameFilter(service_name))
 
     root_logger.handlers = [handler]
     root_logger.setLevel(log_level)
     root_logger._fraud_logging_configured = True
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            *shared_processors,
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    structlog.contextvars.bind_contextvars(service=service_name)
+
+
+def get_logger(name: str):
+    return structlog.get_logger(name)
 
 
 def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
@@ -132,8 +177,10 @@ def setup_tracing(service_name: str) -> None:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except Exception:
-        logging.getLogger(__name__).warning(
-            "Tracing is enabled through environment variables, but OpenTelemetry dependencies are missing."
+        get_logger(__name__).warning(
+            "tracing_dependencies_missing",
+            detail="Tracing is enabled through environment variables, but OpenTelemetry dependencies are missing.",
+            service_name=service_name,
         )
         return
 
