@@ -9,16 +9,9 @@ spec:
       containers:
         - name: kafka-init
           image: {{ .Values.kafka.image }}
-          command: ["/opt/kafka/bin/kafka-topics.sh"]   # <--- FIX: This is entrypoint in K8s
-          args:                                          # <--- FIX: This is command in K8s
-            - "--create"
-            - "--if-not-exists"
-            - "--bootstrap-server"
-            - "kafka:9092"
-            - "--partitions"
-            - "3"
-            - "--replication-factor"
-            - "1"
-            - "--topic"
-            - "transactions_topic"
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic {{ .Values.appConfig.kafkaTopicName }} ;
+              /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic {{ .Values.appConfig.kafkaDlqTopicName }}
 

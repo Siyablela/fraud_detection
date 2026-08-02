@@ -51,6 +51,12 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
+            - name: KAFKA_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaTopicName | quote }}
+            - name: KAFKA_DLQ_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaDlqTopicName | quote }}
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: {{ .Values.appConfig.kafkaConsumerGroupId | quote }}
             - name: KAFKA_SECURITY_PROTOCOL
               value: {{ .Values.kafkaSecurity.protocol | quote }}
             - name: KAFKA_SSL_TRUSTSTORE_PATH

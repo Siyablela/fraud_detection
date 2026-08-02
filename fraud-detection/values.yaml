@@ -96,6 +96,7 @@ certManager:
 
 appConfig:
   kafkaTopicName: transactions_topic
+  kafkaDlqTopicName: transactions_topic.dlq
   kafkaConsumerGroupId: fraud-worker-group
   dbPoolMinSize: 1
   dbPoolMaxSize: 10
