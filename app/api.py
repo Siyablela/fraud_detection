@@ -1,11 +1,16 @@
 from contextlib import asynccontextmanager
-import logging
 
 from fastapi import Depends, FastAPI, HTTPException
 from app.database import database_pool, get_transaction as find_transaction
 from app.database import get_transactions_by_category as find_by_category
 from app.database import ping_database
-from app.observability import apply_tracing, configure_logging, install_fastapi_observability, setup_tracing
+from app.observability import (
+    apply_tracing,
+    configure_logging,
+    get_logger,
+    install_fastapi_observability,
+    setup_tracing,
+)
 from app.security import require_scopes
 from app.settings import (
     JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ,
@@ -18,7 +23,7 @@ configure_logging(SERVICE_NAME, OBSERVABILITY_LOG_LEVEL)
 if OBSERVABILITY_ENABLE_TRACING:
     setup_tracing(SERVICE_NAME)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,10 +41,10 @@ apply_tracing(app)
 async def health():
     try:
         await ping_database(app.state.database)
-        logger.info("Health check passed")
+        logger.info("health_check_passed")
         return {"status": "ok"}
     except Exception:
-        logger.exception("Health check failed: database is unavailable")
+        logger.exception("health_check_failed", detail="database is unavailable")
         raise HTTPException(status_code=503, detail="Database is unavailable")
 
 @app.get("/api/v1/transactions/{transaction_id}")
@@ -47,10 +52,10 @@ async def get_transaction(
     transaction_id: str,
     _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ)),
 ):
-    logger.info("Fetching transaction %s", transaction_id)
+    logger.info("fetch_transaction", transaction_id=transaction_id)
     transaction = await find_transaction(app.state.database, transaction_id)
     if not transaction:
-        logger.warning("Transaction not found: %s", transaction_id)
+        logger.warning("transaction_not_found", transaction_id=transaction_id)
         raise HTTPException(status_code=404, detail="Transaction records not located.")
     return transaction
 
@@ -61,6 +66,6 @@ async def get_transactions_by_category(
     _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ)),
 ):
     limit = max(1, min(limit, 1000))
-    logger.info("Fetching category=%s limit=%s", category_name, limit)
+    logger.info("fetch_category_transactions", category_name=category_name, limit=limit)
     results = await find_by_category(app.state.database, category_name, limit)
     return {"category": category_name, "count": len(results), "data": results}

@@ -1,5 +1,4 @@
 import json
-import logging
 from contextlib import asynccontextmanager
 
 from aiokafka import AIOKafkaProducer
@@ -7,7 +6,13 @@ from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.kafka_security import kafka_client_security_kwargs
-from app.observability import apply_tracing, configure_logging, install_fastapi_observability, setup_tracing
+from app.observability import (
+    apply_tracing,
+    configure_logging,
+    get_logger,
+    install_fastapi_observability,
+    setup_tracing,
+)
 from app.rule import Transaction
 from app.security import require_scopes
 from app.settings import (
@@ -27,7 +32,7 @@ configure_logging(SERVICE_NAME, OBSERVABILITY_LOG_LEVEL)
 if OBSERVABILITY_ENABLE_TRACING:
     setup_tracing(SERVICE_NAME)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -77,11 +82,12 @@ async def emit_transaction(
     )
 
     logger.info(
-        "Queued transaction_id=%s user_id=%s amount=%s category=%s",
-        transaction.transaction_id,
-        transaction.user_id,
-        transaction.amount,
-        transaction.category,
+        "transaction_queued",
+        transaction_id=transaction.transaction_id,
+        user_id=transaction.user_id,
+        amount=transaction.amount,
+        category=transaction.category,
+        topic=TOPIC_NAME,
     )
 
     return {
@@ -98,10 +104,10 @@ async def health(request: Request):
         producer = request.app.state.kafka_producer
         # If the client can fetch metadata, the connection to the broker is healthy.
         await producer.client.fetch_all_metadata()
-        logger.info("Health check passed")
+        logger.info("health_check_passed")
         return {"status": "ok"}
     except Exception:
-        logger.exception("Health check failed: kafka is unavailable")
+        logger.exception("health_check_failed", detail="kafka is unavailable")
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
             content={"status": "unavailable"}

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 from aiokafka import AIOKafkaConsumer
 from prometheus_client import start_http_server
 import redis.asyncio as aioredis
@@ -8,6 +7,7 @@ from app.database import create_pool, save_transaction
 from app.kafka_security import kafka_client_security_kwargs
 from app.observability import (
     configure_logging,
+    get_logger,
     setup_tracing,
     worker_fraud_decision,
     worker_message_outcome,
@@ -32,13 +32,13 @@ configure_logging(SERVICE_NAME, OBSERVABILITY_LOG_LEVEL)
 if OBSERVABILITY_ENABLE_TRACING:
     setup_tracing(SERVICE_NAME)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 async def main():
     # Initialize infrastructure connections
     database_engine, database = create_pool()
     start_http_server(WORKER_METRICS_PORT)
-    logger.info("Worker metrics endpoint listening on port %s", WORKER_METRICS_PORT)
+    logger.info("worker_metrics_started", port=WORKER_METRICS_PORT)
     
     # Redis remains in place *only* as a high-speed state store for velocity checks
     redis_conn = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -54,7 +54,7 @@ async def main():
     )
     
     await consumer.start()
-    logger.info("Fraud processing worker active topic=%s group_id=%s", TOPIC_NAME, CONSUMER_GROUP_ID)
+    logger.info("worker_started", topic=TOPIC_NAME, group_id=CONSUMER_GROUP_ID)
     
     try:
         # Loop over the consumer stream. It automatically waits/polls internally.
@@ -81,11 +81,11 @@ async def main():
                     await save_transaction(database, result)
 
                     logger.info(
-                        "Processed transaction_id=%s user_id=%s fraud=%s rules=%s",
-                        transaction.transaction_id,
-                        transaction.user_id,
-                        result["is_fraud"],
-                        ",".join(result["triggered_rules"]),
+                        "transaction_processed",
+                        transaction_id=transaction.transaction_id,
+                        user_id=transaction.user_id,
+                        is_fraud=result["is_fraud"],
+                        rules=result["triggered_rules"],
                     )
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
@@ -95,8 +95,8 @@ async def main():
                     # This prevents message loss if the pod crashes mid-execution.
                     await consumer.commit()
                 
-            except Exception as e:
-                logger.exception("Error processing transaction element: %s", e)
+            except Exception:
+                logger.exception("transaction_processing_error")
                 worker_message_outcome(SERVICE_NAME, TOPIC_NAME, "error")
                 # In production, route unparseable messages to a Kafka Dead-Letter Topic here.
                 # We skip manual offset commit here to allow investigation or processing retries.
@@ -104,7 +104,7 @@ async def main():
                 
     finally:
         # Clean shutdown of engine dependencies
-        logger.info("Shutting down worker clients")
+        logger.info("worker_shutdown")
         await consumer.stop()
         await redis_conn.aclose()
         await database_engine.dispose()
