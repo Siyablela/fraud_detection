@@ -39,6 +39,7 @@ apply_tracing(app)
 
 @app.get("/health")
 async def health():
+    # Health checks verify that the database pool is reachable before returning success.
     try:
         await ping_database(app.state.database)
         logger.info("health_check_passed")
@@ -52,6 +53,7 @@ async def get_transaction(
     transaction_id: str,
     _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ)),
 ):
+    # The scope dependency enforces read access before any lookup runs.
     logger.info("fetch_transaction", transaction_id=transaction_id)
     transaction = await find_transaction(app.state.database, transaction_id)
     if not transaction:
@@ -65,6 +67,7 @@ async def get_transactions_by_category(
     limit: int = 100,
     _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ)),
 ):
+    # Clamp the client-provided limit so the lookup stays bounded.
     limit = max(1, min(limit, 1000))
     logger.info("fetch_category_transactions", category_name=category_name, limit=limit)
     results = await find_by_category(app.state.database, category_name, limit)

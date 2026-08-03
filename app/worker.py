@@ -110,8 +110,7 @@ async def main():
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
                     worker_message_outcome(SERVICE_NAME, TOPIC_NAME, "success")
 
-                    # Commit offset only AFTER successful storage in PostgreSQL.
-                    # This prevents message loss if the pod crashes mid-execution.
+                    # Commit only after persistence succeeds so the broker can redeliver on crash.
                     await consumer.commit()
                 
             except Exception as exc:
@@ -125,6 +124,7 @@ async def main():
                 )
 
                 try:
+                    # Failures are preserved in the DLQ instead of being dropped or retried forever.
                     await dlq_producer.send_and_wait(
                         topic=DLQ_TOPIC_NAME,
                         key=msg.key,
@@ -137,7 +137,7 @@ async def main():
                         source_offset=msg.offset,
                         source_partition=msg.partition,
                     )
-                    # Commit after successful DLQ write to avoid poison message loops.
+                    # Only commit once the DLQ write completes successfully.
                     await consumer.commit()
                 except Exception:
                     logger.exception(
