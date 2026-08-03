@@ -7,6 +7,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/fraud_detection")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
+os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions_topic")
+os.environ.setdefault("KAFKA_CONSUMER_GROUP_ID", "fraud-worker-group")
+os.environ.setdefault("FRAUD_RULES_CONFIG_PATH", "tests/rules.json")
+os.environ.setdefault("JWT_ISSUER", "https://auth.example.com/")
+os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
+os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
+os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
+os.environ.setdefault("VELOCITY_WINDOW_SECONDS", "60")
+os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
+os.environ.setdefault("DEFAULT_VELOCITY_THRESHOLD", "5")
+os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
+
 from app.config import load_rules_config
 from app.rule import evaluate_transaction, Transaction
 
