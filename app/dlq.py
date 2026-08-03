@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 
+# DLQ payloads are kept small and explicit so failures can be replayed or inspected later.
 def build_dlq_payload(
     source_topic: str,
     source_partition: int,

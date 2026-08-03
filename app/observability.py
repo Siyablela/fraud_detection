@@ -66,6 +66,7 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
         self.service_name = service_name
 
     async def dispatch(self, request: Request, call_next):
+        # Generate a request id when the caller did not send one, then bind it to logs for this request.
         request_id = request.headers.get("x-request-id") or str(uuid4())
         token = _request_id_context.set(request_id)
         structlog.contextvars.bind_contextvars(request_id=request_id)
@@ -111,6 +112,7 @@ def configure_logging(service_name: str, level: str = "INFO") -> None:
 
     log_level = getattr(logging, level.upper(), logging.INFO)
 
+    # Keep the processor list shared between structlog and standard-library logging output.
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
