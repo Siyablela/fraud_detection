@@ -4,13 +4,13 @@ worker:
   replicaCount: 2
   image:
     repository: ghcr.io/siyablela/fraud_detection
-    tag: a7122c8806c9db01a44f02b02db5b009c6816f15
+    tag: efef3f0ce3d1403440bd912093455b520c93a879
     pullPolicy: IfNotPresent
 api:
   replicaCount: 2
   image:
     repository: ghcr.io/siyablela/fraud_detection
-    tag: a7122c8806c9db01a44f02b02db5b009c6816f15
+    tag: efef3f0ce3d1403440bd912093455b520c93a879
     pullPolicy: IfNotPresent
 security:
   jwtIssuer: https://auth.example.com/
@@ -28,7 +28,7 @@ producer:
   replicaCount: 2
   image:
     repository: ghcr.io/siyablela/fraud_detection
-    tag: a7122c8806c9db01a44f02b02db5b009c6816f15
+    tag: efef3f0ce3d1403440bd912093455b520c93a879
     pullPolicy: IfNotPresent
 resilience:
   enablePreferredAntiAffinity: true
