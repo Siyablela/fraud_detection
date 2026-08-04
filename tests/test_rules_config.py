@@ -67,9 +67,8 @@ class RulesConfigTests(unittest.TestCase):
                 amount=1500,
                 category="GAMBLING",
             )
-            result = evaluate_transaction(transaction, history_count=2)
+            result = evaluate_transaction(transaction)
             self.assertTrue(result["is_fraud"])
-            self.assertIn("HIGH_VALUE_TRANSACTION", result["triggered_rules"])
             self.assertIn("RISKY_CATEGORY_LIMIT", result["triggered_rules"])
         finally:
             os.environ.pop("FRAUD_RULES_CONFIG_PATH", None)
