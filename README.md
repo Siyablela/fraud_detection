@@ -98,7 +98,6 @@ Rules are loaded from [rules.json](rules.json) and can be overridden by environm
 
 Default rule flags:
 
-- `HIGH_VALUE_TRANSACTION`
 - `VELOCITY_LIMIT_EXCEEDED`
 - `RISKY_CATEGORY_LIMIT`
 
