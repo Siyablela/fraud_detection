@@ -13,7 +13,7 @@ class Transaction(BaseModel):
     timestamp: float = Field(default_factory=time.time)
 
 # Rules engine executing synchronous, high-speed checks
-def evaluate_transaction(transaction: Transaction, history_count: int) -> dict:
+def evaluate_transaction(transaction: Transaction) -> dict:
     flags = []
     config = _rules.get()
     
@@ -21,11 +21,7 @@ def evaluate_transaction(transaction: Transaction, history_count: int) -> dict:
     if transaction.amount > config.high_value_threshold:
         flags.append("HIGH_VALUE_TRANSACTION")
         
-    # Rule 2: Velocity check (Passed in from Redis tracking)
-    if history_count > config.velocity_threshold:
-        flags.append("VELOCITY_LIMIT_EXCEEDED")
-        
-    # Rule 3: Restricted Category Risk
+    # Rule 2: Restricted Category Risk
     category_limit = config.restricted_categories.get(transaction.category.upper())
     if category_limit is not None and transaction.amount > category_limit:
         flags.append("RISKY_CATEGORY_LIMIT")

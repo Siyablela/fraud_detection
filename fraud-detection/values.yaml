@@ -76,11 +76,6 @@ persistence:
     accessMode: ReadWriteOnce
     size: 20Gi
     storageClassName: ""
-  redis:
-    enabled: true
-    accessMode: ReadWriteOnce
-    size: 8Gi
-    storageClassName: ""
   kafka:
     enabled: true
     accessMode: ReadWriteOnce
@@ -118,8 +113,6 @@ instana:
 # Infrastructure Components (Third-Party Images)
 postgres:
   image: postgres:16-alpine
-redis:
-  image: redis:latest
 kafka:
   image: apache/kafka:latest
   durability:

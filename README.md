@@ -1,6 +1,6 @@
 # Fraud Detection
 
-Fraud Detection is an event-driven service built with FastAPI, Kafka, Redis, PostgreSQL, SQLAlchemy async, and Alembic.
+Fraud Detection is an event-driven service built with FastAPI, Kafka, PostgreSQL, SQLAlchemy async, and Alembic.
 
 It accepts transactions, evaluates configurable fraud rules, stores results in PostgreSQL, and exposes query endpoints for lookup.
 
@@ -48,7 +48,6 @@ Kafka
   |
   v
 Worker
-  |-- Redis velocity counter
   |-- Rules evaluation
   |-- PostgreSQL upsert
   v
@@ -103,7 +102,6 @@ Default rule flags:
 - `VELOCITY_LIMIT_EXCEEDED`
 - `RISKY_CATEGORY_LIMIT`
 
-Velocity tracking uses Redis with a configurable TTL window.
 
 ## Local development (Docker Compose)
 
@@ -183,7 +181,6 @@ docker exec fraud_api python -m alembic upgrade head
 Main environment variables (see [.env.example](.env.example)):
 
 - `DATABASE_URL`
-- `REDIS_URL`
 - `KAFKA_BOOTSTRAP_SERVERS`
 - `KAFKA_SECURITY_PROTOCOL`
 - `KAFKA_SSL_TRUSTSTORE_PATH`
@@ -199,7 +196,6 @@ Main environment variables (see [.env.example](.env.example)):
 - `FRAUD_RULES_CONFIG_PATH`
 - `DB_POOL_MIN_SIZE`
 - `DB_POOL_MAX_SIZE`
-- `VELOCITY_WINDOW_SECONDS`
 - `DEFAULT_HIGH_VALUE_THRESHOLD`
 - `DEFAULT_VELOCITY_THRESHOLD`
 - `DEFAULT_RESTRICTED_CATEGORIES`
