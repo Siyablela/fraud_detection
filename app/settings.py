@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,21 +17,6 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _required_env_float(name: str) -> float:
-    return float(_required_env(name))
-
-
-def _required_env_int(name: str) -> int:
-    return int(_required_env(name))
-
-
-def _required_env_json_object(name: str) -> dict[str, float]:
-    value = json.loads(_required_env(name))
-    if not isinstance(value, dict):
-        raise RuntimeError(f"Environment variable {name} must be a JSON object")
-    return {str(key).upper(): float(limit) for key, limit in value.items()}
-
-
 def _optional_env(name: str, default: str) -> str:
     value = os.getenv(name)
     if value is None or value == "":
@@ -38,60 +24,149 @@ def _optional_env(name: str, default: str) -> str:
     return value
 
 
-def _optional_env_int(name: str, default: int) -> int:
-    return int(_optional_env(name, str(default)))
+class Settings(BaseModel):
+    database_url: str = Field(..., alias="DATABASE_URL")
+    kafka_bootstrap_servers: str = Field(..., alias="KAFKA_BOOTSTRAP_SERVERS")
+    kafka_topic_name: str = Field(..., alias="KAFKA_TOPIC_NAME")
+    kafka_dlq_topic_name: str = Field(default="", alias="KAFKA_DLQ_TOPIC_NAME")
+    kafka_consumer_group_id: str = Field(..., alias="KAFKA_CONSUMER_GROUP_ID")
+    fraud_rules_config_path: str = Field(..., alias="FRAUD_RULES_CONFIG_PATH")
+
+    jwt_issuer: str = Field(..., alias="JWT_ISSUER")
+    jwt_audience: str = Field(..., alias="JWT_AUDIENCE")
+    jwt_jwks_url: str = Field(default="", alias="JWT_JWKS_URL")
+    jwt_public_key_path: str = Field(default="", alias="JWT_PUBLIC_KEY_PATH")
+    jwt_algorithms: list[str] = Field(default_factory=lambda: ["RS256"], alias="JWT_ALGORITHMS")
+    jwt_required_scope_for_transaction_read: str = Field(
+        default="fraud:transactions:read",
+        alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ",
+    )
+    jwt_required_scope_for_transaction_write: str = Field(
+        default="fraud:transactions:write",
+        alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE",
+    )
+
+    kafka_security_protocol: str = Field(default="PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
+    kafka_ssl_truststore_path: str = Field(default="", alias="KAFKA_SSL_TRUSTSTORE_PATH")
+    kafka_ssl_keystore_cert_path: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_CERT_PATH")
+    kafka_ssl_keystore_key_path: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_KEY_PATH")
+    kafka_ssl_keystore_password: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_PASSWORD")
+    kafka_producer_acks: str = Field(default="all", alias="KAFKA_PRODUCER_ACKS")
+    kafka_producer_enable_idempotence: bool = Field(default=True, alias="KAFKA_PRODUCER_ENABLE_IDEMPOTENCE")
+    kafka_producer_max_in_flight: int = Field(default=5, alias="KAFKA_PRODUCER_MAX_IN_FLIGHT")
+
+    db_pool_min_size: int = Field(..., alias="DB_POOL_MIN_SIZE")
+    db_pool_max_size: int = Field(..., alias="DB_POOL_MAX_SIZE")
+
+    default_high_value_threshold: float = Field(..., alias="DEFAULT_HIGH_VALUE_THRESHOLD")
+    default_velocity_threshold: int = Field(..., alias="DEFAULT_VELOCITY_THRESHOLD")
+    default_restricted_categories: dict[str, float] = Field(..., alias="DEFAULT_RESTRICTED_CATEGORIES")
+
+    observability_log_level: str = Field(default="INFO", alias="OBSERVABILITY_LOG_LEVEL")
+    observability_enable_tracing: bool = Field(default=False, alias="OBSERVABILITY_ENABLE_TRACING")
+    worker_metrics_port: int = Field(default=9100, alias="WORKER_METRICS_PORT")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("jwt_algorithms", mode="before")
+    @classmethod
+    def parse_jwt_algorithms(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [algorithm.strip() for algorithm in value.split(",") if algorithm.strip()]
+        return value
+
+    @field_validator("default_restricted_categories", mode="before")
+    @classmethod
+    def parse_restricted_categories(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {str(key).upper(): float(limit) for key, limit in value.items()}
+        if isinstance(value, str):
+            parsed_value = json.loads(value)
+            if not isinstance(parsed_value, dict):
+                raise ValueError("DEFAULT_RESTRICTED_CATEGORIES must be a JSON object")
+            return {str(key).upper(): float(limit) for key, limit in parsed_value.items()}
+        raise ValueError("DEFAULT_RESTRICTED_CATEGORIES must be a JSON object")
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        data = {
+            "database_url": _required_env("DATABASE_URL"),
+            "kafka_bootstrap_servers": _required_env("KAFKA_BOOTSTRAP_SERVERS"),
+            "kafka_topic_name": _required_env("KAFKA_TOPIC_NAME"),
+            "kafka_dlq_topic_name": _optional_env("KAFKA_DLQ_TOPIC_NAME", ""),
+            "kafka_consumer_group_id": _required_env("KAFKA_CONSUMER_GROUP_ID"),
+            "fraud_rules_config_path": _required_env("FRAUD_RULES_CONFIG_PATH"),
+            "jwt_issuer": _required_env("JWT_ISSUER"),
+            "jwt_audience": _required_env("JWT_AUDIENCE"),
+            "jwt_jwks_url": _optional_env("JWT_JWKS_URL", ""),
+            "jwt_public_key_path": _optional_env("JWT_PUBLIC_KEY_PATH", ""),
+            "jwt_algorithms": _optional_env("JWT_ALGORITHMS", "RS256"),
+            "jwt_required_scope_for_transaction_read": _optional_env(
+                "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
+            ),
+            "jwt_required_scope_for_transaction_write": _optional_env(
+                "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE", "fraud:transactions:write"
+            ),
+            "kafka_security_protocol": _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+            "kafka_ssl_truststore_path": _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", ""),
+            "kafka_ssl_keystore_cert_path": _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", ""),
+            "kafka_ssl_keystore_key_path": _optional_env("KAFKA_SSL_KEYSTORE_KEY_PATH", ""),
+            "kafka_ssl_keystore_password": _optional_env("KAFKA_SSL_KEYSTORE_PASSWORD", ""),
+            "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
+            "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
+            "kafka_producer_max_in_flight": _optional_env("KAFKA_PRODUCER_MAX_IN_FLIGHT", "5"),
+            "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
+            "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),
+            "default_high_value_threshold": _required_env("DEFAULT_HIGH_VALUE_THRESHOLD"),
+            "default_velocity_threshold": _required_env("DEFAULT_VELOCITY_THRESHOLD"),
+            "default_restricted_categories": _required_env("DEFAULT_RESTRICTED_CATEGORIES"),
+            "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
+            "observability_enable_tracing": _optional_env("OBSERVABILITY_ENABLE_TRACING", "False"),
+            "worker_metrics_port": _optional_env("WORKER_METRICS_PORT", "9100"),
+        }
+        try:
+            return cls.model_validate(data)
+        except ValidationError as exc:
+            raise RuntimeError(str(exc)) from exc
 
 
-def _optional_env_bool(name: str, default: bool) -> bool:
-    value = _optional_env(name, str(default)).strip().lower()
-    return value in {"1", "true", "yes", "on"}
+settings = Settings.from_env()
 
+DATABASE_URL = settings.database_url
+KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
+KAFKA_TOPIC_NAME = settings.kafka_topic_name
+KAFKA_DLQ_TOPIC_NAME = settings.kafka_dlq_topic_name
+KAFKA_CONSUMER_GROUP_ID = settings.kafka_consumer_group_id
+FRAUD_RULES_CONFIG_PATH = settings.fraud_rules_config_path
 
-DATABASE_URL = _required_env("DATABASE_URL")
-REDIS_URL = _required_env("REDIS_URL")
-KAFKA_BOOTSTRAP_SERVERS = _required_env("KAFKA_BOOTSTRAP_SERVERS")
-KAFKA_TOPIC_NAME = _required_env("KAFKA_TOPIC_NAME")
-KAFKA_DLQ_TOPIC_NAME = _optional_env("KAFKA_DLQ_TOPIC_NAME", f"{KAFKA_TOPIC_NAME}.dlq")
-KAFKA_CONSUMER_GROUP_ID = _required_env("KAFKA_CONSUMER_GROUP_ID")
-FRAUD_RULES_CONFIG_PATH = _required_env("FRAUD_RULES_CONFIG_PATH")
+JWT_ISSUER = settings.jwt_issuer
+JWT_AUDIENCE = settings.jwt_audience
+JWT_JWKS_URL = settings.jwt_jwks_url
+JWT_PUBLIC_KEY_PATH = settings.jwt_public_key_path
+JWT_ALGORITHMS = settings.jwt_algorithms
+JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ = settings.jwt_required_scope_for_transaction_read
+JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE = settings.jwt_required_scope_for_transaction_write
 
-JWT_ISSUER = _required_env("JWT_ISSUER")
-JWT_AUDIENCE = _required_env("JWT_AUDIENCE")
-JWT_JWKS_URL = _optional_env("JWT_JWKS_URL", "")
-JWT_PUBLIC_KEY_PATH = _optional_env("JWT_PUBLIC_KEY_PATH", "")
-JWT_ALGORITHMS = [
-    algorithm.strip()
-    for algorithm in _optional_env("JWT_ALGORITHMS", "RS256").split(",")
-    if algorithm.strip()
-]
-JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ = _optional_env(
-    "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
-)
-JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE = _optional_env(
-    "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE", "fraud:transactions:write"
-)
+KAFKA_SECURITY_PROTOCOL = settings.kafka_security_protocol
+KAFKA_SSL_TRUSTSTORE_PATH = settings.kafka_ssl_truststore_path
+KAFKA_SSL_KEYSTORE_CERT_PATH = settings.kafka_ssl_keystore_cert_path
+KAFKA_SSL_KEYSTORE_KEY_PATH = settings.kafka_ssl_keystore_key_path
+KAFKA_SSL_KEYSTORE_PASSWORD = settings.kafka_ssl_keystore_password
+KAFKA_PRODUCER_ACKS = settings.kafka_producer_acks
+KAFKA_PRODUCER_ENABLE_IDEMPOTENCE = settings.kafka_producer_enable_idempotence
+KAFKA_PRODUCER_MAX_IN_FLIGHT = settings.kafka_producer_max_in_flight
 
-KAFKA_SECURITY_PROTOCOL = _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
-KAFKA_SSL_TRUSTSTORE_PATH = _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", "")
-KAFKA_SSL_KEYSTORE_CERT_PATH = _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", "")
-KAFKA_SSL_KEYSTORE_KEY_PATH = _optional_env("KAFKA_SSL_KEYSTORE_KEY_PATH", "")
-KAFKA_SSL_KEYSTORE_PASSWORD = _optional_env("KAFKA_SSL_KEYSTORE_PASSWORD", "")
-KAFKA_PRODUCER_ACKS = _optional_env("KAFKA_PRODUCER_ACKS", "all")
-KAFKA_PRODUCER_ENABLE_IDEMPOTENCE = _optional_env_bool(
-    "KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", True
-)
-KAFKA_PRODUCER_MAX_IN_FLIGHT = _optional_env_int("KAFKA_PRODUCER_MAX_IN_FLIGHT", 5)
+DB_POOL_MIN_SIZE = settings.db_pool_min_size
+DB_POOL_MAX_SIZE = settings.db_pool_max_size
 
-DB_POOL_MIN_SIZE = _required_env_int("DB_POOL_MIN_SIZE")
-DB_POOL_MAX_SIZE = _required_env_int("DB_POOL_MAX_SIZE")
-VELOCITY_WINDOW_SECONDS = _required_env_int("VELOCITY_WINDOW_SECONDS")
+DEFAULT_HIGH_VALUE_THRESHOLD = settings.default_high_value_threshold
+DEFAULT_VELOCITY_THRESHOLD = settings.default_velocity_threshold
+DEFAULT_RESTRICTED_CATEGORIES = settings.default_restricted_categories
 
-DEFAULT_HIGH_VALUE_THRESHOLD = _required_env_float("DEFAULT_HIGH_VALUE_THRESHOLD")
-DEFAULT_VELOCITY_THRESHOLD = _required_env_int("DEFAULT_VELOCITY_THRESHOLD")
-DEFAULT_RESTRICTED_CATEGORIES = _required_env_json_object(
-    "DEFAULT_RESTRICTED_CATEGORIES"
-)
-
-OBSERVABILITY_LOG_LEVEL = _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO")
-OBSERVABILITY_ENABLE_TRACING = _optional_env_bool("OBSERVABILITY_ENABLE_TRACING", False)
-WORKER_METRICS_PORT = _optional_env_int("WORKER_METRICS_PORT", 9100)
+OBSERVABILITY_LOG_LEVEL = settings.observability_log_level
+OBSERVABILITY_ENABLE_TRACING = settings.observability_enable_tracing
+WORKER_METRICS_PORT = settings.worker_metrics_port

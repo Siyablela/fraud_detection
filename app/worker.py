@@ -2,7 +2,6 @@ import asyncio
 import json
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from prometheus_client import start_http_server
-import redis.asyncio as aioredis
 from app.database import create_pool, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import kafka_client_security_kwargs
@@ -25,8 +24,6 @@ from app.settings import (
     KAFKA_TOPIC_NAME,
     OBSERVABILITY_ENABLE_TRACING,
     OBSERVABILITY_LOG_LEVEL,
-    REDIS_URL,
-    VELOCITY_WINDOW_SECONDS,
     WORKER_METRICS_PORT,
 )
 
@@ -45,9 +42,6 @@ async def main():
     database_engine, database = create_pool()
     start_http_server(WORKER_METRICS_PORT)
     logger.info("worker_metrics_started", port=WORKER_METRICS_PORT)
-    
-    # Redis remains in place *only* as a high-speed state store for velocity checks
-    redis_conn = aioredis.from_url(REDIS_URL, decode_responses=True)
     
     # Configure the asynchronous Kafka consumer
     consumer = AIOKafkaConsumer(
@@ -87,25 +81,7 @@ async def main():
                     # Validate input structure using Pydantic
                     transaction = Transaction(**event_data)
 
-                    # Velocity calculations stay in Redis for microsecond performance
-                    velocity_key = f"velocity:{transaction.user_id}"
-                    current_velocity = await redis_conn.incr(velocity_key)
-                    if current_velocity == 1:
-                        await redis_conn.expire(velocity_key, VELOCITY_WINDOW_SECONDS)
-
-                    # Execute fraud logic
-                    result = evaluate_transaction(transaction, current_velocity)
-
-                    # Write to persistent database storage
-                    await save_transaction(database, result)
-
-                    logger.info(
-                        "transaction_processed",
-                        transaction_id=transaction.transaction_id,
-                        user_id=transaction.user_id,
-                        is_fraud=result["is_fraud"],
-                        rules=result["triggered_rules"],
-                    )
+                    result = evaluate_transaction(transaction)
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
                     worker_message_outcome(SERVICE_NAME, TOPIC_NAME, "success")
@@ -154,7 +130,6 @@ async def main():
         logger.info("worker_shutdown")
         await consumer.stop()
         await dlq_producer.stop()
-        await redis_conn.aclose()
         await database_engine.dispose()
 
 if __name__ == "__main__":

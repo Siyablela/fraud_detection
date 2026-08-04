@@ -27,7 +27,7 @@ Production notes:
 1. Replace `IMAGE_TAG` with a commit SHA or immutable image tag.
 2. Keep application secrets out of Helm values and provision them externally as Kubernetes Secrets before Helm deploys.
 3. Configure `kong.ingress.hosts`, TLS, and ingress annotations in `values-prod.yaml` for your cluster and domain.
-4. Keep `api`, `producer`, and `redis` internal; expose traffic through Kong ingress only.
+4. Keep `api` and `producer` internal; expose traffic through Kong ingress only.
 
 ## CI to Argo CD release flow
 

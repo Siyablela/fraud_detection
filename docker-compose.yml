@@ -17,19 +17,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  redis:
-    image: redis:latest
-    container_name: fraud_cache_broker
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
-    command: >
-      redis-server
-      --appendonly yes
-      --requirepass ${REDIS_PASSWORD}
-    volumes:
-      - redis_data:/data
-
   kafka:
     image: apache/kafka:latest
     container_name: fraud_kafka_broker
@@ -77,12 +64,10 @@ services:
       KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME}
       KAFKA_DLQ_TOPIC_NAME: ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
       KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
-      REDIS_URL: ${REDIS_URL}
       DATABASE_URL: ${DATABASE_URL}
       FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
       DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
       DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
-      VELOCITY_WINDOW_SECONDS: ${VELOCITY_WINDOW_SECONDS}
       DEFAULT_HIGH_VALUE_THRESHOLD: ${DEFAULT_HIGH_VALUE_THRESHOLD}
       DEFAULT_VELOCITY_THRESHOLD: ${DEFAULT_VELOCITY_THRESHOLD}
       DEFAULT_RESTRICTED_CATEGORIES: ${DEFAULT_RESTRICTED_CATEGORIES}
@@ -106,8 +91,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
       kafka-init:
         condition: service_completed_successfully
 
@@ -119,7 +102,6 @@ services:
       - 8.8.8.8
     command: uvicorn app.api:app --host 0.0.0.0 --port 8000
     environment:
-      REDIS_URL: ${REDIS_URL}
       DATABASE_URL: ${DATABASE_URL}
       FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
       DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
@@ -146,8 +128,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
 
   producer:
     build: .
@@ -207,4 +187,3 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
