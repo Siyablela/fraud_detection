@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from math import ceil
 
 from fastapi import Depends, FastAPI, HTTPException
 from app.database import database_pool, get_transaction as find_transaction
@@ -64,11 +65,37 @@ async def get_transaction(
 @app.get("/api/v1/categories/{category_name}")
 async def get_transactions_by_category(
     category_name: str,
-    limit: int = 100,
+    page: int = 1,
+    page_size: int = 100,
     _principal=Depends(require_scopes(JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ)),
 ):
-    # Clamp the client-provided limit so the lookup stays bounded.
-    limit = max(1, min(limit, 1000))
-    logger.info("fetch_category_transactions", category_name=category_name, limit=limit)
-    results = await find_by_category(app.state.database, category_name, limit)
-    return {"category": category_name, "count": len(results), "data": results}
+    page = max(1, page)
+    page_size = max(1, min(page_size, 1000))
+    offset = (page - 1) * page_size
+    logger.info(
+        "fetch_category_transactions",
+        category_name=category_name,
+        page=page,
+        page_size=page_size,
+    )
+    results, total_count = await find_by_category(
+        app.state.database,
+        category_name,
+        offset,
+        page_size,
+    )
+    total_pages = ceil(total_count / page_size) if total_count else 0
+    has_more = offset + len(results) < total_count
+    return {
+        "category": category_name,
+        "page": page,
+        "page_size": page_size,
+        "count": len(results),
+        "total_count": total_count,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_more": has_more,
+        "previous_page": page - 1 if page > 1 else None,
+        "next_page": page + 1 if has_more else None,
+        "data": results,
+    }

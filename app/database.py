@@ -36,6 +36,23 @@ class TransactionRecord(Base):
 
 
 def create_pool() -> tuple[Any, async_sessionmaker[AsyncSession]]:
+    """Create the application's asynchronous database engine and session factory.
+
+    Configures a SQLAlchemy asynchronous engine using the configured database
+    URL and connection pool settings. The engine maintains a pool of reusable
+    database connections, performs connection health checks before each use,
+    and supports temporary overflow connections during periods of increased
+    demand.
+
+    An ``async_sessionmaker`` is also created to provide ``AsyncSession``
+    instances for interacting with the database.
+
+    Returns:
+        tuple[Any, async_sessionmaker[AsyncSession]]:
+            A tuple containing the configured SQLAlchemy async engine and an
+            ``async_sessionmaker`` configured with ``expire_on_commit=False``.
+    """
+
     engine = create_async_engine(
         _as_async_sqlalchemy_url(DATABASE_URL),
         pool_size=DB_POOL_MIN_SIZE,
@@ -48,6 +65,22 @@ def create_pool() -> tuple[Any, async_sessionmaker[AsyncSession]]:
 
 @asynccontextmanager
 async def database_pool():
+    """Provide a managed asynchronous database session factory.
+
+    Creates a SQLAlchemy async engine and session factory, yields the
+    session factory to the caller, and ensures that the engine and all
+    pooled database connections are cleanly disposed of when the context
+    exits.
+
+    This context manager is intended to be used during application
+    startup and shutdown to manage the lifecycle of the database
+    connection pool.
+
+    Yields:
+        async_sessionmaker[AsyncSession]: A session factory for creating
+            ``AsyncSession`` instances.
+
+    """
     engine, session_factory = create_pool()
     try:
         yield session_factory
@@ -56,6 +89,20 @@ async def database_pool():
 
 
 async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """Verify database connectivity.
+
+    Executes a lightweight query against the database to confirm that a
+    connection can be established and SQL statements can be executed
+    successfully.
+
+    Args:
+        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
+            an ``AsyncSession``.
+
+    Raises:
+        sqlalchemy.exc.SQLAlchemyError: If a connection cannot be established
+            or the query execution fails.
+    """
     async with session_factory() as session:
         await session.execute(text("SELECT 1"))
 
@@ -63,6 +110,25 @@ async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> No
 async def save_transaction(
     session_factory: async_sessionmaker[AsyncSession], result: dict[str, Any]
 ) -> None:
+    """Insert or update a transaction record in the database.
+
+    Persists the supplied transaction by performing an upsert based on the
+    transaction identifier. If a record with the same ``transaction_id``
+    already exists, its fields are updated with the latest values;
+    otherwise, a new record is inserted.
+
+    Args:
+        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
+            an ``AsyncSession``.
+        result: A dictionary containing the transaction details. Expected
+            keys are ``transaction_id``, ``user_id``, ``amount``,
+            ``category``, ``timestamp``, ``is_fraud``, and
+            ``triggered_rules``.
+
+    Raises:
+        sqlalchemy.exc.SQLAlchemyError: If the database operation or commit
+            fails.
+    """
     stmt = insert(TransactionRecord).values(
         transaction_id=result["transaction_id"],
         user_id=result["user_id"],
@@ -92,6 +158,18 @@ async def save_transaction(
 async def get_transaction(
     session_factory: async_sessionmaker[AsyncSession], transaction_id: str
 ) -> dict[str, Any] | None:
+    """
+    Retrieve a transaction record by its identifier.
+
+    Args:
+        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
+            an ``AsyncSession``.
+        transaction_id: The unique identifier of the transaction to retrieve.
+
+    Returns:
+        dict[str, Any] | None: A dictionary containing the transaction details
+        if found, otherwise ``None``.
+    """
     async with session_factory() as session:
         row = await session.scalar(
             select(TransactionRecord).where(
@@ -102,17 +180,39 @@ async def get_transaction(
 
 
 async def get_transactions_by_category(
-    session_factory: async_sessionmaker[AsyncSession], category: str, limit: int
-) -> list[dict[str, Any]]:
+    session_factory: async_sessionmaker[AsyncSession],
+    category: str,
+    offset: int,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Retrieve a paginated list of transaction records filtered by category.
+
+    Args:
+        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
+            an ``AsyncSession``.
+        category: The category to filter transactions by.
+        offset: The number of rows to skip.
+        limit: The maximum number of records to retrieve.
+
+    Returns:
+        tuple[list[dict[str, Any]], int]: A tuple containing the page of
+        transaction details and the total number of matching rows.
+    """
     async with session_factory() as session:
+        base_query = select(TransactionRecord).where(
+            func.lower(TransactionRecord.category) == func.lower(category)
+        )
+        total_count = await session.scalar(
+            select(func.count()).select_from(base_query.subquery())
+        )
         rows = await session.scalars(
-            select(TransactionRecord)
-            .where(func.lower(TransactionRecord.category) == func.lower(category))
-            .order_by(TransactionRecord.created_at.desc())
+            base_query.order_by(TransactionRecord.created_at.desc())
+            .offset(offset)
             .limit(limit)
         )
         records = rows.all()
-    return [_row_to_result(row) for row in records]
+    return [_row_to_result(row) for row in records], int(total_count or 0)
 
 
 def _row_to_result(row: TransactionRecord) -> dict[str, Any]:

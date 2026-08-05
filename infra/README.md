@@ -16,7 +16,6 @@ Use the production values file when deploying to a cluster:
 ```powershell
 helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml --namespace fraud-detection --create-namespace
 kubectl -n fraud-detection rollout status deployment/fraud-api
-kubectl -n fraud-detection rollout status deployment/fraud-producer
 kubectl -n fraud-detection rollout status deployment/fraud-worker
 kubectl -n fraud-detection rollout status deployment/kong
 kubectl -n fraud-detection get ingress
@@ -27,7 +26,7 @@ Production notes:
 1. Replace `IMAGE_TAG` with a commit SHA or immutable image tag.
 2. Keep application secrets out of Helm values and provision them externally as Kubernetes Secrets before Helm deploys.
 3. Configure `kong.ingress.hosts`, TLS, and ingress annotations in `values-prod.yaml` for your cluster and domain.
-4. Keep `api` and `producer` internal; expose traffic through Kong ingress only.
+4. Keep `api` and `worker` internal; expose traffic through Kong ingress only.
 
 ## CI to Argo CD release flow
 
