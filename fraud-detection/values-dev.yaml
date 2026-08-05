@@ -15,8 +15,6 @@ api:
     tag: dev
     pullPolicy: Never
 
-producer:
-  replicaCount: 1
   image:
     repository: fraud-detection
     tag: dev

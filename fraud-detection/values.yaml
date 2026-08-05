@@ -34,12 +34,49 @@ kafkaSecurity:
   keystoreCertPath: .secrets/kafka-client.crt
   keystoreKeyPath: .secrets/kafka-client.key
 
-producer:
-  replicaCount: 1
-  image:
-    repository: fraud-producer
-    tag: latest
-    pullPolicy: IfNotPresent
+
+resilience:
+  enablePreferredAntiAffinity: true
+  topologyKey: kubernetes.io/hostname
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  autoscaling:
+    enabled: false
+    api:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    worker:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    kong:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+
+persistence:
+  postgres:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 20Gi
+    storageClassName: ""
+  kafka:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 30Gi
+    storageClassName: ""
+
+certManager:
+  enabled: false
+  issuerKind: ClusterIssuer
+  issuerName: ""
+  ingressHost: fraud-api.example.com
+  secretName: fraud-api-tls
 
 resilience:
   enablePreferredAntiAffinity: true
@@ -189,21 +226,6 @@ kongConfig: |
               config:
                 minute: 120
                 policy: local
-    - name: fraud-producer-api
-      url: http://producer:8001
-      routes:
-        - name: ingest-transactions
-          paths:
-            - /api/v1/transactions
-          methods:
-            - POST
-          strip_path: false
-          plugins:
-            - name: rate-limiting
-              config:
-                minute: 120
-                policy: local
-
   plugins:
     - name: correlation-id
       config:
