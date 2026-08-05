@@ -24,12 +24,7 @@ kafkaSecurity:
   truststorePath: /etc/kafka/tls/kafka-ca.pem
   keystoreCertPath: /etc/kafka/tls/kafka-client.crt
   keystoreKeyPath: /etc/kafka/tls/kafka-client.key
-producer:
-  replicaCount: 2
-  image:
-    repository: ghcr.io/siyablela/fraud_detection
-    tag: 3d97e0731347c9e182c2a54c03134a6bfba65b46
-    pullPolicy: IfNotPresent
+
 resilience:
   enablePreferredAntiAffinity: true
   topologyKey: kubernetes.io/hostname
@@ -39,11 +34,6 @@ resilience:
   autoscaling:
     enabled: true
     api:
-      minReplicas: 2
-      maxReplicas: 8
-      targetCPUUtilizationPercentage: 70
-      targetMemoryUtilizationPercentage: 80
-    producer:
       minReplicas: 2
       maxReplicas: 8
       targetCPUUtilizationPercentage: 70

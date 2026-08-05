@@ -12,16 +12,6 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: fraud-producer-pdb
-spec:
-  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
-  selector:
-    matchLabels:
-      app: fraud-producer
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
   name: fraud-worker-pdb
 spec:
   minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
@@ -66,31 +56,6 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.resilience.autoscaling.api.targetMemoryUtilizationPercentage }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: fraud-producer-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: fraud-producer
-  minReplicas: {{ .Values.resilience.autoscaling.producer.minReplicas }}
-  maxReplicas: {{ .Values.resilience.autoscaling.producer.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.producer.targetCPUUtilizationPercentage }}
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.producer.targetMemoryUtilizationPercentage }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
