@@ -26,9 +26,6 @@ Expected behavior:
 - Missing or invalid token -> `401 Unauthorized`
 - Valid token without required scope -> `403 Forbidden`
 
-Producer endpoints should use a write scope such as:
-
-- `fraud:transactions:write`
 
 ## Kafka stream security
 

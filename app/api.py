@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-import logging
 from math import ceil
 
 from fastapi import Depends, FastAPI, HTTPException
