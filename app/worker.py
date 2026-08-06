@@ -20,7 +20,6 @@ from app.settings import (
     KAFKA_DLQ_TOPIC_NAME,
     KAFKA_PRODUCER_ACKS,
     KAFKA_PRODUCER_ENABLE_IDEMPOTENCE,
-    KAFKA_PRODUCER_MAX_IN_FLIGHT,
     KAFKA_TOPIC_NAME,
     OBSERVABILITY_ENABLE_TRACING,
     OBSERVABILITY_LOG_LEVEL,
@@ -56,7 +55,6 @@ async def main():
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         acks=KAFKA_PRODUCER_ACKS,
         enable_idempotence=KAFKA_PRODUCER_ENABLE_IDEMPOTENCE,
-        max_in_flight_requests_per_connection=KAFKA_PRODUCER_MAX_IN_FLIGHT,
         **kafka_client_security_kwargs(),
     )
     
@@ -82,6 +80,7 @@ async def main():
                     transaction = Transaction(**event_data)
 
                     result = evaluate_transaction(transaction)
+                    await save_transaction(database, result)
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
                     worker_message_outcome(SERVICE_NAME, TOPIC_NAME, "success")

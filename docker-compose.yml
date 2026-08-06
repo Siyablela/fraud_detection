@@ -47,10 +47,12 @@ services:
       - 8.8.8.8
     depends_on:
       - kafka
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_TOPIC_NAME} ;
-      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_TOPIC_NAME}
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_DLQ_TOPIC_NAME:-transactions_topic.dlq}
 
   worker:
     build: .
@@ -75,7 +77,10 @@ services:
       OBSERVABILITY_ENABLE_TRACING: ${OBSERVABILITY_ENABLE_TRACING:-false}
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
     volumes:
-      - ./rules.json:/config/rules.json:ro
+      - type: bind
+        source: ./rules.json
+        target: /config/rules.json
+        read_only: true
     ports:
       - "9100:9100"
     healthcheck:
@@ -112,7 +117,10 @@ services:
       OBSERVABILITY_LOG_LEVEL: ${OBSERVABILITY_LOG_LEVEL:-INFO}
       OBSERVABILITY_ENABLE_TRACING: ${OBSERVABILITY_ENABLE_TRACING:-false}
     volumes:
-      - ./rules.json:/config/rules.json:ro
+      - type: bind
+        source: ./rules.json
+        target: /config/rules.json
+        read_only: true
     ports:
       - "8000:8000"
     healthcheck:

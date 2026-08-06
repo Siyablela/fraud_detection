@@ -1,6 +1,6 @@
 param(
     [int]$Tail = 80,
-    [string[]]$Services = @("postgres", "redis", "kafka", "api", "producer", "worker", "keycloak", "kafka-ui")
+    [string[]]$Services = @("postgres", "redis", "kafka", "api", "worker", "keycloak", "kafka-ui")
 )
 
 $ErrorActionPreference = "Stop"
@@ -94,7 +94,6 @@ function Show-QuickChecks {
 
     $checks = @(
         @{ Name = "API health"; Url = "http://127.0.0.1:8000/health" },
-        @{ Name = "Producer health"; Url = "http://127.0.0.1:8001/health" },
         @{ Name = "Keycloak"; Url = "http://127.0.0.1:8081" },
         @{ Name = "Kafka UI"; Url = "http://127.0.0.1:8080" }
     )
