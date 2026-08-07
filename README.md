@@ -4,6 +4,8 @@ Fraud Detection is an event-driven service built with FastAPI, Kafka, PostgreSQL
 
 It processes categorized transaction events from Kafka, evaluates configurable fraud rules, stores results in PostgreSQL, and exposes query endpoints for lookup.
 
+This repository is intentionally scoped as a small service, but it is built with production-minded practices: validated configuration, explicit auth, structured logging, metrics, DLQ handling, and deployable Compose and Helm manifests. The goal is to show disciplined engineering on a narrow problem, not to simulate a larger platform with placeholder features.
+
 ## Quick commands
 
 ```powershell
@@ -76,6 +78,7 @@ Rules are loaded from [rules.json](rules.json) and can be overridden by environm
 
 Default rule flags:
 
+- `HIGH_VALUE_THRESHOLD`
 - `RISKY_CATEGORY_LIMIT`
 
 
@@ -170,6 +173,7 @@ Main environment variables (see [.env.example](.env.example)):
 - `FRAUD_RULES_CONFIG_PATH`
 - `DB_POOL_MIN_SIZE`
 - `DB_POOL_MAX_SIZE`
+- `DEFAULT_HIGH_VALUE_THRESHOLD`
 - `DEFAULT_RESTRICTED_CATEGORIES`
 - `OBSERVABILITY_LOG_LEVEL`
 - `OBSERVABILITY_ENABLE_TRACING`
