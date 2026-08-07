@@ -28,10 +28,11 @@ class SettingsTests(unittest.TestCase):
         import app.settings as settings_module
 
         settings_module = importlib.reload(settings_module)
+        settings_module.clear_settings_cache()
 
-        self.assertEqual(settings_module.KAFKA_PRODUCER_ACKS, "all")
-        self.assertTrue(settings_module.KAFKA_PRODUCER_ENABLE_IDEMPOTENCE)
-        self.assertEqual(settings_module.KAFKA_PRODUCER_MAX_IN_FLIGHT, 5)
+        self.assertEqual(settings_module.get_settings().kafka_producer_acks, "all")
+        self.assertTrue(settings_module.get_settings().kafka_producer_enable_idempotence)
+        self.assertEqual(settings_module.get_settings().kafka_producer_max_in_flight, 5)
 
 
 if __name__ == "__main__":

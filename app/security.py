@@ -11,13 +11,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
-from app.settings import (
-    JWT_ALGORITHMS,
-    JWT_AUDIENCE,
-    JWT_ISSUER,
-    JWT_JWKS_URL,
-    JWT_PUBLIC_KEY_PATH,
-)
+from app.settings import get_settings
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -40,13 +34,14 @@ class _JwksTokenVerifier(_TokenVerifier):
         self._jwks_client = PyJWKClient(jwks_url)
 
     def decode(self, token: str) -> dict[str, Any]:
+        settings = get_settings()
         signing_key = self._jwks_client.get_signing_key_from_jwt(token)
         return jwt.decode(
             token,
             signing_key.key,
-            algorithms=JWT_ALGORITHMS,
-            audience=JWT_AUDIENCE,
-            issuer=JWT_ISSUER,
+            algorithms=settings.jwt_algorithms,
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
             options={"require": ["exp", "sub", "iss", "aud"]},
         )
 
@@ -56,22 +51,24 @@ class _PublicKeyTokenVerifier(_TokenVerifier):
         self._public_key = Path(public_key_path).read_text(encoding="utf-8")
 
     def decode(self, token: str) -> dict[str, Any]:
+        settings = get_settings()
         return jwt.decode(
             token,
             self._public_key,
-            algorithms=JWT_ALGORITHMS,
-            audience=JWT_AUDIENCE,
-            issuer=JWT_ISSUER,
+            algorithms=settings.jwt_algorithms,
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
             options={"require": ["exp", "sub", "iss", "aud"]},
         )
 
 
 @lru_cache(maxsize=1)
 def _get_token_verifier() -> _TokenVerifier:
-    if JWT_JWKS_URL:
-        return _JwksTokenVerifier(JWT_JWKS_URL)
-    if JWT_PUBLIC_KEY_PATH:
-        return _PublicKeyTokenVerifier(JWT_PUBLIC_KEY_PATH)
+    settings = get_settings()
+    if settings.jwt_jwks_url:
+        return _JwksTokenVerifier(settings.jwt_jwks_url)
+    if settings.jwt_public_key_path:
+        return _PublicKeyTokenVerifier(settings.jwt_public_key_path)
     raise RuntimeError(
         "JWT verification is not configured. Set JWT_JWKS_URL or JWT_PUBLIC_KEY_PATH."
     )

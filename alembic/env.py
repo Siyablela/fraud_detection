@@ -8,7 +8,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.database import Base
-from app.settings import DATABASE_URL
+from app.settings import get_settings
 
 
 config = context.config
@@ -25,7 +25,10 @@ def _as_async_sqlalchemy_url(url: str) -> str:
     return url
 
 
-config.set_main_option("sqlalchemy.url", _as_async_sqlalchemy_url(os.getenv("DATABASE_URL", DATABASE_URL)))
+config.set_main_option(
+    "sqlalchemy.url",
+    _as_async_sqlalchemy_url(os.getenv("DATABASE_URL", get_settings().database_url)),
+)
 target_metadata = Base.metadata
 
 

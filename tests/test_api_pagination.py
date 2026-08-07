@@ -1,6 +1,7 @@
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -31,9 +32,9 @@ class PaginationTests(unittest.TestCase):
             original = api.find_by_category
             api.find_by_category = fake_find_by_category
             try:
-                api.app.state.database = object()
+                request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(database=object())))
                 result = await api.get_transactions_by_category(
-                    "travel", page=2, page_size=10, _principal=None
+                    "travel", request=request, page=2, page_size=10, _principal=None
                 )
             finally:
                 api.find_by_category = original

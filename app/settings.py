@@ -1,5 +1,6 @@
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -134,39 +135,10 @@ class Settings(BaseModel):
             raise RuntimeError(str(exc)) from exc
 
 
-settings = Settings.from_env()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings.from_env()
 
-DATABASE_URL = settings.database_url
-KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
-KAFKA_TOPIC_NAME = settings.kafka_topic_name
-KAFKA_DLQ_TOPIC_NAME = settings.kafka_dlq_topic_name
-KAFKA_CONSUMER_GROUP_ID = settings.kafka_consumer_group_id
-FRAUD_RULES_CONFIG_PATH = settings.fraud_rules_config_path
 
-JWT_ISSUER = settings.jwt_issuer
-JWT_AUDIENCE = settings.jwt_audience
-JWT_JWKS_URL = settings.jwt_jwks_url
-JWT_PUBLIC_KEY_PATH = settings.jwt_public_key_path
-JWT_ALGORITHMS = settings.jwt_algorithms
-JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ = settings.jwt_required_scope_for_transaction_read
-JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE = settings.jwt_required_scope_for_transaction_write
-
-KAFKA_SECURITY_PROTOCOL = settings.kafka_security_protocol
-KAFKA_SSL_TRUSTSTORE_PATH = settings.kafka_ssl_truststore_path
-KAFKA_SSL_KEYSTORE_CERT_PATH = settings.kafka_ssl_keystore_cert_path
-KAFKA_SSL_KEYSTORE_KEY_PATH = settings.kafka_ssl_keystore_key_path
-KAFKA_SSL_KEYSTORE_PASSWORD = settings.kafka_ssl_keystore_password
-KAFKA_PRODUCER_ACKS = settings.kafka_producer_acks
-KAFKA_PRODUCER_ENABLE_IDEMPOTENCE = settings.kafka_producer_enable_idempotence
-KAFKA_PRODUCER_MAX_IN_FLIGHT = settings.kafka_producer_max_in_flight
-
-DB_POOL_MIN_SIZE = settings.db_pool_min_size
-DB_POOL_MAX_SIZE = settings.db_pool_max_size
-
-DEFAULT_HIGH_VALUE_THRESHOLD = settings.default_high_value_threshold
-DEFAULT_VELOCITY_THRESHOLD = settings.default_velocity_threshold
-DEFAULT_RESTRICTED_CATEGORIES = settings.default_restricted_categories
-
-OBSERVABILITY_LOG_LEVEL = settings.observability_log_level
-OBSERVABILITY_ENABLE_TRACING = settings.observability_enable_tracing
-WORKER_METRICS_PORT = settings.worker_metrics_port
+def clear_settings_cache() -> None:
+    get_settings.cache_clear()
