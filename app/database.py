@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.settings import DATABASE_URL, DB_POOL_MAX_SIZE, DB_POOL_MIN_SIZE
+from app.settings import get_settings
 
 def _as_async_sqlalchemy_url(url: str) -> str:
     if url.startswith("postgresql+asyncpg://"):
@@ -53,10 +53,11 @@ def create_pool() -> tuple[Any, async_sessionmaker[AsyncSession]]:
             ``async_sessionmaker`` configured with ``expire_on_commit=False``.
     """
 
+    settings = get_settings()
     engine = create_async_engine(
-        _as_async_sqlalchemy_url(DATABASE_URL),
-        pool_size=DB_POOL_MIN_SIZE,
-        max_overflow=max(DB_POOL_MAX_SIZE - DB_POOL_MIN_SIZE, 0),
+        _as_async_sqlalchemy_url(settings.database_url),
+        pool_size=settings.db_pool_min_size,
+        max_overflow=max(settings.db_pool_max_size - settings.db_pool_min_size, 0),
         pool_pre_ping=True,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -4,32 +4,27 @@ import ssl
 from functools import lru_cache
 from typing import Any
 
-from app.settings import (
-    KAFKA_SECURITY_PROTOCOL,
-    KAFKA_SSL_KEYSTORE_CERT_PATH,
-    KAFKA_SSL_KEYSTORE_KEY_PATH,
-    KAFKA_SSL_KEYSTORE_PASSWORD,
-    KAFKA_SSL_TRUSTSTORE_PATH,
-)
+from app.settings import get_settings
 
 
 @lru_cache(maxsize=1)
 def build_kafka_ssl_context() -> ssl.SSLContext:
-    if KAFKA_SECURITY_PROTOCOL.upper() != "SSL":
+    settings = get_settings()
+    if settings.kafka_security_protocol.upper() != "SSL":
         raise RuntimeError("Kafka SSL context requested but KAFKA_SECURITY_PROTOCOL is not SSL.")
 
-    if not KAFKA_SSL_TRUSTSTORE_PATH:
+    if not settings.kafka_ssl_truststore_path:
         raise RuntimeError("KAFKA_SSL_TRUSTSTORE_PATH is required when Kafka SSL is enabled.")
-    if not KAFKA_SSL_KEYSTORE_CERT_PATH:
+    if not settings.kafka_ssl_keystore_cert_path:
         raise RuntimeError("KAFKA_SSL_KEYSTORE_CERT_PATH is required when Kafka SSL is enabled.")
-    if not KAFKA_SSL_KEYSTORE_KEY_PATH:
+    if not settings.kafka_ssl_keystore_key_path:
         raise RuntimeError("KAFKA_SSL_KEYSTORE_KEY_PATH is required when Kafka SSL is enabled.")
 
-    context = ssl.create_default_context(cafile=KAFKA_SSL_TRUSTSTORE_PATH)
+    context = ssl.create_default_context(cafile=settings.kafka_ssl_truststore_path)
     context.load_cert_chain(
-        certfile=KAFKA_SSL_KEYSTORE_CERT_PATH,
-        keyfile=KAFKA_SSL_KEYSTORE_KEY_PATH,
-        password=KAFKA_SSL_KEYSTORE_PASSWORD or None,
+        certfile=settings.kafka_ssl_keystore_cert_path,
+        keyfile=settings.kafka_ssl_keystore_key_path,
+        password=settings.kafka_ssl_keystore_password or None,
     )
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
@@ -37,7 +32,8 @@ def build_kafka_ssl_context() -> ssl.SSLContext:
 
 
 def kafka_client_security_kwargs() -> dict[str, Any]:
-    if KAFKA_SECURITY_PROTOCOL.upper() != "SSL":
+    settings = get_settings()
+    if settings.kafka_security_protocol.upper() != "SSL":
         return {"security_protocol": "PLAINTEXT"}
 
     return {

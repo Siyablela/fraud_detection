@@ -3,31 +3,32 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.settings import (
-	DEFAULT_HIGH_VALUE_THRESHOLD,
-	DEFAULT_RESTRICTED_CATEGORIES,
-	DEFAULT_VELOCITY_THRESHOLD,
-	FRAUD_RULES_CONFIG_PATH,
-)
+from app.settings import get_settings
 
 
 @dataclass(frozen=True)
 class RulesConfig:
-	high_value_threshold: float = DEFAULT_HIGH_VALUE_THRESHOLD
-	velocity_threshold: int = DEFAULT_VELOCITY_THRESHOLD
+	high_value_threshold: float | None = None
+	velocity_threshold: int | None = None
 	restricted_categories: dict[str, float] | None = None
 
 	def __post_init__(self):
+		settings = get_settings()
+		if self.high_value_threshold is None:
+			object.__setattr__(self, "high_value_threshold", settings.default_high_value_threshold)
+		if self.velocity_threshold is None:
+			object.__setattr__(self, "velocity_threshold", settings.default_velocity_threshold)
 		if self.restricted_categories is None:
 			object.__setattr__(
 				self,
 				"restricted_categories",
-				DEFAULT_RESTRICTED_CATEGORIES,
+				settings.default_restricted_categories,
 			)
 
 
 def load_rules_config(path: str | None = None) -> RulesConfig:
-	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH))
+	settings = get_settings()
+	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path))
 	if not config_path.exists():
 		return RulesConfig()
 
@@ -35,12 +36,12 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
 		values = json.load(config_file)
 
 	return RulesConfig(
-		high_value_threshold=float(values.get("high_value_threshold", DEFAULT_HIGH_VALUE_THRESHOLD)),
-		velocity_threshold=int(values.get("velocity_threshold", DEFAULT_VELOCITY_THRESHOLD)),
+		high_value_threshold=float(values.get("high_value_threshold", settings.default_high_value_threshold)),
+		velocity_threshold=int(values.get("velocity_threshold", settings.default_velocity_threshold)),
 		restricted_categories={
 			str(category).upper(): float(limit)
 			for category, limit in values.get(
-				"restricted_categories", DEFAULT_RESTRICTED_CATEGORIES
+				"restricted_categories", settings.default_restricted_categories
 			).items()
 		},
 	)
@@ -50,14 +51,16 @@ class RulesConfigProvider:
 	"""Reload rules when the mounted config file changes."""
 
 	def __init__(self, path: str | None = None):
+		settings = get_settings()
 		self._configured_path = path
-		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH))
+		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path))
 		self._modified_at = None
 		self._config = RulesConfig()
 
 	def get(self) -> RulesConfig:
+		settings = get_settings()
 		configured_path = self._configured_path or os.getenv(
-			"FRAUD_RULES_CONFIG_PATH", FRAUD_RULES_CONFIG_PATH
+			"FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path
 		)
 		if str(self.path) != configured_path:
 			self.path = Path(configured_path)

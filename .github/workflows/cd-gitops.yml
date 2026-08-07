@@ -79,7 +79,7 @@ jobs:
           image_repo = os.environ["IMAGE_REPO"]
           image_tag = os.environ["IMAGE_TAG"]
 
-          for component in ("worker", "api", "producer"):
+          for component in ("worker", "api"):
               values.setdefault(component, {}).setdefault("image", {})["repository"] = image_repo
               values[component]["image"]["tag"] = image_tag
 
