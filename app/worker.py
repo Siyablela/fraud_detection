@@ -1,6 +1,7 @@
 import asyncio
 import json
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from aiokafka.structs import TopicPartition
 from prometheus_client import start_http_server
 from app.database import create_pool, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
@@ -19,6 +20,10 @@ from app.settings import get_settings
 SERVICE_NAME = "fraud-worker"
 
 logger = get_logger(__name__)
+
+
+async def commit_processed_message(consumer: AIOKafkaConsumer, msg) -> None:
+    await consumer.commit({TopicPartition(msg.topic, msg.partition): msg.offset + 1})
 
 async def main():
     settings = get_settings()
@@ -82,7 +87,7 @@ async def main():
                     worker_message_outcome(SERVICE_NAME, topic_name, "success")
 
                     # Commit only after persistence succeeds so the broker can redeliver on crash.
-                    await consumer.commit()
+                    await commit_processed_message(consumer, msg)
                 
             except Exception as exc:
                 dlq_payload = build_dlq_payload(
@@ -109,7 +114,7 @@ async def main():
                         source_partition=msg.partition,
                     )
                     # Only commit once the DLQ write completes successfully.
-                    await consumer.commit()
+                    await commit_processed_message(consumer, msg)
                 except Exception:
                     logger.exception(
                         "dlq_publish_failed",

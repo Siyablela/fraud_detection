@@ -17,6 +17,7 @@ os.environ.setdefault("JWT_ISSUER", "https://auth.example.com/")
 os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
 os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
+os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
 
 from app.config import load_rules_config
@@ -28,6 +29,7 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
+                    "high_value_threshold": 1000,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
                 handle,
@@ -36,6 +38,7 @@ class RulesConfigTests(unittest.TestCase):
 
         try:
             config = load_rules_config(temp_path)
+            self.assertEqual(config.high_value_threshold, 1000)
             self.assertEqual(config.restricted_categories["GAMBLING"], 1000)
         finally:
             os.remove(temp_path)
@@ -44,6 +47,7 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
+                    "high_value_threshold": 1000,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
                 handle,
@@ -60,10 +64,24 @@ class RulesConfigTests(unittest.TestCase):
             )
             result = evaluate_transaction(transaction)
             self.assertTrue(result["is_fraud"])
+            self.assertIn("HIGH_VALUE_THRESHOLD", result["triggered_rules"])
             self.assertIn("RISKY_CATEGORY_LIMIT", result["triggered_rules"])
         finally:
             os.environ.pop("FRAUD_RULES_CONFIG_PATH", None)
             os.remove(temp_path)
+
+    def test_evaluate_transaction_flags_high_value_threshold(self):
+        transaction = Transaction(
+            transaction_id="tx-high-value",
+            user_id="user-2",
+            amount=20000,
+            category="GROCERIES",
+        )
+
+        result = evaluate_transaction(transaction)
+
+        self.assertTrue(result["is_fraud"])
+        self.assertEqual(result["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
 
 
 if __name__ == "__main__":

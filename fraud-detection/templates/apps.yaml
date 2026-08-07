@@ -89,6 +89,8 @@ spec:
               value: {{ .Values.appConfig.dbPoolMinSize | quote }}
             - name: DB_POOL_MAX_SIZE
               value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_HIGH_VALUE_THRESHOLD
+              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
             - name: DEFAULT_RESTRICTED_CATEGORIES
               value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
             - name: OBSERVABILITY_LOG_LEVEL
@@ -207,6 +209,8 @@ spec:
               value: {{ .Values.appConfig.dbPoolMinSize | quote }}
             - name: DB_POOL_MAX_SIZE
               value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_HIGH_VALUE_THRESHOLD
+              value: {{ .Values.appConfig.defaultHighValueThreshold | quote }}
             - name: DEFAULT_RESTRICTED_CATEGORIES
               value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
             - name: OBSERVABILITY_LOG_LEVEL

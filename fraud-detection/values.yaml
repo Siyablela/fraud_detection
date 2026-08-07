@@ -82,6 +82,7 @@ appConfig:
   kafkaConsumerGroupId: fraud-worker-group
   dbPoolMinSize: 1
   dbPoolMaxSize: 10
+  defaultHighValueThreshold: 10000
   defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
 
 observability:

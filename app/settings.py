@@ -54,6 +54,7 @@ class Settings(BaseModel):
     db_pool_min_size: int = Field(..., alias="DB_POOL_MIN_SIZE")
     db_pool_max_size: int = Field(..., alias="DB_POOL_MAX_SIZE")
 
+    default_high_value_threshold: float = Field(..., alias="DEFAULT_HIGH_VALUE_THRESHOLD")
     default_restricted_categories: dict[str, float] = Field(..., alias="DEFAULT_RESTRICTED_CATEGORIES")
 
     observability_log_level: str = Field(default="INFO", alias="OBSERVABILITY_LOG_LEVEL")
@@ -111,6 +112,7 @@ class Settings(BaseModel):
             "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
             "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
             "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),
+            "default_high_value_threshold": _required_env("DEFAULT_HIGH_VALUE_THRESHOLD"),
             "default_restricted_categories": _required_env("DEFAULT_RESTRICTED_CATEGORIES"),
             "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
             "observability_enable_tracing": _optional_env("OBSERVABILITY_ENABLE_TRACING", "False"),

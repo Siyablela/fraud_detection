@@ -16,8 +16,11 @@ class Transaction(BaseModel):
 def evaluate_transaction(transaction: Transaction) -> dict:
     flags = []
     config = _rules.get()
-        
-    # Rule 1: Restricted Category Risk
+
+    if transaction.amount >= config.high_value_threshold:
+        flags.append("HIGH_VALUE_THRESHOLD")
+
+    # Rule 2: Restricted Category Risk
     category_limit = config.restricted_categories.get(transaction.category.upper())
     if category_limit is not None and transaction.amount > category_limit:
         flags.append("RISKY_CATEGORY_LIMIT")

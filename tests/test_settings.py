@@ -18,6 +18,7 @@ class SettingsTests(unittest.TestCase):
         os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
         os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
         os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
+        os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
         os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
         os.environ.setdefault("KAFKA_PRODUCER_ACKS", "all")
         os.environ.setdefault("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "true")

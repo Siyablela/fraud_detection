@@ -76,6 +76,7 @@ Rules are loaded from [rules.json](rules.json) and can be overridden by environm
 
 Default rule flags:
 
+- `HIGH_VALUE_THRESHOLD`
 - `RISKY_CATEGORY_LIMIT`
 
 
@@ -170,6 +171,7 @@ Main environment variables (see [.env.example](.env.example)):
 - `FRAUD_RULES_CONFIG_PATH`
 - `DB_POOL_MIN_SIZE`
 - `DB_POOL_MAX_SIZE`
+- `DEFAULT_HIGH_VALUE_THRESHOLD`
 - `DEFAULT_RESTRICTED_CATEGORIES`
 - `OBSERVABILITY_LOG_LEVEL`
 - `OBSERVABILITY_ENABLE_TRACING`
