@@ -33,8 +33,7 @@ async def main():
     database_engine, database = create_pool()
     start_http_server(settings.worker_metrics_port)
     logger.info("worker_metrics_started", port=settings.worker_metrics_port)
-    
-    # Configure the asynchronous Kafka consumer
+
     consumer = AIOKafkaConsumer(
         topic_name,
         bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -49,17 +48,22 @@ async def main():
         enable_idempotence=settings.kafka_producer_enable_idempotence,
         **kafka_client_security_kwargs(),
     )
-    
-    await consumer.start()
-    await dlq_producer.start()
-    logger.info(
-        "worker_started",
-        topic=topic_name,
-        dlq_topic=dlq_topic_name,
-        group_id=consumer_group_id,
-    )
-    
+
+    consumer_started = False
+    dlq_producer_started = False
+
     try:
+        await consumer.start()
+        consumer_started = True
+        await dlq_producer.start()
+        dlq_producer_started = True
+        logger.info(
+            "worker_started",
+            topic=topic_name,
+            dlq_topic=dlq_topic_name,
+            group_id=consumer_group_id,
+        )
+
         # Loop over the consumer stream. It automatically waits/polls internally.
         async for msg in consumer:
             raw_event = msg.value.decode("utf-8")
@@ -119,8 +123,10 @@ async def main():
     finally:
         # Clean shutdown of engine dependencies
         logger.info("worker_shutdown")
-        await consumer.stop()
-        await dlq_producer.stop()
+        if consumer_started:
+            await consumer.stop()
+        if dlq_producer_started:
+            await dlq_producer.stop()
         await database_engine.dispose()
 
 if __name__ == "__main__":

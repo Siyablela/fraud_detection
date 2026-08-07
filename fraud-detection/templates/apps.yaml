@@ -53,6 +53,16 @@ spec:
               value: {{ .Values.appConfig.kafkaDlqTopicName | quote }}
             - name: KAFKA_CONSUMER_GROUP_ID
               value: {{ .Values.appConfig.kafkaConsumerGroupId | quote }}
+            - name: JWT_ISSUER
+              value: {{ .Values.security.jwtIssuer | quote }}
+            - name: JWT_AUDIENCE
+              value: {{ .Values.security.jwtAudience | quote }}
+            - name: JWT_JWKS_URL
+              value: {{ .Values.security.jwtJwksUrl | quote }}
+            - name: JWT_PUBLIC_KEY_PATH
+              value: {{ .Values.security.jwtPublicKeyPath | quote }}
+            - name: JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ
+              value: {{ .Values.security.requiredReadScope | quote }}
             - name: KAFKA_SECURITY_PROTOCOL
               value: {{ .Values.kafkaSecurity.protocol | quote }}
             - name: KAFKA_SSL_TRUSTSTORE_PATH
@@ -75,6 +85,18 @@ spec:
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
               value: "/config/rules.json"
+            - name: DB_POOL_MIN_SIZE
+              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
+            - name: DB_POOL_MAX_SIZE
+              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_RESTRICTED_CATEGORIES
+              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
+            - name: OBSERVABILITY_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: OBSERVABILITY_ENABLE_TRACING
+              value: {{ .Values.observability.enableTracing | quote }}
+            - name: WORKER_METRICS_PORT
+              value: {{ .Values.observability.workerMetricsPort | quote }}
           volumeMounts:
             - name: rules-volume
               mountPath: /config/rules.json
@@ -120,7 +142,7 @@ spec:
         - name: api
           image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
-          command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - containerPort: 8000
               name: api-port
@@ -151,8 +173,27 @@ spec:
               value: {{ .Values.security.jwtPublicKeyPath | quote }}
             - name: JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ
               value: {{ .Values.security.requiredReadScope | quote }}
-            - name: JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE
-              value: {{ .Values.security.requiredWriteScope | quote }}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            - name: KAFKA_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaTopicName | quote }}
+            - name: KAFKA_DLQ_TOPIC_NAME
+              value: {{ .Values.appConfig.kafkaDlqTopicName | quote }}
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: {{ .Values.appConfig.kafkaConsumerGroupId | quote }}
+            - name: KAFKA_SECURITY_PROTOCOL
+              value: {{ .Values.kafkaSecurity.protocol | quote }}
+            - name: KAFKA_SSL_TRUSTSTORE_PATH
+              value: {{ .Values.kafkaSecurity.truststorePath | quote }}
+            - name: KAFKA_SSL_KEYSTORE_CERT_PATH
+              value: {{ .Values.kafkaSecurity.keystoreCertPath | quote }}
+            - name: KAFKA_SSL_KEYSTORE_KEY_PATH
+              value: {{ .Values.kafkaSecurity.keystoreKeyPath | quote }}
+            - name: KAFKA_SSL_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecretName }}
+                  key: KAFKA_SSL_KEYSTORE_PASSWORD
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -162,6 +203,16 @@ spec:
               value: "postgresql://fraud_user:$(POSTGRES_PASSWORD)@postgres:5432/fraud_detection"
             - name: FRAUD_RULES_CONFIG_PATH
               value: "/config/rules.json"
+            - name: DB_POOL_MIN_SIZE
+              value: {{ .Values.appConfig.dbPoolMinSize | quote }}
+            - name: DB_POOL_MAX_SIZE
+              value: {{ .Values.appConfig.dbPoolMaxSize | quote }}
+            - name: DEFAULT_RESTRICTED_CATEGORIES
+              value: {{ .Values.appConfig.defaultRestrictedCategoriesJson | quote }}
+            - name: OBSERVABILITY_LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            - name: OBSERVABILITY_ENABLE_TRACING
+              value: {{ .Values.observability.enableTracing | quote }}
           volumeMounts:
             - name: rules-volume
               mountPath: /config/rules.json

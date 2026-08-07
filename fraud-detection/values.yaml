@@ -26,57 +26,12 @@ security:
   jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
   jwtPublicKeyPath: ""
   requiredReadScope: fraud:transactions:read
-  requiredWriteScope: fraud:transactions:write
 
 kafkaSecurity:
   protocol: PLAINTEXT
   truststorePath: .secrets/kafka-ca.pem
   keystoreCertPath: .secrets/kafka-client.crt
   keystoreKeyPath: .secrets/kafka-client.key
-
-
-resilience:
-  enablePreferredAntiAffinity: true
-  topologyKey: kubernetes.io/hostname
-  podDisruptionBudget:
-    enabled: true
-    minAvailable: 1
-  autoscaling:
-    enabled: false
-    api:
-      minReplicas: 2
-      maxReplicas: 5
-      targetCPUUtilizationPercentage: 70
-      targetMemoryUtilizationPercentage: 80
-    worker:
-      minReplicas: 2
-      maxReplicas: 5
-      targetCPUUtilizationPercentage: 70
-      targetMemoryUtilizationPercentage: 80
-    kong:
-      minReplicas: 2
-      maxReplicas: 5
-      targetCPUUtilizationPercentage: 70
-      targetMemoryUtilizationPercentage: 80
-
-persistence:
-  postgres:
-    enabled: true
-    accessMode: ReadWriteOnce
-    size: 20Gi
-    storageClassName: ""
-  kafka:
-    enabled: true
-    accessMode: ReadWriteOnce
-    size: 30Gi
-    storageClassName: ""
-
-certManager:
-  enabled: false
-  issuerKind: ClusterIssuer
-  issuerName: ""
-  ingressHost: fraud-api.example.com
-  secretName: fraud-api-tls
 
 resilience:
   enablePreferredAntiAffinity: true
@@ -127,9 +82,6 @@ appConfig:
   kafkaConsumerGroupId: fraud-worker-group
   dbPoolMinSize: 1
   dbPoolMaxSize: 10
-  velocityWindowSeconds: 60
-  defaultHighValueThreshold: 10000
-  defaultVelocityThreshold: 5
   defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
 
 observability:
@@ -202,17 +154,6 @@ kongConfig: |
         - name: query-categories
           paths:
             - /api/v1/categories
-          methods:
-            - GET
-          strip_path: false
-          plugins:
-            - name: rate-limiting
-              config:
-                minute: 120
-                policy: local
-        - name: query-users
-          paths:
-            - /api/v1/users
           methods:
             - GET
           strip_path: false

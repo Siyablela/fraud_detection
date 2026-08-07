@@ -42,10 +42,6 @@ class Settings(BaseModel):
         default="fraud:transactions:read",
         alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ",
     )
-    jwt_required_scope_for_transaction_write: str = Field(
-        default="fraud:transactions:write",
-        alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE",
-    )
 
     kafka_security_protocol: str = Field(default="PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
     kafka_ssl_truststore_path: str = Field(default="", alias="KAFKA_SSL_TRUSTSTORE_PATH")
@@ -54,13 +50,10 @@ class Settings(BaseModel):
     kafka_ssl_keystore_password: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_PASSWORD")
     kafka_producer_acks: str = Field(default="all", alias="KAFKA_PRODUCER_ACKS")
     kafka_producer_enable_idempotence: bool = Field(default=True, alias="KAFKA_PRODUCER_ENABLE_IDEMPOTENCE")
-    kafka_producer_max_in_flight: int = Field(default=5, alias="KAFKA_PRODUCER_MAX_IN_FLIGHT")
 
     db_pool_min_size: int = Field(..., alias="DB_POOL_MIN_SIZE")
     db_pool_max_size: int = Field(..., alias="DB_POOL_MAX_SIZE")
 
-    default_high_value_threshold: float = Field(..., alias="DEFAULT_HIGH_VALUE_THRESHOLD")
-    default_velocity_threshold: int = Field(..., alias="DEFAULT_VELOCITY_THRESHOLD")
     default_restricted_categories: dict[str, float] = Field(..., alias="DEFAULT_RESTRICTED_CATEGORIES")
 
     observability_log_level: str = Field(default="INFO", alias="OBSERVABILITY_LOG_LEVEL")
@@ -109,9 +102,6 @@ class Settings(BaseModel):
             "jwt_required_scope_for_transaction_read": _optional_env(
                 "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
             ),
-            "jwt_required_scope_for_transaction_write": _optional_env(
-                "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_WRITE", "fraud:transactions:write"
-            ),
             "kafka_security_protocol": _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
             "kafka_ssl_truststore_path": _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", ""),
             "kafka_ssl_keystore_cert_path": _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", ""),
@@ -119,11 +109,8 @@ class Settings(BaseModel):
             "kafka_ssl_keystore_password": _optional_env("KAFKA_SSL_KEYSTORE_PASSWORD", ""),
             "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
             "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
-            "kafka_producer_max_in_flight": _optional_env("KAFKA_PRODUCER_MAX_IN_FLIGHT", "5"),
             "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
             "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),
-            "default_high_value_threshold": _required_env("DEFAULT_HIGH_VALUE_THRESHOLD"),
-            "default_velocity_threshold": _required_env("DEFAULT_VELOCITY_THRESHOLD"),
             "default_restricted_categories": _required_env("DEFAULT_RESTRICTED_CATEGORIES"),
             "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
             "observability_enable_tracing": _optional_env("OBSERVABILITY_ENABLE_TRACING", "False"),
