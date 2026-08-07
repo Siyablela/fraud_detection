@@ -4,6 +4,8 @@ Fraud Detection is an event-driven service built with FastAPI, Kafka, PostgreSQL
 
 It processes categorized transaction events from Kafka, evaluates configurable fraud rules, stores results in PostgreSQL, and exposes query endpoints for lookup.
 
+This repository is intentionally scoped as a small service, but it is built with production-minded practices: validated configuration, explicit auth, structured logging, metrics, DLQ handling, and deployable Compose and Helm manifests. The goal is to show disciplined engineering on a narrow problem, not to simulate a larger platform with placeholder features.
+
 ## Quick commands
 
 ```powershell

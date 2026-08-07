@@ -25,6 +25,39 @@ logger = get_logger(__name__)
 async def commit_processed_message(consumer: AIOKafkaConsumer, msg) -> None:
     await consumer.commit({TopicPartition(msg.topic, msg.partition): msg.offset + 1})
 
+
+async def route_message_to_dlq(
+    consumer: AIOKafkaConsumer,
+    dlq_producer: AIOKafkaProducer,
+    msg,
+    raw_event: str,
+    error: Exception,
+    topic_name: str,
+    dlq_topic_name: str,
+) -> None:
+    dlq_payload = build_dlq_payload(
+        source_topic=topic_name,
+        source_partition=msg.partition,
+        source_offset=msg.offset,
+        source_timestamp=msg.timestamp,
+        raw_payload=raw_event,
+        error=error,
+    )
+
+    await dlq_producer.send_and_wait(
+        topic=dlq_topic_name,
+        key=msg.key,
+        value=encode_dlq_payload(dlq_payload),
+    )
+    worker_message_outcome(SERVICE_NAME, topic_name, "dlq")
+    logger.exception(
+        "transaction_routed_to_dlq",
+        dlq_topic=dlq_topic_name,
+        source_offset=msg.offset,
+        source_partition=msg.partition,
+    )
+    await commit_processed_message(consumer, msg)
+
 async def main():
     settings = get_settings()
     topic_name = settings.kafka_topic_name
@@ -90,31 +123,17 @@ async def main():
                     await commit_processed_message(consumer, msg)
                 
             except Exception as exc:
-                dlq_payload = build_dlq_payload(
-                    source_topic=topic_name,
-                    source_partition=msg.partition,
-                    source_offset=msg.offset,
-                    source_timestamp=msg.timestamp,
-                    raw_payload=raw_event,
-                    error=exc,
-                )
-
                 try:
                     # Failures are preserved in the DLQ instead of being dropped or retried forever.
-                    await dlq_producer.send_and_wait(
-                        topic=dlq_topic_name,
-                        key=msg.key,
-                        value=encode_dlq_payload(dlq_payload),
+                    await route_message_to_dlq(
+                        consumer=consumer,
+                        dlq_producer=dlq_producer,
+                        msg=msg,
+                        raw_event=raw_event,
+                        error=exc,
+                        topic_name=topic_name,
+                        dlq_topic_name=dlq_topic_name,
                     )
-                    worker_message_outcome(SERVICE_NAME, topic_name, "dlq")
-                    logger.exception(
-                        "transaction_routed_to_dlq",
-                        dlq_topic=dlq_topic_name,
-                        source_offset=msg.offset,
-                        source_partition=msg.partition,
-                    )
-                    # Only commit once the DLQ write completes successfully.
-                    await commit_processed_message(consumer, msg)
                 except Exception:
                     logger.exception(
                         "dlq_publish_failed",
