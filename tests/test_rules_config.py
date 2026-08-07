@@ -17,9 +17,6 @@ os.environ.setdefault("JWT_ISSUER", "https://auth.example.com/")
 os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
 os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
-os.environ.setdefault("VELOCITY_WINDOW_SECONDS", "60")
-os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
-os.environ.setdefault("DEFAULT_VELOCITY_THRESHOLD", "5")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
 
 from app.config import load_rules_config
@@ -31,8 +28,6 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
-                    "high_value_threshold": 1000,
-                    "velocity_threshold": 2,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
                 handle,
@@ -41,8 +36,6 @@ class RulesConfigTests(unittest.TestCase):
 
         try:
             config = load_rules_config(temp_path)
-            self.assertEqual(config.high_value_threshold, 1000)
-            self.assertEqual(config.velocity_threshold, 2)
             self.assertEqual(config.restricted_categories["GAMBLING"], 1000)
         finally:
             os.remove(temp_path)
@@ -51,8 +44,6 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
-                    "high_value_threshold": 1000,
-                    "velocity_threshold": 2,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
                 handle,

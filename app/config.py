@@ -8,16 +8,10 @@ from app.settings import get_settings
 
 @dataclass(frozen=True)
 class RulesConfig:
-	high_value_threshold: float | None = None
-	velocity_threshold: int | None = None
 	restricted_categories: dict[str, float] | None = None
 
 	def __post_init__(self):
 		settings = get_settings()
-		if self.high_value_threshold is None:
-			object.__setattr__(self, "high_value_threshold", settings.default_high_value_threshold)
-		if self.velocity_threshold is None:
-			object.__setattr__(self, "velocity_threshold", settings.default_velocity_threshold)
 		if self.restricted_categories is None:
 			object.__setattr__(
 				self,
@@ -36,8 +30,6 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
 		values = json.load(config_file)
 
 	return RulesConfig(
-		high_value_threshold=float(values.get("high_value_threshold", settings.default_high_value_threshold)),
-		velocity_threshold=int(values.get("velocity_threshold", settings.default_velocity_threshold)),
 		restricted_categories={
 			str(category).upper(): float(limit)
 			for category, limit in values.get(

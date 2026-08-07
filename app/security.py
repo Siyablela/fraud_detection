@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -129,22 +128,3 @@ async def get_current_principal(
         scopes=_parse_scopes(claims),
         claims=claims,
     )
-
-
-def require_scopes(*required_scopes: str) -> Callable[..., Any]:
-    async def dependency(
-        principal: AuthenticatedPrincipal = Depends(get_current_principal),
-    ) -> AuthenticatedPrincipal:
-        missing_scopes = [scope for scope in required_scopes if scope not in principal.scopes]
-        if missing_scopes:
-            scope_hint = " ".join(required_scopes)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access token does not include the required scope.",
-                headers={
-                    "WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{scope_hint}"'
-                },
-            )
-        return principal
-
-    return dependency

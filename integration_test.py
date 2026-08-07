@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
 import random
-import uuid
 import time
+import uuid
 from pathlib import Path
+
+from aiokafka import AIOKafkaProducer
 import httpx
 
 
@@ -22,10 +25,19 @@ def load_env_file() -> None:
 
 
 load_env_file()
-API_URL = os.getenv("INTEGRATION_API_URL")
-if not API_URL:
-    raise RuntimeError("Missing required environment variable: INTEGRATION_API_URL")
-ACCESS_TOKEN = os.getenv("INTEGRATION_ACCESS_TOKEN")
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value.strip()
+
+
+API_URL = required_env("INTEGRATION_API_URL")
+KAFKA_BOOTSTRAP_SERVERS = required_env("INTEGRATION_KAFKA_BOOTSTRAP_SERVERS")
+KAFKA_TOPIC_NAME = required_env("INTEGRATION_KAFKA_TOPIC_NAME")
+ACCESS_TOKEN = required_env("INTEGRATION_ACCESS_TOKEN")
 
 
 def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict:
@@ -39,33 +51,57 @@ def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict
     }
 
 
-async def send_transaction(client: httpx.AsyncClient, payload: dict, scenario: str):
-    """Sends the JSON payload to the FastAPI query endpoint for smoke verification."""
-    try:
-        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"} if ACCESS_TOKEN else None
-        response = await client.get(f"{API_URL}/api/v1/transactions/{payload['transaction_id']}", headers=headers, timeout=5.0)
+async def publish_transaction(producer: AIOKafkaProducer, payload: dict) -> None:
+    await producer.send_and_wait(
+        KAFKA_TOPIC_NAME,
+        json.dumps(payload).encode("utf-8"),
+    )
+
+
+async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -> None:
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+
+    for attempt in range(1, 21):
+        response = await client.get(
+            f"{API_URL}/api/v1/transactions/{transaction_id}",
+            headers=headers,
+            timeout=5.0,
+        )
         if response.status_code == 200:
-            print(f"[{scenario}] Verified Tx: {payload['transaction_id']}")
-        else:
-            print(f"❌ Verification failed. Status: {response.status_code}")
-    except Exception as e:
-        print(f"💥 Connection Error: {e}")
+            print(f"Verified transaction {transaction_id} on attempt {attempt}")
+            return
+        if response.status_code == 401:
+            raise RuntimeError("Integration token is missing or invalid for the protected query API.")
+        if response.status_code != 404:
+            raise RuntimeError(
+                f"Unexpected response while polling transaction {transaction_id}: {response.status_code} {response.text}"
+            )
+        await asyncio.sleep(1.0)
+
+    raise RuntimeError(f"Transaction {transaction_id} was not visible through the API before timeout.")
 
 
 async def main():
-    async with httpx.AsyncClient() as client:
-        print("🚀 Starting Fraud Detection System Integration Test...")
-        print(f"Target API Endpoint: {API_URL}\n")
+    payload = generate_mock_transaction(user_id=random.randint(1000, 2000))
 
-        print("--- Running Scenario 1: Verifying API availability ---")
-        for _ in range(3):
-            random_user = random.randint(1000, 2000)
-            payload = generate_mock_transaction(user_id=random_user)
-            await send_transaction(client, payload, "API_CHECK")
-            await asyncio.sleep(1.5)
+    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+    await producer.start()
+    try:
+        print("Starting end-to-end integration smoke test")
+        print(f"Kafka bootstrap: {KAFKA_BOOTSTRAP_SERVERS}")
+        print(f"Kafka topic: {KAFKA_TOPIC_NAME}")
+        print(f"API endpoint: {API_URL}")
+        print(f"Transaction id: {payload['transaction_id']}\n")
 
-        print("\n✅ Integration verification complete.")
-        print("Check your 'worker' container logs and database state for processing results.")
+        await publish_transaction(producer, payload)
+        print("Published transaction to Kafka")
+
+        async with httpx.AsyncClient() as client:
+            await wait_for_transaction(client, payload["transaction_id"])
+
+        print("Integration smoke test passed")
+    finally:
+        await producer.stop()
 
 
 if __name__ == "__main__":

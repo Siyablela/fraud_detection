@@ -76,7 +76,6 @@ Rules are loaded from [rules.json](rules.json) and can be overridden by environm
 
 Default rule flags:
 
-- `VELOCITY_LIMIT_EXCEEDED`
 - `RISKY_CATEGORY_LIMIT`
 
 
@@ -99,8 +98,17 @@ Direct local endpoints:
 Quick test:
 
 ```powershell
-Start-Sleep -Seconds 2
-Invoke-RestMethod http://127.0.0.1:8000/api/v1/transactions/compose-001 | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 5
+```
+
+End-to-end smoke test:
+
+```powershell
+$env:INTEGRATION_API_URL="http://127.0.0.1:8000"
+$env:INTEGRATION_KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
+$env:INTEGRATION_KAFKA_TOPIC_NAME="transactions_topic"
+$env:INTEGRATION_ACCESS_TOKEN="<JWT access token with fraud:transactions:read>"
+.venv\Scripts\python.exe .\integration_test.py
 ```
 
 Stop:
@@ -156,15 +164,12 @@ Main environment variables (see [.env.example](.env.example)):
 - `KAFKA_SSL_KEYSTORE_PASSWORD`
 - `KAFKA_PRODUCER_ACKS`
 - `KAFKA_PRODUCER_ENABLE_IDEMPOTENCE`
-- `KAFKA_PRODUCER_MAX_IN_FLIGHT`
 - `KAFKA_TOPIC_NAME`
 - `KAFKA_DLQ_TOPIC_NAME`
 - `KAFKA_CONSUMER_GROUP_ID`
 - `FRAUD_RULES_CONFIG_PATH`
 - `DB_POOL_MIN_SIZE`
 - `DB_POOL_MAX_SIZE`
-- `DEFAULT_HIGH_VALUE_THRESHOLD`
-- `DEFAULT_VELOCITY_THRESHOLD`
 - `DEFAULT_RESTRICTED_CATEGORIES`
 - `OBSERVABILITY_LOG_LEVEL`
 - `OBSERVABILITY_ENABLE_TRACING`
@@ -230,6 +235,8 @@ Run unit tests:
 Integration stream test script:
 
 - [integration_test.py](integration_test.py)
+
+The integration smoke test publishes a transaction directly to Kafka, then polls the query API until the worker persists the record.
 
 ## Repository layout
 

@@ -18,12 +18,9 @@ class SettingsTests(unittest.TestCase):
         os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
         os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
         os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
-        os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
-        os.environ.setdefault("DEFAULT_VELOCITY_THRESHOLD", "5")
         os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
         os.environ.setdefault("KAFKA_PRODUCER_ACKS", "all")
         os.environ.setdefault("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "true")
-        os.environ.setdefault("KAFKA_PRODUCER_MAX_IN_FLIGHT", "5")
 
         import app.settings as settings_module
 
@@ -32,7 +29,6 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings_module.get_settings().kafka_producer_acks, "all")
         self.assertTrue(settings_module.get_settings().kafka_producer_enable_idempotence)
-        self.assertEqual(settings_module.get_settings().kafka_producer_max_in_flight, 5)
 
 
 if __name__ == "__main__":

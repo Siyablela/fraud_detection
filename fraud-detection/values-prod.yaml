@@ -18,7 +18,6 @@ security:
   jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
   jwtPublicKeyPath: ''
   requiredReadScope: fraud:transactions:read
-  requiredWriteScope: fraud:transactions:write
 kafkaSecurity:
   protocol: SSL
   truststorePath: /etc/kafka/tls/kafka-ca.pem

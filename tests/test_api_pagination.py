@@ -12,8 +12,6 @@ os.environ.setdefault("JWT_ISSUER", "issuer")
 os.environ.setdefault("JWT_AUDIENCE", "aud")
 os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
-os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
-os.environ.setdefault("DEFAULT_VELOCITY_THRESHOLD", "3")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 
 from app import api

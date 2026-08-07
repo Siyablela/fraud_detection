@@ -15,11 +15,6 @@ api:
     tag: dev
     pullPolicy: Never
 
-  image:
-    repository: fraud-detection
-    tag: dev
-    pullPolicy: Never
-
 kong:
   service:
     type: NodePort
