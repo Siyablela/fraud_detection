@@ -59,7 +59,7 @@ function Wait-DockerReady {
             # Keep retrying until timeout.
         }
 
-        Write-Host "Attempt $i/$DockerReadyRetries: daemon not ready yet..."
+        Write-Host ("Attempt {0}/{1}: daemon not ready yet..." -f $i, $DockerReadyRetries)
         Start-Sleep -Seconds 3
     }
 
@@ -70,7 +70,7 @@ function Invoke-ComposeWithRetry {
     Write-Step "Running compose with Rancher docker CLI"
 
     for ($i = 1; $i -le $ComposeRetries; $i++) {
-        Write-Host "Compose attempt $i/$ComposeRetries: docker compose $ComposeArgs" -ForegroundColor Yellow
+        Write-Host ("Compose attempt {0}/{1}: docker compose {2}" -f $i, $ComposeRetries, $ComposeArgs) -ForegroundColor Yellow
 
         $output = & $rdDocker compose $ComposeArgs 2>&1
         $exitCode = $LASTEXITCODE
