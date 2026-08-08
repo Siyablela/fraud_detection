@@ -114,7 +114,16 @@ async def main():
                     transaction = Transaction(**event_data)
 
                     result = evaluate_transaction(transaction)
-                    await save_transaction(database, result)
+                    await save_transaction(
+                        database,
+                        result,
+                        source_metadata={
+                            "source_topic": msg.topic,
+                            "source_partition": msg.partition,
+                            "source_offset": msg.offset,
+                            "source_timestamp": msg.timestamp,
+                        },
+                    )
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
                     worker_message_outcome(SERVICE_NAME, topic_name, "success")

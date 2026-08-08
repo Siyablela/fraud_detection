@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, String, func, select, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -31,6 +31,26 @@ class TransactionRecord(Base):
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TransactionHistoryRecord(Base):
+    __tablename__ = "transaction_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    transaction_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    category: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[float] = mapped_column(Float, nullable=False)
+    is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    source_topic: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    processed_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
@@ -109,7 +129,9 @@ async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> No
 
 
 async def save_transaction(
-    session_factory: async_sessionmaker[AsyncSession], result: dict[str, Any]
+    session_factory: async_sessionmaker[AsyncSession],
+    result: dict[str, Any],
+    source_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Insert or update a transaction record in the database.
 
@@ -125,6 +147,8 @@ async def save_transaction(
             keys are ``transaction_id``, ``user_id``, ``amount``,
             ``category``, ``timestamp``, ``is_fraud``, and
             ``triggered_rules``.
+        source_metadata: Optional Kafka source metadata for appending to the
+            immutable transaction history record.
 
     Raises:
         sqlalchemy.exc.SQLAlchemyError: If the database operation or commit
@@ -153,7 +177,27 @@ async def save_transaction(
 
     async with session_factory() as session:
         await session.execute(upsert_stmt)
+        await session.execute(insert(TransactionHistoryRecord).values(_build_history_values(result, source_metadata)))
         await session.commit()
+
+
+def _build_history_values(
+    result: dict[str, Any], source_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    source_metadata = source_metadata or {}
+    return {
+        "transaction_id": result["transaction_id"],
+        "user_id": result["user_id"],
+        "amount": result["amount"],
+        "category": result["category"],
+        "timestamp": result["timestamp"],
+        "is_fraud": result["is_fraud"],
+        "triggered_rules": result["triggered_rules"],
+        "source_topic": source_metadata.get("source_topic"),
+        "source_partition": source_metadata.get("source_partition"),
+        "source_offset": source_metadata.get("source_offset"),
+        "source_timestamp": source_metadata.get("source_timestamp"),
+    }
 
 
 async def get_transaction(

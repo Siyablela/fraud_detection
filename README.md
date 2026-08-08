@@ -2,21 +2,22 @@
 
 Fraud Detection is an event-driven service built with FastAPI, Kafka, PostgreSQL, SQLAlchemy async, and Alembic.
 
-It processes categorized transaction events from Kafka, evaluates configurable fraud rules, stores results in PostgreSQL, and exposes query endpoints for lookup.
+It processes categorized transaction events from Kafka, evaluates configurable fraud rules, stores results in PostgreSQL, maintains an append-only decision history, and exposes query endpoints for lookup.
 
 This repository is intentionally scoped as a small service, but it is built with production-minded practices: validated configuration, explicit auth, structured logging, metrics, DLQ handling, and deployable Compose and Helm manifests. The goal is to show disciplined engineering on a narrow problem, not to simulate a larger platform with placeholder features.
 
 ## Quick commands
 
 ```powershell
-# 1) Start local stack
-docker compose up --build
+# 1) Start local stack from a clean slate
+docker compose down --remove-orphans
+docker compose up -d --build --force-recreate
 
 # 2) Apply DB migrations (inside compose network)
 docker exec fraud_api python -m alembic upgrade head
 
-# 3) Query the stored result with the read scope
-Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/transactions/quick-001 -Headers @{ Authorization = "Bearer <JWT access token with fraud:transactions:read>" } | ConvertTo-Json -Depth 5
+# 3) Run the submission smoke test
+.\scripts\run-submission-smoke.ps1
 
 # 4) Deploy to Kubernetes (prod values)
 helm upgrade --install fraud-system .\fraud-detection `
@@ -34,7 +35,8 @@ Kafka
   v
 Worker
   |-- Rules evaluation
-  |-- PostgreSQL upsert
+  |-- PostgreSQL latest-state upsert
+  |-- PostgreSQL append-only history
   v
 Query API (FastAPI :8000)
   |
@@ -88,21 +90,48 @@ Prerequisites:
 
 - Docker or Rancher Desktop with Docker Compose v2
 
+Submission runbook:
+
+1. Copy [.env.example](.env.example) to `.env` if you do not already have a local environment file.
+2. Start from a clean Compose state so old containers do not keep stale commands or images.
+3. Apply Alembic migrations inside the API container.
+4. Run the included smoke script, which publishes a Kafka message and verifies both the latest-state table and the append-only history table.
+5. If Docker Compose times out on Rancher Desktop, use [scripts/recover-rancher-compose.ps1](scripts/recover-rancher-compose.ps1) and then rerun the migration plus smoke steps.
+
 Start the stack from repository root:
 
 ```powershell
-docker compose up --build
+docker compose down --remove-orphans
+docker compose up -d --build --force-recreate
+docker exec fraud_api python -m alembic upgrade head
+```
+
+If Rancher Desktop hits a transient backend timeout on `docker compose up`, use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\recover-rancher-compose.ps1 -ComposeArgs "up -d --build --force-recreate"
+docker exec fraud_api python -m alembic upgrade head
 ```
 
 Direct local endpoints:
 
 - Query API: `http://127.0.0.1:8000`
 
+On some Rancher Desktop setups, published host ports can be slower to stabilize than the containers themselves. The submission smoke script avoids that fragility by verifying API and worker readiness from inside the running containers.
+
 Quick test:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 5
 ```
+
+Submission smoke test:
+
+```powershell
+.\scripts\run-submission-smoke.ps1
+```
+
+The smoke test publishes a fraud-like transaction to Kafka and waits until it appears in both `transactions` and `transaction_history` inside PostgreSQL.
 
 End-to-end smoke test:
 
@@ -239,6 +268,8 @@ Run unit tests:
 Integration stream test script:
 
 - [integration_test.py](integration_test.py)
+
+- [scripts/run-submission-smoke.ps1](scripts/run-submission-smoke.ps1)
 
 The integration smoke test publishes a transaction directly to Kafka, then polls the query API until the worker persists the record.
 
