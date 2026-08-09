@@ -143,6 +143,51 @@ $env:INTEGRATION_ACCESS_TOKEN="<JWT access token with fraud:transactions:read>"
 .venv\Scripts\python.exe .\integration_test.py
 ```
 
+Optional local token helper endpoint:
+
+- Route: `POST /api/v1/auth/token`
+- Purpose: exchanges test username/password against Keycloak and returns an access token.
+- Route: `POST /api/v1/auth/service-token`
+- Purpose: exchanges client credentials against Keycloak and returns a service access token.
+- Safety: disabled by default; enable only for local testing.
+
+Enable in `.env`:
+
+```env
+AUTH_TOKEN_ENDPOINT_ENABLED=true
+KEYCLOAK_TOKEN_CLIENT_ID=fraud-cli
+KEYCLOAK_TOKEN_CLIENT_SECRET=
+KEYCLOAK_SERVICE_CLIENT_ID=fraud-service-cli
+KEYCLOAK_SERVICE_CLIENT_SECRET=<service-client-secret>
+KEYCLOAK_SERVICE_TOKEN_SCOPE=fraud:transactions:read
+```
+
+Example request (resource owner password):
+
+```powershell
+$token = Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/auth/token" `
+  -ContentType "application/json" `
+  -Body '{"username":"tester","password":"your-password"}'
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/transactions/tx-1001" `
+  -Headers @{ Authorization = "Bearer $($token.access_token)" }
+```
+
+Example request (client credentials):
+
+```powershell
+$serviceToken = Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/auth/service-token" `
+  -ContentType "application/json" `
+  -Body '{"client_id":"fraud-service-cli","client_secret":"<service-client-secret>"}'
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/v1/transactions/tx-1001" `
+  -Headers @{ Authorization = "Bearer $($serviceToken.access_token)" }
+```
+
 Stop:
 
 ```powershell

@@ -3,6 +3,7 @@ from math import ceil
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from app.database import database_pool, get_transaction as find_transaction
 from app.database import get_transactions_by_category as find_by_category
 from app.database import ping_database
@@ -15,11 +16,40 @@ from app.observability import (
 )
 from app.security import AuthenticatedPrincipal, get_current_principal
 from app.settings import get_settings
+from app.token_service import (
+    IdentityProviderRejectedError,
+    IdentityProviderUnavailableError,
+    InvalidClientCredentialsError,
+    InvalidCredentialsError,
+    KeycloakTokenService,
+)
 
 SERVICE_NAME = "fraud-query-api"
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class TokenExchangeRequest(BaseModel):
+    username: str
+    password: str
+    client_id: str | None = None
+    scope: str | None = None
+
+
+class TokenExchangeResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    refresh_expires_in: int | None = None
+    scope: str | None = None
+
+
+class ServiceTokenRequest(BaseModel):
+    client_id: str | None = None
+    client_secret: str | None = None
+    scope: str | None = None
 
 
 async def require_transaction_read_scope(
@@ -122,3 +152,70 @@ async def get_transactions_by_category(
         "next_page": page + 1 if has_more else None,
         "data": results,
     }
+
+
+@router.post("/api/v1/auth/token", response_model=TokenExchangeResponse)
+async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExchangeResponse:
+    settings = get_settings()
+    if not settings.auth_token_endpoint_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    service = KeycloakTokenService()
+    try:
+        token_result = await service.exchange_token(
+            username=payload.username,
+            password=payload.password,
+            client_id=payload.client_id,
+            scope=payload.scope,
+        )
+    except InvalidCredentialsError:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    except IdentityProviderUnavailableError:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach identity provider token endpoint.",
+        )
+    except IdentityProviderRejectedError:
+        raise HTTPException(status_code=502, detail="Identity provider rejected token request.")
+
+    return TokenExchangeResponse(
+        access_token=token_result.access_token,
+        token_type=token_result.token_type,
+        expires_in=token_result.expires_in,
+        refresh_token=token_result.refresh_token,
+        refresh_expires_in=token_result.refresh_expires_in,
+        scope=token_result.scope,
+    )
+
+
+@router.post("/api/v1/auth/service-token", response_model=TokenExchangeResponse)
+async def exchange_service_token_for_testing(payload: ServiceTokenRequest) -> TokenExchangeResponse:
+    settings = get_settings()
+    if not settings.auth_token_endpoint_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    service = KeycloakTokenService()
+    try:
+        token_result = await service.exchange_service_token(
+            client_id=payload.client_id,
+            client_secret=payload.client_secret,
+            scope=payload.scope or settings.keycloak_service_token_scope,
+        )
+    except InvalidClientCredentialsError:
+        raise HTTPException(status_code=401, detail="Invalid client credentials.")
+    except IdentityProviderUnavailableError:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach identity provider token endpoint.",
+        )
+    except IdentityProviderRejectedError:
+        raise HTTPException(status_code=502, detail="Identity provider rejected token request.")
+
+    return TokenExchangeResponse(
+        access_token=token_result.access_token,
+        token_type=token_result.token_type,
+        expires_in=token_result.expires_in,
+        refresh_token=token_result.refresh_token,
+        refresh_expires_in=token_result.refresh_expires_in,
+        scope=token_result.scope,
+    )
