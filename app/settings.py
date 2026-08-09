@@ -42,6 +42,14 @@ class Settings(BaseModel):
         default="fraud:transactions:read",
         alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ",
     )
+    auth_token_endpoint_enabled: bool = Field(default=False, alias="AUTH_TOKEN_ENDPOINT_ENABLED")
+    keycloak_token_client_id: str = Field(default="fraud-cli", alias="KEYCLOAK_TOKEN_CLIENT_ID")
+    keycloak_token_client_secret: str = Field(default="", alias="KEYCLOAK_TOKEN_CLIENT_SECRET")
+    keycloak_service_client_id: str = Field(
+        default="fraud-service-cli", alias="KEYCLOAK_SERVICE_CLIENT_ID"
+    )
+    keycloak_service_client_secret: str = Field(default="", alias="KEYCLOAK_SERVICE_CLIENT_SECRET")
+    keycloak_service_token_scope: str = Field(default="", alias="KEYCLOAK_SERVICE_TOKEN_SCOPE")
 
     kafka_security_protocol: str = Field(default="PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
     kafka_ssl_truststore_path: str = Field(default="", alias="KAFKA_SSL_TRUSTSTORE_PATH")
@@ -103,6 +111,14 @@ class Settings(BaseModel):
             "jwt_required_scope_for_transaction_read": _optional_env(
                 "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
             ),
+            "auth_token_endpoint_enabled": _optional_env("AUTH_TOKEN_ENDPOINT_ENABLED", "False"),
+            "keycloak_token_client_id": _optional_env("KEYCLOAK_TOKEN_CLIENT_ID", "fraud-cli"),
+            "keycloak_token_client_secret": _optional_env("KEYCLOAK_TOKEN_CLIENT_SECRET", ""),
+            "keycloak_service_client_id": _optional_env(
+                "KEYCLOAK_SERVICE_CLIENT_ID", "fraud-service-cli"
+            ),
+            "keycloak_service_client_secret": _optional_env("KEYCLOAK_SERVICE_CLIENT_SECRET", ""),
+            "keycloak_service_token_scope": _optional_env("KEYCLOAK_SERVICE_TOKEN_SCOPE", ""),
             "kafka_security_protocol": _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
             "kafka_ssl_truststore_path": _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", ""),
             "kafka_ssl_keystore_cert_path": _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", ""),
