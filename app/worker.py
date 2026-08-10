@@ -25,19 +25,6 @@ SERVICE_NAME = "fraud-worker"
 logger = get_logger(__name__)
 
 
-class TopicPartition(tuple):
-    def __new__(cls, topic: str, partition: int):
-        return super().__new__(cls, (topic, partition))
-
-    @property
-    def topic(self) -> str:
-        return self[0]
-
-    @property
-    def partition(self) -> int:
-        return self[1]
-
-
 def _message_value(msg: Any, attribute: str) -> Any:
     value = getattr(msg, attribute, None)
     if callable(value):
@@ -64,7 +51,7 @@ async def commit_processed_message(consumer: Consumer, msg: Any) -> None:
             offset = _message_value(msg, "offset") + 1
             partition = _message_value(msg, "partition")
             if isinstance(offset, int) and isinstance(partition, int):
-                await commit_method({TopicPartition(topic, partition): offset})
+                await commit_method({(topic, partition): offset})
             else:
                 await commit_method({topic: offset})
         return

@@ -19,8 +19,8 @@ os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions")
 os.environ.setdefault("KAFKA_CONSUMER_GROUP_ID", "fraud-worker")
 os.environ.setdefault("FRAUD_RULES_CONFIG_PATH", "rules.json")
-os.environ.setdefault("JWT_ISSUER", "http://localhost:8081/realms/fraud")
-os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
+os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
+os.environ["JWT_AUDIENCE"] = "fraud-api"
 os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")

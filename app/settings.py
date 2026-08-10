@@ -8,7 +8,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(_REPO_ROOT / ".env", override=False)
-_DOTENV_VALUES = dotenv_values(_REPO_ROOT / ".env")
+
+
+def _load_dotenv_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for env_file in (_REPO_ROOT / ".env", _REPO_ROOT / ".env.example"):
+        if not env_file.exists():
+            continue
+        parsed_values = dotenv_values(env_file)
+        if not isinstance(parsed_values, dict):
+            continue
+        for key, value in parsed_values.items():
+            if isinstance(value, str) and value.strip():
+                values[key] = value
+    return values
+
+
+_DOTENV_VALUES = _load_dotenv_values()
 _PLACEHOLDER_ENV_VALUES = {"JWT_ISSUER": {"issuer"}, "JWT_AUDIENCE": {"aud"}}
 
 

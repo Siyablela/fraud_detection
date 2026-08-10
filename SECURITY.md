@@ -43,24 +43,19 @@ Kafka clients use TLS client authentication instead of SASL.
 Python client configuration snippet:
 
 ```python
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from confluent_kafka import Consumer, Producer
 
 common_security = {
-    "security_protocol": "SSL",
-    "ssl_context": ssl_context,
+    "security.protocol": "SSL",
+    "ssl.context": ssl_context,
 }
 
-producer = AIOKafkaProducer(
-    bootstrap_servers="kafka:9093",
+producer = Producer({"bootstrap.servers": "kafka:9093", **common_security})
+consumer = Consumer({
+    "bootstrap.servers": "kafka:9093",
+    "group.id": "fraud-worker-group",
     **common_security,
-)
-
-consumer = AIOKafkaConsumer(
-    "transactions.raw",
-    bootstrap_servers="kafka:9093",
-    group_id="fraud-worker-group",
-    **common_security,
-)
+})
 ```
 
 Environment-driven TLS file inputs:
