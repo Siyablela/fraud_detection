@@ -55,7 +55,21 @@ class _FakeAsyncClient:
 
 
 class TokenServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._original_jwt_issuer = os.environ.get("JWT_ISSUER")
+        self._original_jwt_audience = os.environ.get("JWT_AUDIENCE")
+        os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
+        os.environ["JWT_AUDIENCE"] = "fraud-api"
+
     def tearDown(self) -> None:
+        if self._original_jwt_issuer is None:
+            os.environ.pop("JWT_ISSUER", None)
+        else:
+            os.environ["JWT_ISSUER"] = self._original_jwt_issuer
+        if self._original_jwt_audience is None:
+            os.environ.pop("JWT_AUDIENCE", None)
+        else:
+            os.environ["JWT_AUDIENCE"] = self._original_jwt_audience
         os.environ.pop("KEYCLOAK_TOKEN_CLIENT_SECRET", None)
         os.environ.pop("KEYCLOAK_SERVICE_CLIENT_SECRET", None)
         clear_settings_cache()

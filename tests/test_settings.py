@@ -14,22 +14,34 @@ class SettingsTests(unittest.TestCase):
         os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions_topic")
         os.environ.setdefault("KAFKA_CONSUMER_GROUP_ID", "fraud-worker-group")
         os.environ.setdefault("FRAUD_RULES_CONFIG_PATH", "tests/rules.json")
-        os.environ["JWT_ISSUER"] = "https://auth.example.com/"
-        os.environ["JWT_AUDIENCE"] = "fraud-api"
-        os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
-        os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
-        os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
-        os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
-        os.environ.setdefault("KAFKA_PRODUCER_ACKS", "all")
-        os.environ.setdefault("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "true")
+        original_jwt_issuer = os.environ.get("JWT_ISSUER")
+        original_jwt_audience = os.environ.get("JWT_AUDIENCE")
+        try:
+            os.environ["JWT_ISSUER"] = "https://auth.example.com/"
+            os.environ["JWT_AUDIENCE"] = "fraud-api"
+            os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
+            os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
+            os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
+            os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
+            os.environ.setdefault("KAFKA_PRODUCER_ACKS", "all")
+            os.environ.setdefault("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "true")
 
-        import app.settings as settings_module
+            import app.settings as settings_module
 
-        settings_module = importlib.reload(settings_module)
-        settings_module.clear_settings_cache()
+            settings_module = importlib.reload(settings_module)
+            settings_module.clear_settings_cache()
 
-        self.assertEqual(settings_module.get_settings().kafka_producer_acks, "all")
-        self.assertTrue(settings_module.get_settings().kafka_producer_enable_idempotence)
+            self.assertEqual(settings_module.get_settings().kafka_producer_acks, "all")
+            self.assertTrue(settings_module.get_settings().kafka_producer_enable_idempotence)
+        finally:
+            if original_jwt_issuer is None:
+                os.environ.pop("JWT_ISSUER", None)
+            else:
+                os.environ["JWT_ISSUER"] = original_jwt_issuer
+            if original_jwt_audience is None:
+                os.environ.pop("JWT_AUDIENCE", None)
+            else:
+                os.environ["JWT_AUDIENCE"] = original_jwt_audience
 
 
 if __name__ == "__main__":
