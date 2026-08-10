@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import httpx
@@ -65,8 +66,11 @@ class KeycloakTokenService:
         }
         if scope and scope.strip():
             body["scope"] = scope.strip()
-        if settings.keycloak_token_client_secret:
-            body["client_secret"] = settings.keycloak_token_client_secret
+        client_secret = os.getenv("KEYCLOAK_TOKEN_CLIENT_SECRET")
+        if client_secret is None:
+            client_secret = settings.keycloak_token_client_secret
+        if isinstance(client_secret, str) and client_secret.strip():
+            body["client_secret"] = client_secret.strip()
         return body
 
     async def exchange_token(
@@ -90,7 +94,8 @@ class KeycloakTokenService:
     ) -> TokenExchangeResult:
         settings = get_settings()
         resolved_client_id = (client_id or settings.keycloak_service_client_id).strip()
-        resolved_client_secret = (client_secret or settings.keycloak_service_client_secret).strip()
+        env_client_secret = os.getenv("KEYCLOAK_SERVICE_CLIENT_SECRET")
+        resolved_client_secret = (client_secret or env_client_secret or settings.keycloak_service_client_secret).strip()
 
         body = {
             "grant_type": "client_credentials",

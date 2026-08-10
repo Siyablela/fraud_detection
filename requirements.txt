@@ -5,7 +5,7 @@ asyncpg>=0.29.0
 SQLAlchemy>=2.0.32
 alembic>=1.13.2
 pydantic>=2.6.0
-aiokafka
+confluent-kafka
 python-dotenv>=1.0.1
 httpx>=0.27.0
 prometheus-client>=0.21.0

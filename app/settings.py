@@ -1,9 +1,8 @@
 import json
 import os
-from functools import lru_cache
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -11,15 +10,49 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(_REPO_ROOT / ".env", override=False)
 
 
+def _load_dotenv_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for env_file in (_REPO_ROOT / ".env", _REPO_ROOT / ".env.example"):
+        if not env_file.exists():
+            continue
+        parsed_values = dotenv_values(env_file)
+        if not isinstance(parsed_values, dict):
+            continue
+        for key, value in parsed_values.items():
+            if isinstance(value, str) and value.strip():
+                values[key] = value
+    return values
+
+
+_DOTENV_VALUES = _load_dotenv_values()
+_PLACEHOLDER_ENV_VALUES = {"JWT_ISSUER": {"issuer"}, "JWT_AUDIENCE": {"aud"}}
+
+
+def _read_env(name: str, default: str = "") -> str:
+    current_value = os.getenv(name)
+    if current_value not in (None, ""):
+        placeholder_values = _PLACEHOLDER_ENV_VALUES.get(name, set())
+        if current_value in placeholder_values:
+            dotenv_value = _DOTENV_VALUES.get(name, "")
+            if isinstance(dotenv_value, str) and dotenv_value.strip():
+                return dotenv_value.strip()
+        return current_value
+
+    dotenv_value = _DOTENV_VALUES.get(name, "")
+    if isinstance(dotenv_value, str) and dotenv_value.strip():
+        return dotenv_value.strip()
+    return default
+
+
 def _required_env(name: str) -> str:
-    value = os.getenv(name)
+    value = _read_env(name)
     if value is None or value == "":
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
 
 
 def _optional_env(name: str, default: str) -> str:
-    value = os.getenv(name)
+    value = _read_env(name)
     if value is None or value == "":
         return default
     return value
@@ -140,10 +173,9 @@ class Settings(BaseModel):
             raise RuntimeError(str(exc)) from exc
 
 
-@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings.from_env()
 
 
 def clear_settings_cache() -> None:
-    get_settings.cache_clear()
+    return None

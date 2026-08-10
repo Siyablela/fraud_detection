@@ -16,8 +16,6 @@ os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 
-from aiokafka.structs import TopicPartition
-
 from app.worker import commit_processed_message, route_message_to_dlq
 
 
@@ -34,7 +32,7 @@ class WorkerCommitTests(unittest.TestCase):
 
             await commit_processed_message(FakeConsumer(), msg)
 
-            self.assertEqual(captured, {TopicPartition("transactions", 2): 42})
+            self.assertEqual(captured, {("transactions", 2): 42})
 
         asyncio.run(run_test())
 
@@ -79,7 +77,7 @@ class WorkerCommitTests(unittest.TestCase):
             self.assertEqual(payload["source_offset"], 9)
             self.assertEqual(payload["error_type"], "ValueError")
             self.assertEqual(payload["error_message"], "invalid event")
-            self.assertEqual(committed, {TopicPartition("transactions", 1): 10})
+            self.assertEqual(committed, {("transactions", 1): 10})
 
         asyncio.run(run_test())
 

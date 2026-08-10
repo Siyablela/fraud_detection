@@ -58,6 +58,12 @@ See [SECURITY.md](SECURITY.md) for the JWT scope model and Kafka mTLS / ACL guid
 
 Protected query endpoints require a Bearer token with `fraud:transactions:read`.
 
+Keycloak guidance:
+
+- Human-facing clients (web UI, CLI, or internal dashboard) should use a public client with PKCE and the `fraud-cli` client.
+- Backend microservices should use a confidential client with the client-credentials grant and the `fraud-service-cli` client.
+- The FastAPI app itself only validates incoming bearer tokens using Keycloak-issued JWTs and JWKS; it does not need to implement PKCE on the server side.
+
 Transaction payload:
 
 ```json

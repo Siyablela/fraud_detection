@@ -26,6 +26,15 @@ Expected behavior:
 - Missing or invalid token -> `401 Unauthorized`
 - Valid token without required scope -> `403 Forbidden`
 
+## Keycloak integration guidance
+
+For this service, the standard pattern is:
+
+- Human users or developer tooling should authenticate through Keycloak using a public client with PKCE.
+- Backend microservices should authenticate with a confidential client using the client-credentials grant.
+- FastAPI validates the resulting bearer token locally by checking the JWT signature against Keycloak JWKS and by enforcing the required scope.
+
+That keeps the API stateless while aligning the auth flow with the two audiences this service serves: human users and service-to-service callers.
 
 ## Kafka stream security
 
@@ -34,24 +43,19 @@ Kafka clients use TLS client authentication instead of SASL.
 Python client configuration snippet:
 
 ```python
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from confluent_kafka import Consumer, Producer
 
 common_security = {
-    "security_protocol": "SSL",
-    "ssl_context": ssl_context,
+    "security.protocol": "SSL",
+    "ssl.context": ssl_context,
 }
 
-producer = AIOKafkaProducer(
-    bootstrap_servers="kafka:9093",
+producer = Producer({"bootstrap.servers": "kafka:9093", **common_security})
+consumer = Consumer({
+    "bootstrap.servers": "kafka:9093",
+    "group.id": "fraud-worker-group",
     **common_security,
-)
-
-consumer = AIOKafkaConsumer(
-    "transactions.raw",
-    bootstrap_servers="kafka:9093",
-    group_id="fraud-worker-group",
-    **common_security,
-)
+})
 ```
 
 Environment-driven TLS file inputs:
