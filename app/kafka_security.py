@@ -4,6 +4,8 @@ import ssl
 from functools import lru_cache
 from typing import Any
 
+import httpx
+
 from app.settings import get_settings
 
 
@@ -31,12 +33,54 @@ def build_kafka_ssl_context() -> ssl.SSLContext:
     return context
 
 
-def kafka_client_security_kwargs() -> dict[str, Any]:
+def _build_oauthbearer_config() -> dict[str, Any]:
     settings = get_settings()
-    if settings.kafka_security_protocol.upper() != "SSL":
-        return {"security_protocol": "PLAINTEXT"}
+    issuer = settings.jwt_issuer.rstrip("/")
+
+    def oauth_cb(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        response = httpx.post(
+            f"{issuer}/protocol/openid-connect/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.keycloak_service_client_id,
+                "client_secret": settings.keycloak_service_client_secret,
+                "scope": settings.keycloak_service_token_scope or "fraud:transactions:read",
+            },
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "token": payload.get("access_token", ""),
+            "token_type": payload.get("token_type", "Bearer"),
+            "expires_in": payload.get("expires_in", 300),
+        }
 
     return {
-        "security_protocol": "SSL",
-        "ssl_context": build_kafka_ssl_context(),
+        "security.protocol": "SASL_PLAINTEXT",
+        "sasl.mechanisms": "OAUTHBEARER",
+        "sasl.oauthbearer.token.endpoint.url": f"{issuer}/protocol/openid-connect/token",
+        "sasl.oauthbearer.client.id": settings.keycloak_service_client_id,
+        "sasl.oauthbearer.client.secret": settings.keycloak_service_client_secret,
+        "sasl.oauthbearer.scope": settings.keycloak_service_token_scope or "fraud:transactions:read",
+        "sasl.oauthbearer.extensions": "protocol=oauth2",
+        "oauth_cb": oauth_cb,
     }
+
+
+def build_kafka_client_config() -> dict[str, Any]:
+    settings = get_settings()
+    protocol = settings.kafka_security_protocol.upper()
+    if protocol == "SSL":
+        return {
+            "security.protocol": "SSL",
+            "ssl.ca.location": settings.kafka_ssl_truststore_path,
+            "ssl.certificate.location": settings.kafka_ssl_keystore_cert_path,
+            "ssl.key.location": settings.kafka_ssl_keystore_key_path,
+            "ssl.key.password": settings.kafka_ssl_keystore_password,
+        }
+
+    if protocol in {"SASL_PLAINTEXT", "SASL_SSL"}:
+        return _build_oauthbearer_config()
+
+    return {"security.protocol": "PLAINTEXT"}

@@ -14,6 +14,7 @@ from app.observability import (
     install_fastapi_observability,
     setup_tracing,
 )
+from app.keycloak_bootstrap import bootstrap_keycloak
 from app.security import AuthenticatedPrincipal, get_current_principal
 from app.settings import get_settings
 from app.token_service import (
@@ -75,6 +76,11 @@ async def lifespan(app: FastAPI):
         apply_tracing(app)
     async with database_pool() as pool:
         app.state.database = pool
+        if settings.auth_token_endpoint_enabled:
+            try:
+                await bootstrap_keycloak()
+            except Exception:
+                logger.exception("keycloak_bootstrap_failed")
         yield
 
 
