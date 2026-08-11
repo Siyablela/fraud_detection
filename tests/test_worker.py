@@ -19,6 +19,14 @@ os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 from app.worker import commit_processed_message, route_message_to_dlq
 
 
+class FakeProducer:
+    def __init__(self):
+        self.published = []
+
+    async def send_and_wait(self, topic, key, value):
+        self.published.append((topic, key, value))
+
+
 class WorkerCommitTests(unittest.TestCase):
     def test_commit_processed_message_commits_next_offset_for_partition(self):
         async def run_test() -> None:
@@ -33,6 +41,38 @@ class WorkerCommitTests(unittest.TestCase):
             await commit_processed_message(FakeConsumer(), msg)
 
             self.assertEqual(captured, {("transactions", 2): 42})
+
+        asyncio.run(run_test())
+
+    def test_route_message_to_dlq_uses_incoming_correlation_id(self):
+        async def run_test() -> None:
+            committed = {}
+            producer = FakeProducer()
+
+            class FakeConsumer:
+                async def commit(self, offsets):
+                    committed.update(offsets)
+
+            msg = SimpleNamespace(
+                topic="transactions",
+                partition=1,
+                offset=9,
+                timestamp=1722435000,
+                key=b"tx-key",
+            )
+
+            await route_message_to_dlq(
+                consumer=FakeConsumer(),
+                dlq_producer=producer,
+                msg=msg,
+                raw_event='{"correlation_id": "corr-123", "bad": true}',
+                error=ValueError("invalid event"),
+                topic_name="transactions",
+                dlq_topic_name="transactions.dlq",
+            )
+
+            payload = json.loads(producer.published[0][2].decode("utf-8"))
+            self.assertEqual(payload["correlation_id"], "corr-123")
 
         asyncio.run(run_test())
 

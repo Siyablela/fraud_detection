@@ -11,6 +11,7 @@ from starlette.responses import Response
 import structlog
 
 _request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
+_correlation_id_context: ContextVar[str] = ContextVar("correlation_id", default="-")
 
 _http_requests_total = Counter(
     "fraud_http_requests_total",
@@ -46,7 +47,49 @@ _worker_message_latency_seconds = Histogram(
 class RequestContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = _request_id_context.get()
+        record.correlation_id = _correlation_id_context.get()
         return True
+
+
+def get_request_id() -> str:
+    return _request_id_context.get()
+
+
+def get_correlation_id() -> str:
+    return _correlation_id_context.get()
+
+
+def ensure_correlation_id() -> str:
+    existing = _correlation_id_context.get()
+    if existing not in (None, "-", ""):
+        return existing
+
+    correlation_id = str(uuid4())
+    _correlation_id_context.set(correlation_id)
+    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+    return correlation_id
+
+
+def attach_correlation_id(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return payload if payload is not None else {}
+
+    correlation_id = get_correlation_id()
+    if not correlation_id or correlation_id in (None, "-", ""):
+        correlation_id = ensure_correlation_id()
+
+    payload.setdefault("correlation_id", correlation_id)
+    return payload
+
+
+def extract_correlation_id(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    correlation_id = payload.get("correlation_id")
+    if correlation_id not in (None, "", "-"):
+        return str(correlation_id)
+    return None
 
 
 class ServiceNameFilter(logging.Filter):
@@ -66,10 +109,12 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
         self.service_name = service_name
 
     async def dispatch(self, request: Request, call_next):
-        # Generate a request id when the caller did not send one, then bind it to logs for this request.
         request_id = request.headers.get("x-request-id") or str(uuid4())
-        token = _request_id_context.set(request_id)
-        structlog.contextvars.bind_contextvars(request_id=request_id)
+        correlation_id = str(uuid4())
+
+        request_token = _request_id_context.set(request_id)
+        correlation_token = _correlation_id_context.set(correlation_id)
+        structlog.contextvars.bind_contextvars(request_id=request_id, correlation_id=correlation_id)
         start_time = time.perf_counter()
         status_code = 500
         route = request.url.path
@@ -77,6 +122,7 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status_code = response.status_code
             response.headers["x-request-id"] = request_id
+            response.headers["x-correlation-id"] = correlation_id
             return response
         finally:
             elapsed = time.perf_counter() - start_time
@@ -100,9 +146,12 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
                 route=route,
                 status_code=status_code,
                 duration_ms=round(elapsed * 1000, 2),
+                request_id=request_id,
+                correlation_id=correlation_id,
             )
             structlog.contextvars.clear_contextvars()
-            _request_id_context.reset(token)
+            _request_id_context.reset(request_token)
+            _correlation_id_context.reset(correlation_token)
 
 
 def configure_logging(service_name: str, level: str = "INFO") -> None:

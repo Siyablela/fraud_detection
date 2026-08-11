@@ -3,6 +3,7 @@ import inspect
 import json
 from typing import Any
 
+import structlog
 from confluent_kafka import Consumer, Producer
 from prometheus_client import start_http_server
 
@@ -10,7 +11,11 @@ from app.database import create_pool, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
+    attach_correlation_id,
     configure_logging,
+    ensure_correlation_id,
+    extract_correlation_id,
+    get_correlation_id,
     get_logger,
     setup_tracing,
     worker_fraud_decision,
@@ -83,6 +88,13 @@ async def route_message_to_dlq(
         raw_payload=raw_event,
         error=error,
     )
+    if isinstance(dlq_payload, dict):
+        try:
+            parsed_event = json.loads(raw_event)
+        except Exception:
+            parsed_event = {}
+        correlation_id = extract_correlation_id(parsed_event) or ensure_correlation_id()
+        dlq_payload.setdefault("correlation_id", correlation_id)
 
     target_producer = dlq_producer or producer
     if hasattr(target_producer, "produce"):
@@ -162,9 +174,23 @@ async def main() -> None:
             try:
                 with worker_message_timer(SERVICE_NAME, topic_name):
                     event_data = json.loads(raw_event)
-                    transaction = Transaction(**event_data)
+                    if not isinstance(event_data, dict):
+                        event_data = {}
+
+                    transaction_payload = {
+                        field_name: event_data[field_name]
+                        for field_name in Transaction.model_fields
+                        if field_name in event_data
+                    }
+                    transaction = Transaction(**transaction_payload)
 
                     result = evaluate_transaction(transaction)
+                    correlation_id = extract_correlation_id(event_data) or ensure_correlation_id()
+                    event_data = attach_correlation_id(event_data)
+                    if correlation_id != event_data.get("correlation_id"):
+                        correlation_id = event_data["correlation_id"]
+                    if correlation_id not in (None, "", "-"):
+                        structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
                     await save_transaction(
                         database,
                         result,
@@ -174,6 +200,7 @@ async def main() -> None:
                             "source_offset": msg.offset(),
                             "source_timestamp": msg.timestamp()[1],
                         },
+                        correlation_id=correlation_id,
                     )
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))
