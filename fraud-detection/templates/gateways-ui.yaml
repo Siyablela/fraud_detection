@@ -146,9 +146,9 @@ spec:
           args: ["start-dev"]
           env:
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
-              value: "admin"
+              value: {{ .Values.security.keycloakAdminUsername | quote }}
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-              value: "admin"
+              value: {{ .Values.security.keycloakAdminPassword | quote }}
           ports:
             - containerPort: 8080
 ---

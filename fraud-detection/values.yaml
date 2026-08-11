@@ -1,7 +1,8 @@
 global:
   environment: production
 
-# Application secrets
+# Application secrets are expected to come from a Kubernetes Secret.
+# Populate this Secret outside the app, for example from Vault or another secret-sync mechanism.
 secrets:
   existingSecretName: fraud-secrets
 
@@ -25,13 +26,22 @@ security:
   jwtAudience: fraud-api
   jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
   jwtPublicKeyPath: ""
+  jwtAlgorithms: RS256
   requiredReadScope: fraud:transactions:read
+  authTokenEndpointEnabled: false
+  keycloakAdminUrl: http://keycloak:8081
+  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }}"
+  keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password }}"
+  keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username }}"
+  keycloakDemoPassword: "{{ vault:secret/data/keycloak/demo#password }}"
+  keycloakTokenClientId: fraud-cli
+  keycloakTokenClientSecret: "{{ vault:secret/data/keycloak/clients#token-client-secret }}"
+  keycloakServiceClientId: fraud-service-cli
+  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
+  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
 
 kafkaSecurity:
-  protocol: PLAINTEXT
-  truststorePath: .secrets/kafka-ca.pem
-  keystoreCertPath: .secrets/kafka-client.crt
-  keystoreKeyPath: .secrets/kafka-client.key
+  protocol: SASL_PLAINTEXT
 
 resilience:
   enablePreferredAntiAffinity: true
@@ -80,6 +90,8 @@ appConfig:
   kafkaTopicName: transactions_topic
   kafkaDlqTopicName: transactions_topic.dlq
   kafkaConsumerGroupId: fraud-worker-group
+  kafkaProducerAcks: all
+  kafkaProducerEnableIdempotence: true
   dbPoolMinSize: 1
   dbPoolMaxSize: 10
   defaultHighValueThreshold: 10000

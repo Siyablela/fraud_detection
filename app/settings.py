@@ -2,12 +2,11 @@ import json
 import os
 from pathlib import Path
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(_REPO_ROOT / ".env", override=False)
 
 
 def _load_dotenv_values() -> dict[str, str]:
@@ -37,6 +36,14 @@ def _read_env(name: str, default: str = "") -> str:
             if isinstance(dotenv_value, str) and dotenv_value.strip():
                 return dotenv_value.strip()
         return current_value
+
+    file_env_name = f"{name}_FILE"
+    file_value = os.getenv(file_env_name)
+    if file_value not in (None, ""):
+        try:
+            return Path(file_value).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(f"Unable to read secret from {file_env_name}: {file_value}") from exc
 
     dotenv_value = _DOTENV_VALUES.get(name, "")
     if isinstance(dotenv_value, str) and dotenv_value.strip():
