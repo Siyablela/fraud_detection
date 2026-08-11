@@ -10,11 +10,11 @@ from app.database import ping_database
 from app.observability import (
     apply_tracing,
     configure_logging,
+    get_correlation_id,
     get_logger,
     install_fastapi_observability,
     setup_tracing,
 )
-from app.keycloak_bootstrap import bootstrap_keycloak
 from app.security import AuthenticatedPrincipal, get_current_principal
 from app.settings import get_settings
 from app.token_service import (
@@ -76,11 +76,6 @@ async def lifespan(app: FastAPI):
         apply_tracing(app)
     async with database_pool() as pool:
         app.state.database = pool
-        if settings.auth_token_endpoint_enabled:
-            try:
-                await bootstrap_keycloak()
-            except Exception:
-                logger.exception("keycloak_bootstrap_failed")
         yield
 
 
@@ -118,7 +113,9 @@ async def get_transaction(
     if not transaction:
         logger.warning("transaction_not_found", transaction_id=transaction_id)
         raise HTTPException(status_code=404, detail="Transaction records not located.")
-    return transaction
+    response_payload = dict(transaction)
+    response_payload["correlation_id"] = get_correlation_id()
+    return response_payload
 
 @router.get("/api/v1/categories/{category_name}")
 async def get_transactions_by_category(
@@ -157,6 +154,7 @@ async def get_transactions_by_category(
         "previous_page": page - 1 if page > 1 else None,
         "next_page": page + 1 if has_more else None,
         "data": results,
+        "correlation_id": get_correlation_id(),
     }
 
 

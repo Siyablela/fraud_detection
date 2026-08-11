@@ -1,5 +1,6 @@
 import os
 import unittest
+import uuid
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -42,6 +43,8 @@ class TransactionHistoryTests(unittest.TestCase):
         self.assertEqual(values["source_offset"], 42)
         self.assertEqual(values["source_timestamp"], 1722435001)
         self.assertEqual(values["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
+        self.assertTrue(values["correlation_id"])
+        uuid.UUID(values["correlation_id"])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
     configure_logging,
+    ensure_correlation_id,
+    get_correlation_id,
     get_logger,
     setup_tracing,
     worker_fraud_decision,
@@ -83,6 +85,8 @@ async def route_message_to_dlq(
         raw_payload=raw_event,
         error=error,
     )
+    if isinstance(dlq_payload, dict):
+        dlq_payload.setdefault("correlation_id", get_correlation_id())
 
     target_producer = dlq_producer or producer
     if hasattr(target_producer, "produce"):
@@ -165,6 +169,9 @@ async def main() -> None:
                     transaction = Transaction(**event_data)
 
                     result = evaluate_transaction(transaction)
+                    correlation_id = ensure_correlation_id()
+                    if isinstance(event_data, dict):
+                        event_data["correlation_id"] = correlation_id
                     await save_transaction(
                         database,
                         result,
@@ -174,6 +181,7 @@ async def main() -> None:
                             "source_offset": msg.offset(),
                             "source_timestamp": msg.timestamp()[1],
                         },
+                        correlation_id=correlation_id,
                     )
 
                     worker_fraud_decision(SERVICE_NAME, bool(result["is_fraud"]))

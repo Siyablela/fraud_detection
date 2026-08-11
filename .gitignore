@@ -37,6 +37,8 @@ dist/
 # Docker overrides and local data
 docker-compose.override.yml
 
+prep/
+
 # Development TLS certificates
 certs/*
 !certs/.gitkeep

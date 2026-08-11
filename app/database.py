@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB, insert
@@ -50,6 +51,7 @@ class TransactionHistoryRecord(Base):
     source_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     processed_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -132,6 +134,7 @@ async def save_transaction(
     session_factory: async_sessionmaker[AsyncSession],
     result: dict[str, Any],
     source_metadata: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Insert or update a transaction record in the database.
 
@@ -177,14 +180,21 @@ async def save_transaction(
 
     async with session_factory() as session:
         await session.execute(upsert_stmt)
-        await session.execute(insert(TransactionHistoryRecord).values(_build_history_values(result, source_metadata)))
+        await session.execute(
+            insert(TransactionHistoryRecord).values(
+                _build_history_values(result, source_metadata, correlation_id=correlation_id)
+            )
+        )
         await session.commit()
 
 
 def _build_history_values(
-    result: dict[str, Any], source_metadata: dict[str, Any] | None = None
+    result: dict[str, Any],
+    source_metadata: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     source_metadata = source_metadata or {}
+    resolved_correlation_id = correlation_id or str(uuid4())
     return {
         "transaction_id": result["transaction_id"],
         "user_id": result["user_id"],
@@ -197,6 +207,7 @@ def _build_history_values(
         "source_partition": source_metadata.get("source_partition"),
         "source_offset": source_metadata.get("source_offset"),
         "source_timestamp": source_metadata.get("source_timestamp"),
+        "correlation_id": resolved_correlation_id,
     }
 
 
