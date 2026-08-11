@@ -70,6 +70,28 @@ def ensure_correlation_id() -> str:
     return correlation_id
 
 
+def attach_correlation_id(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return payload if payload is not None else {}
+
+    correlation_id = get_correlation_id()
+    if not correlation_id or correlation_id in (None, "-", ""):
+        correlation_id = ensure_correlation_id()
+
+    payload.setdefault("correlation_id", correlation_id)
+    return payload
+
+
+def extract_correlation_id(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    correlation_id = payload.get("correlation_id")
+    if correlation_id not in (None, "", "-"):
+        return str(correlation_id)
+    return None
+
+
 class ServiceNameFilter(logging.Filter):
     def __init__(self, service_name: str):
         super().__init__()
