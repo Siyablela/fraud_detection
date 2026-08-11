@@ -15,6 +15,21 @@ api:
     tag: dev
     pullPolicy: Never
 
+security:
+  jwtIssuer: http://localhost:8081/realms/fraud
+  jwtJwksUrl: http://localhost:8081/realms/fraud/protocol/openid-connect/certs
+  authTokenEndpointEnabled: true
+  keycloakAdminUrl: http://keycloak:8081
+  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }}"
+  keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password }}"
+  keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username }}"
+  keycloakDemoPassword: "{{ vault:secret/data/keycloak/demo#password }}"
+  keycloakTokenClientId: fraud-cli
+  keycloakTokenClientSecret: "{{ vault:secret/data/keycloak/clients#token-client-secret }}"
+  keycloakServiceClientId: fraud-service-cli
+  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
+  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
+
 kong:
   service:
     type: NodePort

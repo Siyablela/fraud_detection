@@ -17,12 +17,21 @@ security:
   jwtAudience: fraud-api
   jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
   jwtPublicKeyPath: ''
+  jwtAlgorithms: RS256
   requiredReadScope: fraud:transactions:read
+  authTokenEndpointEnabled: false
+  keycloakAdminUrl: http://keycloak:8081
+  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }}"
+  keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password }}"
+  keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username }}"
+  keycloakDemoPassword: "{{ vault:secret/data/keycloak/demo#password }}"
+  keycloakTokenClientId: fraud-cli
+  keycloakTokenClientSecret: "{{ vault:secret/data/keycloak/clients#token-client-secret }}"
+  keycloakServiceClientId: fraud-service-cli
+  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
+  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
 kafkaSecurity:
-  protocol: SSL
-  truststorePath: /etc/kafka/tls/kafka-ca.pem
-  keystoreCertPath: /etc/kafka/tls/kafka-client.crt
-  keystoreKeyPath: /etc/kafka/tls/kafka-client.key
+  protocol: SASL_PLAINTEXT
 
 resilience:
   enablePreferredAntiAffinity: true
