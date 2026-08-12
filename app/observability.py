@@ -46,20 +46,43 @@ _worker_message_latency_seconds = Histogram(
 
 class RequestContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
+        """Attach active request and correlation IDs to each log record.
+
+        Args:
+            record: The log record being emitted.
+
+        Returns:
+            bool: Always ``True`` so the record is processed normally.
+        """
         record.request_id = _request_id_context.get()
         record.correlation_id = _correlation_id_context.get()
         return True
 
 
 def get_request_id() -> str:
+    """Return the request ID currently bound to the execution context.
+
+    Returns:
+        str: The active request ID or the default placeholder.
+    """
     return _request_id_context.get()
 
 
 def get_correlation_id() -> str:
+    """Return the active correlation ID from the current request context.
+
+    Returns:
+        str: The active correlation ID or the default placeholder.
+    """
     return _correlation_id_context.get()
 
 
 def ensure_correlation_id() -> str:
+    """Create and bind a correlation ID when the current context does not already have one.
+
+    Returns:
+        str: The bound correlation ID for the current execution context.
+    """
     existing = _correlation_id_context.get()
     if existing not in (None, "-", ""):
         return existing
@@ -71,6 +94,14 @@ def ensure_correlation_id() -> str:
 
 
 def attach_correlation_id(payload: dict | None) -> dict:
+    """Attach the active correlation ID to a payload dictionary when missing.
+
+    Args:
+        payload: The dictionary payload to enrich with correlation metadata.
+
+    Returns:
+        dict: The same payload with a correlation ID added when absent.
+    """
     if not isinstance(payload, dict):
         return payload if payload is not None else {}
 
@@ -83,6 +114,14 @@ def attach_correlation_id(payload: dict | None) -> dict:
 
 
 def extract_correlation_id(payload: dict | None) -> str | None:
+    """Return the correlation ID from a payload when present and non-empty.
+
+    Args:
+        payload: A dictionary payload that may contain a correlation ID.
+
+    Returns:
+        str | None: The extracted correlation ID, or ``None`` if missing.
+    """
     if not isinstance(payload, dict):
         return None
 
@@ -94,10 +133,23 @@ def extract_correlation_id(payload: dict | None) -> str | None:
 
 class ServiceNameFilter(logging.Filter):
     def __init__(self, service_name: str):
+        """Bind the current service name into log records for downstream formatting.
+
+        Args:
+            service_name: The logical service name used across emitted logs.
+        """
         super().__init__()
         self.service_name = service_name
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Ensure every log record carries the service name field.
+
+        Args:
+            record: The log record to enrich.
+
+        Returns:
+            bool: Always ``True`` so the record continues through the logger chain.
+        """
         if not hasattr(record, "service"):
             record.service = self.service_name
         return True
@@ -105,10 +157,25 @@ class ServiceNameFilter(logging.Filter):
 
 class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: FastAPI, service_name: str):
+        """Create HTTP middleware that emits request IDs, metrics, and correlation logs.
+
+        Args:
+            app: The FastAPI application instance to instrument.
+            service_name: The name used when labeling request metrics and logs.
+        """
         super().__init__(app)
         self.service_name = service_name
 
     async def dispatch(self, request: Request, call_next):
+        """Measure the request lifecycle and attach request/correlation metadata to each response.
+
+        Args:
+            request: The incoming HTTP request.
+            call_next: The downstream request handler.
+
+        Returns:
+            Response: The response from the downstream endpoint, enriched with request IDs.
+        """
         request_id = request.headers.get("x-request-id") or str(uuid4())
         correlation_id = str(uuid4())
 
@@ -155,6 +222,15 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
 
 
 def configure_logging(service_name: str, level: str = "INFO") -> None:
+    """Configure the root logger and structlog to emit JSON logs with request context fields.
+
+    Args:
+        service_name: The logical service name assigned to each log record.
+        level: The logging threshold to apply to the root logger.
+
+    Returns:
+        None: The logging configuration is applied in place.
+    """
     root_logger = logging.getLogger()
     if getattr(root_logger, "_fraud_logging_configured", False):
         return
@@ -203,19 +279,45 @@ def configure_logging(service_name: str, level: str = "INFO") -> None:
 
 
 def get_logger(name: str):
+    """Return a configured structlog logger for the given module or component name.
+
+    Args:
+        name: The logger name, usually ``__name__`` for a module.
+
+    Returns:
+        BoundLogger: A structlog logger bound to the requested component.
+    """
     return structlog.get_logger(name)
 
 
 def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
+    """Install structured request logging and metrics middleware for a FastAPI app.
+
+    Args:
+        app: The FastAPI application to instrument.
+        service_name: Logical name used in metrics and logs for the service.
+
+    Returns:
+        None: The middleware and metrics endpoint are installed on the app.
+    """
     app.add_middleware(MetricsAndRequestIdMiddleware, service_name=service_name)
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
+        """Expose Prometheus metrics for the running service."""
         payload = generate_latest()
         return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
 
 def setup_tracing(service_name: str) -> None:
+    """Enable OTel tracing when the exporter endpoint is configured for this service.
+
+    Args:
+        service_name: The logical service name to publish in tracing metadata.
+
+    Returns:
+        None: If a tracer endpoint is configured, the global tracer provider is set.
+    """
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
     if not endpoint:
         return
@@ -245,24 +347,61 @@ def setup_tracing(service_name: str) -> None:
 
     # Return an instrument helper so API apps can opt-in without importing otel directly.
     def _instrument_fastapi(app: FastAPI) -> None:
+        """Instrument a FastAPI app with OpenTelemetry tracing when available."""
         FastAPIInstrumentor.instrument_app(app)
 
     setattr(apply_tracing, "instrument_fastapi", _instrument_fastapi)
 
 
 def apply_tracing(app: FastAPI) -> None:
+    """Instrument the app with the configured tracing helper if available.
+
+    Args:
+        app: The FastAPI application to instrument.
+
+    Returns:
+        None: The app is instrumented only if the tracing helper is available.
+    """
     instrument = getattr(apply_tracing, "instrument_fastapi", None)
     if callable(instrument):
         instrument(app)
 
 
 def worker_message_timer(service_name: str, topic: str):
+    """Return a timer context manager for measuring worker message processing latency.
+
+    Args:
+        service_name: Name of the worker service emitting the metric.
+        topic: Kafka topic being processed.
+
+    Returns:
+        contextlib._GeneratorContextManager: A timer context manager for the latency metric.
+    """
     return _worker_message_latency_seconds.labels(service=service_name, topic=topic).time()
 
 
 def worker_message_outcome(service_name: str, topic: str, status: str) -> None:
+    """Record the final outcome for a processed Kafka message.
+
+    Args:
+        service_name: Name of the worker service emitting the metric.
+        topic: Kafka topic associated with the message.
+        status: Outcome status such as ``success`` or ``dlq``.
+
+    Returns:
+        None: The worker outcome counter is incremented in place.
+    """
     _worker_messages_total.labels(service=service_name, topic=topic, status=status).inc()
 
 
 def worker_fraud_decision(service_name: str, is_fraud: bool) -> None:
+    """Record whether the worker considered the event fraudulent.
+
+    Args:
+        service_name: Name of the worker service emitting the metric.
+        is_fraud: Whether the evaluated transaction was classified as fraud.
+
+    Returns:
+        None: The fraud decision counter is incremented in place.
+    """
     _worker_decisions_total.labels(service=service_name, is_fraud=str(is_fraud).lower()).inc()

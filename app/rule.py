@@ -6,6 +6,16 @@ _rules = RulesConfigProvider()
 
 # Define the expected structure of incoming transaction events
 class Transaction(BaseModel):
+    """Represents an incoming transaction event evaluated by the fraud rules engine.
+
+    Attributes:
+        transaction_id: Unique identifier for the transaction event.
+        user_id: ID of the user associated with the transaction.
+        amount: Monetary amount involved in the transaction.
+        category: Category classification for the transaction.
+        timestamp: Event timestamp in seconds since the Unix epoch.
+    """
+
     transaction_id: str
     user_id: str
     amount: float
@@ -14,6 +24,14 @@ class Transaction(BaseModel):
 
 # Rules engine executing synchronous, high-speed checks
 def evaluate_transaction(transaction: Transaction) -> dict:
+    """Evaluate a transaction against the configured fraud thresholds and risky categories.
+
+    Args:
+        transaction: The transaction payload to evaluate.
+
+    Returns:
+        dict: A transaction result dictionary with the original fields, fraud status, and triggered rules.
+    """
     flags = []
     config = _rules.get()
 

@@ -11,6 +11,14 @@ from app.settings import get_settings
 
 @lru_cache(maxsize=1)
 def build_kafka_ssl_context() -> ssl.SSLContext:
+    """Create and validate the Kafka SSL context using the configured keystore and truststore.
+
+    Returns:
+        ssl.SSLContext: An SSL context configured for Kafka client authentication.
+
+    Raises:
+        RuntimeError: If the Kafka SSL protocol is not enabled or required certificate files are missing.
+    """
     settings = get_settings()
     if settings.kafka_security_protocol.upper() != "SSL":
         raise RuntimeError("Kafka SSL context requested but KAFKA_SECURITY_PROTOCOL is not SSL.")
@@ -34,10 +42,25 @@ def build_kafka_ssl_context() -> ssl.SSLContext:
 
 
 def _build_oauthbearer_config() -> dict[str, Any]:
+    """Construct the SASL/OAUTHBEARER Kafka configuration for Keycloak-based auth.
+
+    Returns:
+        dict[str, Any]: Kafka client configuration parameters for OAUTHBEARER authentication.
+    """
     settings = get_settings()
     issuer = settings.jwt_issuer.rstrip("/")
 
     def oauth_cb(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        """Fetch a service-account access token for SASL/OAUTHBEARER Kafka auth.
+
+        Args:
+            *_args: Ignored callback arguments supplied by the Kafka client.
+            **_kwargs: Ignored keyword arguments supplied by the Kafka client.
+
+        Returns:
+            dict[str, Any]: A token payload with the access token, type, and expiry
+                metadata required by the Kafka OAUTHBEARER callback.
+        """
         response = httpx.post(
             f"{issuer}/protocol/openid-connect/token",
             data={
@@ -69,6 +92,11 @@ def _build_oauthbearer_config() -> dict[str, Any]:
 
 
 def build_kafka_client_config() -> dict[str, Any]:
+    """Build the Kafka client configuration for the active security protocol.
+
+    Returns:
+        dict[str, Any]: Kafka configuration values for the configured TLS or SASL mode.
+    """
     settings = get_settings()
     protocol = settings.kafka_security_protocol.upper()
     if protocol == "SSL":

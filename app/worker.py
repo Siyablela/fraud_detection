@@ -31,6 +31,15 @@ logger = get_logger(__name__)
 
 
 def _message_value(msg: Any, attribute: str) -> Any:
+    """Safely resolve a Kafka message attribute, invoking callables when needed.
+
+    Args:
+        msg: Kafka message object to inspect.
+        attribute: Attribute name to resolve from the message.
+
+    Returns:
+        Any: The message attribute value, or the result of a callable attribute.
+    """
     value = getattr(msg, attribute, None)
     if callable(value):
         return value()
@@ -38,12 +47,31 @@ def _message_value(msg: Any, attribute: str) -> Any:
 
 
 async def _invoke_callable(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Invoke a sync or async callable in a way that preserves asyncio semantics.
+
+    Args:
+        fn: Callable to invoke.
+        *args: Positional arguments to pass through to the callable.
+        **kwargs: Keyword arguments to pass through to the callable.
+
+    Returns:
+        Any: The result returned by the callable.
+    """
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 async def commit_processed_message(consumer: Consumer, msg: Any) -> None:
+    """Commit a Kafka message using the consumer's supported commit API.
+
+    Args:
+        consumer: Kafka consumer instance handling the message.
+        msg: Kafka message to commit as processed.
+
+    Returns:
+        None: The message offset is committed in place when supported.
+    """
     commit_method = getattr(consumer, "commit", None)
     if commit_method is None:
         return
@@ -74,6 +102,21 @@ async def route_message_to_dlq(
     dlq_topic_name: str = "",
     dlq_producer: Producer | None = None,
 ) -> None:
+    """Publish a failed message to the DLQ and commit the original Kafka offset.
+
+    Args:
+        consumer: Kafka consumer used to commit the original message.
+        producer: Optional producer used to publish to the DLQ topic.
+        msg: Original Kafka message raised by the worker.
+        raw_event: Raw serialized message payload.
+        error: Exception that caused the message to be routed to the DLQ.
+        topic_name: Original source topic name.
+        dlq_topic_name: Dead-letter topic name.
+        dlq_producer: Optional explicit DLQ producer override.
+
+    Returns:
+        None: The message is written to the DLQ and the original offset is committed.
+    """
     timestamp_value = _message_value(msg, "timestamp")
     if isinstance(timestamp_value, tuple) and len(timestamp_value) >= 2:
         source_timestamp = timestamp_value[1]
@@ -123,6 +166,11 @@ async def route_message_to_dlq(
 
 
 async def main() -> None:
+    """Run the fraud-processing Kafka worker and handle message flow, persistence, and DLQ routing.
+
+    Returns:
+        None: The worker loops indefinitely while consuming and processing transactions.
+    """
     settings = get_settings()
     topic_name = settings.kafka_topic_name
     dlq_topic_name = settings.kafka_dlq_topic_name

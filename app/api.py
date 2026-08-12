@@ -56,6 +56,18 @@ class ServiceTokenRequest(BaseModel):
 async def require_transaction_read_scope(
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
 ) -> AuthenticatedPrincipal:
+    """Ensure the caller has the transaction read scope required by the API.
+
+    Args:
+        principal: The authenticated caller principal extracted from the bearer token.
+
+    Returns:
+        AuthenticatedPrincipal: The validated principal after confirming the required
+            scope is present.
+
+    Raises:
+        HTTPException: If the token is missing the required read scope.
+    """
     required_scope = get_settings().jwt_required_scope_for_transaction_read
     if required_scope not in principal.scopes:
         raise HTTPException(
@@ -69,6 +81,14 @@ async def require_transaction_read_scope(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Initialize app state and optional tracing during startup and cleanup on shutdown.
+
+    Args:
+        app: The FastAPI application instance being started.
+
+    Yields:
+        None: The app remains alive while the database pool is attached to the state.
+    """
     settings = get_settings()
     configure_logging(SERVICE_NAME, settings.observability_log_level)
     if settings.observability_enable_tracing:
@@ -80,6 +100,11 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Build and configure the FastAPI application instance.
+
+    Returns:
+        FastAPI: A configured application with middleware, tracing, and route registration.
+    """
     app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
     install_fastapi_observability(app, SERVICE_NAME)
     app.include_router(router)
@@ -87,11 +112,31 @@ def create_app() -> FastAPI:
 
 
 def _database_from_request(request: Request | SimpleNamespace):
+    """Return the shared database pool from a FastAPI request or test double.
+
+    Args:
+        request: A FastAPI request object or a lightweight test double exposing an app
+            state.
+
+    Returns:
+        Any: The application's database session factory attached to request state.
+    """
     return request.app.state.database
 
 
 @router.get("/health")
 async def health(request: Request):
+    """Return the application health status after confirming the database is reachable.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        dict[str, str]: A health payload with the service status.
+
+    Raises:
+        HTTPException: If the database cannot be reached and the service is unhealthy.
+    """
     # Health checks verify that the database pool is reachable before returning success.
     try:
         await ping_database(_database_from_request(request))
@@ -107,6 +152,19 @@ async def get_transaction(
     request: Request,
     _principal=Depends(require_transaction_read_scope),
 ):
+    """Return a single transaction by identifier for authorized callers.
+
+    Args:
+        transaction_id: The unique ID of the transaction to fetch.
+        request: The incoming HTTP request.
+        _principal: The caller principal validated by the read-scope dependency.
+
+    Returns:
+        dict[str, Any]: The transaction payload with the active correlation ID attached.
+
+    Raises:
+        HTTPException: If no matching transaction is found.
+    """
     # The scope dependency enforces read access before any lookup runs.
     logger.info("fetch_transaction", transaction_id=transaction_id)
     transaction = await find_transaction(_database_from_request(request), transaction_id)
@@ -125,6 +183,18 @@ async def get_transactions_by_category(
     page_size: int = 100,
     _principal=Depends(require_transaction_read_scope),
 ):
+    """Return a paginated category view with metadata and correlation details.
+
+    Args:
+        category_name: The category to filter transactions by.
+        request: The incoming HTTP request.
+        page: The 1-based page number to fetch.
+        page_size: Max number of records requested per page.
+        _principal: The caller principal validated by the read-scope dependency.
+
+    Returns:
+        dict[str, Any]: Paginated category result metadata and the matching transaction rows.
+    """
     page = max(1, page)
     page_size = max(1, min(page_size, 1000))
     offset = (page - 1) * page_size
@@ -160,6 +230,17 @@ async def get_transactions_by_category(
 
 @router.post("/api/v1/auth/token", response_model=TokenExchangeResponse)
 async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExchangeResponse:
+    """Exchange a username/password pair for a Keycloak access token when enabled.
+
+    Args:
+        payload: A request containing the username, password, optional client ID, and scope.
+
+    Returns:
+        TokenExchangeResponse: The access token payload from the identity provider.
+
+    Raises:
+        HTTPException: If the endpoint is disabled or the identity provider rejects the login.
+    """
     settings = get_settings()
     if not settings.auth_token_endpoint_enabled:
         raise HTTPException(status_code=404, detail="Not found")
@@ -194,6 +275,17 @@ async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExch
 
 @router.post("/api/v1/auth/service-token", response_model=TokenExchangeResponse)
 async def exchange_service_token_for_testing(payload: ServiceTokenRequest) -> TokenExchangeResponse:
+    """Exchange client credentials for a service token when the testing endpoint is enabled.
+
+    Args:
+        payload: A request containing the optional client ID, client secret, and scope.
+
+    Returns:
+        TokenExchangeResponse: The service access token payload from the identity provider.
+
+    Raises:
+        HTTPException: If the endpoint is disabled or the identity provider rejects the request.
+    """
     settings = get_settings()
     if not settings.auth_token_endpoint_enabled:
         raise HTTPException(status_code=404, detail="Not found")
