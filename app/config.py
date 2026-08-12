@@ -12,6 +12,11 @@ class RulesConfig:
 	restricted_categories: dict[str, float] | None = None
 
 	def __post_init__(self):
+		"""Populate missing rule settings from the active application settings.
+
+		Returns:
+		    None: The dataclass fields are updated in place with the default runtime values.
+		"""
 		settings = get_settings()
 		if self.high_value_threshold is None:
 			object.__setattr__(self, "high_value_threshold", settings.default_high_value_threshold)
@@ -24,6 +29,14 @@ class RulesConfig:
 
 
 def load_rules_config(path: str | None = None) -> RulesConfig:
+	"""Load the JSON rule configuration from the configured file path.
+
+	Args:
+	    path: Optional override for the rules file path.
+
+	Returns:
+	    RulesConfig: A validated rules configuration built from the file or the app defaults.
+	"""
 	settings = get_settings()
 	config_path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path))
 	if not config_path.exists():
@@ -47,6 +60,11 @@ class RulesConfigProvider:
 	"""Reload rules when the mounted config file changes."""
 
 	def __init__(self, path: str | None = None):
+		"""Create a configuration provider that reloads rules when the file changes.
+
+		Args:
+		    path: Optional path override for the rule configuration file.
+		"""
 		settings = get_settings()
 		self._configured_path = path
 		self.path = Path(path or os.getenv("FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path))
@@ -54,6 +72,11 @@ class RulesConfigProvider:
 		self._config = RulesConfig()
 
 	def get(self) -> RulesConfig:
+		"""Return the current in-memory rules configuration, reloading when the file changes.
+
+		Returns:
+		    RulesConfig: The live rules configuration, reloaded if the source file changed.
+		"""
 		settings = get_settings()
 		configured_path = self._configured_path or os.getenv(
 			"FRAUD_RULES_CONFIG_PATH", settings.fraud_rules_config_path

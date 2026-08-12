@@ -25,14 +25,35 @@ class AuthenticatedPrincipal:
 
 class _TokenVerifier:
     def decode(self, token: str) -> dict[str, Any]:
+        """Decode and validate a JWT using the configured verifier strategy.
+
+        Args:
+            token: The bearer token string to validate.
+
+        Returns:
+            dict[str, Any]: The decoded JWT payload.
+        """
         raise NotImplementedError
 
 
 class _JwksTokenVerifier(_TokenVerifier):
     def __init__(self, jwks_url: str):
+        """Create a verifier backed by a JWKS endpoint.
+
+        Args:
+            jwks_url: The remote JWKS URL used to resolve signing keys.
+        """
         self._jwks_client = PyJWKClient(jwks_url)
 
     def decode(self, token: str) -> dict[str, Any]:
+        """Validate the token against the configured issuer, audience, and signing key.
+
+        Args:
+            token: A JWT string supplied in the Authorization header.
+
+        Returns:
+            dict[str, Any]: The verified payload from the JWT.
+        """
         settings = get_settings()
         signing_key = self._jwks_client.get_signing_key_from_jwt(token)
         return jwt.decode(
@@ -47,9 +68,22 @@ class _JwksTokenVerifier(_TokenVerifier):
 
 class _PublicKeyTokenVerifier(_TokenVerifier):
     def __init__(self, public_key_path: str):
+        """Create a verifier backed by a PEM-formatted public key file.
+
+        Args:
+            public_key_path: Path to the PEM public key used to validate tokens.
+        """
         self._public_key = Path(public_key_path).read_text(encoding="utf-8")
 
     def decode(self, token: str) -> dict[str, Any]:
+        """Validate the token using the fixed public key from disk.
+
+        Args:
+            token: A JWT string supplied by the caller.
+
+        Returns:
+            dict[str, Any]: The validated JWT payload.
+        """
         settings = get_settings()
         return jwt.decode(
             token,
@@ -63,6 +97,14 @@ class _PublicKeyTokenVerifier(_TokenVerifier):
 
 @lru_cache(maxsize=1)
 def _get_token_verifier() -> _TokenVerifier:
+    """Return a cached token verifier matching the application's configured JWT source.
+
+    Returns:
+        _TokenVerifier: A verifier instance backed by a JWKS URL or PEM public key.
+
+    Raises:
+        RuntimeError: If no JWT verification configuration is available.
+    """
     settings = get_settings()
     if settings.jwt_jwks_url:
         return _JwksTokenVerifier(settings.jwt_jwks_url)
@@ -74,6 +116,14 @@ def _get_token_verifier() -> _TokenVerifier:
 
 
 def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
+    """Normalize JWT scope data from string or list-shaped claims into a set.
+
+    Args:
+        claims: The token claims dictionary from the token verifier.
+
+    Returns:
+        frozenset[str]: A normalized set of granted scope values.
+    """
     scope_value = claims.get("scope") or claims.get("scp") or ""
     if isinstance(scope_value, str):
         return frozenset(part for part in scope_value.split() if part)
@@ -85,6 +135,17 @@ def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
 async def get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> AuthenticatedPrincipal:
+    """Validate a bearer token and return the authenticated principal metadata.
+
+    Args:
+        credentials: The parsed bearer authentication details from FastAPI dependency injection.
+
+    Returns:
+        AuthenticatedPrincipal: The verified principal with subject, scopes, and raw claims.
+
+    Raises:
+        HTTPException: If the token is missing, invalid, expired, or lacks a subject claim.
+    """
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

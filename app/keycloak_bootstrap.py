@@ -21,6 +21,18 @@ def build_client_payload(
     client_secret: str,
     audience: str,
 ) -> dict[str, Any]:
+    """Build a Keycloak client payload for public or service-account client configuration.
+
+    Args:
+        client_id: The client identifier to create in Keycloak.
+        public_client: Whether the client allows public browser-based login.
+        service_account: Whether the client should support service-account access.
+        client_secret: Secret value to store for the client, if required.
+        audience: The target audience expected in issued tokens.
+
+    Returns:
+        dict[str, Any]: The payload used to create or update the Keycloak client.
+    """
     return {
         "clientId": client_id,
         "name": client_id,
@@ -56,6 +68,16 @@ def build_client_payload(
 
 
 def build_user_payload(*, username: str, password: str, email: str) -> dict[str, Any]:
+    """Create the Keycloak user payload for a demo account used during bootstrap.
+
+    Args:
+        username: The username for the demo account.
+        password: The initial password assigned to the demo account.
+        email: The email address for the created user.
+
+    Returns:
+        dict[str, Any]: A Keycloak user representation containing the credentials payload.
+    """
     return {
         "username": username,
         "enabled": True,
@@ -74,6 +96,14 @@ def build_user_payload(*, username: str, password: str, email: str) -> dict[str,
 
 
 async def bootstrap_keycloak() -> None:
+    """Create or update the expected Keycloak realm, clients, and demo user when needed.
+
+    Returns:
+        None: The function ensures the service realm and demo accounts exist.
+
+    Raises:
+        RuntimeError: If Keycloak cannot be reached or bootstrap fails after retries.
+    """
     settings = get_settings()
     issuer = settings.jwt_issuer.rstrip("/")
     realm_name = issuer.rsplit("/realms/", 1)[-1] if "/realms/" in issuer else "fraud"
@@ -179,6 +209,11 @@ async def bootstrap_keycloak() -> None:
 
 
 async def main() -> None:
+    """Run the local Keycloak bootstrap flow as a standalone script.
+
+    Returns:
+        None: The bootstrap routine is executed and any exceptions propagate.
+    """
     await bootstrap_keycloak()
 
 

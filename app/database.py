@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from app.settings import get_settings
 
 def _as_async_sqlalchemy_url(url: str) -> str:
+    """Convert a PostgreSQL URL to the asyncpg-backed SQLAlchemy dialect when needed."""
     if url.startswith("postgresql+asyncpg://"):
         return url
     if url.startswith("postgresql://"):
@@ -193,6 +194,20 @@ def _build_history_values(
     source_metadata: dict[str, Any] | None = None,
     correlation_id: str | None = None,
 ) -> dict[str, Any]:
+    """Build the immutable transaction history row payload, including Kafka source data.
+
+    Args:
+        result: A transaction evaluation result dictionary containing the core
+            transaction fields.
+        source_metadata: Optional Kafka metadata describing the originating topic,
+            partition, offset, and timestamp.
+        correlation_id: The request or message correlation ID to persist with the
+            history record.
+
+    Returns:
+        dict[str, Any]: A row dictionary suitable for insertion into the
+            ``transaction_history`` table.
+    """
     source_metadata = source_metadata or {}
     resolved_correlation_id = correlation_id or str(uuid4())
     return {
@@ -272,6 +287,15 @@ async def get_transactions_by_category(
 
 
 def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
+    """Map a SQLAlchemy transaction row to a serializable dictionary payload.
+
+    Args:
+        row: A ``TransactionRecord`` instance loaded from the database.
+
+    Returns:
+        dict[str, Any]: A JSON-friendly transaction representation without ORM
+            metadata.
+    """
     return {
         "transaction_id": row.transaction_id,
         "user_id": row.user_id,

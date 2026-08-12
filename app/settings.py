@@ -10,6 +10,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_dotenv_values() -> dict[str, str]:
+    """Load environment values from the repository's .env and .env.example files.
+
+    Returns:
+        dict[str, str]: A mapping of environment keys to their values, using the
+            first available values from the repository-local dotenv files.
+    """
     values: dict[str, str] = {}
     for env_file in (_REPO_ROOT / ".env", _REPO_ROOT / ".env.example"):
         if not env_file.exists():
@@ -28,6 +34,15 @@ _PLACEHOLDER_ENV_VALUES = {"JWT_ISSUER": {"issuer"}, "JWT_AUDIENCE": {"aud"}}
 
 
 def _read_env(name: str, default: str = "") -> str:
+    """Read an environment variable, honoring *_FILE secret paths and placeholder fallbacks.
+
+    Args:
+        name: The environment variable name to resolve.
+        default: A fallback value returned when the variable is unset or empty.
+
+    Returns:
+        str: The resolved environment value, including file-backed secret content.
+    """
     current_value = os.getenv(name)
     if current_value not in (None, ""):
         placeholder_values = _PLACEHOLDER_ENV_VALUES.get(name, set())
@@ -52,6 +67,17 @@ def _read_env(name: str, default: str = "") -> str:
 
 
 def _required_env(name: str) -> str:
+    """Return a required environment value or raise if it is missing.
+
+    Args:
+        name: The environment variable name to read.
+
+    Returns:
+        str: The resolved value.
+
+    Raises:
+        RuntimeError: If the required environment variable is unset or empty.
+    """
     value = _read_env(name)
     if value is None or value == "":
         raise RuntimeError(f"Missing required environment variable: {name}")
@@ -59,6 +85,15 @@ def _required_env(name: str) -> str:
 
 
 def _optional_env(name: str, default: str) -> str:
+    """Return an optional environment value with a default if it is not set.
+
+    Args:
+        name: The environment variable name to read.
+        default: The fallback value used when the variable is empty or absent.
+
+    Returns:
+        str: The resolved environment value or the supplied default.
+    """
     value = _read_env(name)
     if value is None or value == "":
         return default
@@ -114,6 +149,16 @@ class Settings(BaseModel):
     @field_validator("jwt_algorithms", mode="before")
     @classmethod
     def parse_jwt_algorithms(cls, value: object) -> object:
+        """Normalize the configured JWT algorithms into a list of strings.
+
+        Args:
+            value: A configured algorithm value from the environment, either as a
+                comma-separated string or a list.
+
+        Returns:
+            object: A cleaned list of algorithm strings or the original value when
+                already valid.
+        """
         if value is None:
             return []
         if isinstance(value, list):
@@ -125,6 +170,15 @@ class Settings(BaseModel):
     @field_validator("default_restricted_categories", mode="before")
     @classmethod
     def parse_restricted_categories(cls, value: object) -> object:
+        """Parse a restricted category map from JSON or a dictionary.
+
+        Args:
+            value: A dictionary of category names to thresholds or a JSON string
+                encoding the same structure.
+
+        Returns:
+            object: A normalized dictionary keyed by uppercase category names.
+        """
         if isinstance(value, dict):
             return {str(key).upper(): float(limit) for key, limit in value.items()}
         if isinstance(value, str):
@@ -136,6 +190,15 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Build the settings model from the current environment and file-based secrets.
+
+        Returns:
+            Settings: The validated application settings instance for the current
+                runtime environment.
+
+        Raises:
+            RuntimeError: If required settings are missing or invalid.
+        """
         data = {
             "database_url": _required_env("DATABASE_URL"),
             "kafka_bootstrap_servers": _required_env("KAFKA_BOOTSTRAP_SERVERS"),
@@ -181,8 +244,18 @@ class Settings(BaseModel):
 
 
 def get_settings() -> Settings:
+    """Build and return the active application settings from the current environment.
+
+    Returns:
+        Settings: The runtime configuration for the app.
+    """
     return Settings.from_env()
 
 
 def clear_settings_cache() -> None:
+    """Clear any cached settings state; currently retained for compatibility with callers.
+
+    Returns:
+        None: This helper intentionally performs no cache invalidation today.
+    """
     return None
