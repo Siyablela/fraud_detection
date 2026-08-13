@@ -127,10 +127,6 @@ class Settings(BaseModel):
     keycloak_service_token_scope: str = Field(default="", alias="KEYCLOAK_SERVICE_TOKEN_SCOPE")
 
     kafka_security_protocol: str = Field(default="PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
-    kafka_ssl_truststore_path: str = Field(default="", alias="KAFKA_SSL_TRUSTSTORE_PATH")
-    kafka_ssl_keystore_cert_path: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_CERT_PATH")
-    kafka_ssl_keystore_key_path: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_KEY_PATH")
-    kafka_ssl_keystore_password: str = Field(default="", alias="KAFKA_SSL_KEYSTORE_PASSWORD")
     kafka_producer_acks: str = Field(default="all", alias="KAFKA_PRODUCER_ACKS")
     kafka_producer_enable_idempotence: bool = Field(default=True, alias="KAFKA_PRODUCER_ENABLE_IDEMPOTENCE")
 
@@ -223,10 +219,6 @@ class Settings(BaseModel):
             "keycloak_service_client_secret": _optional_env("KEYCLOAK_SERVICE_CLIENT_SECRET", ""),
             "keycloak_service_token_scope": _optional_env("KEYCLOAK_SERVICE_TOKEN_SCOPE", ""),
             "kafka_security_protocol": _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
-            "kafka_ssl_truststore_path": _optional_env("KAFKA_SSL_TRUSTSTORE_PATH", ""),
-            "kafka_ssl_keystore_cert_path": _optional_env("KAFKA_SSL_KEYSTORE_CERT_PATH", ""),
-            "kafka_ssl_keystore_key_path": _optional_env("KAFKA_SSL_KEYSTORE_KEY_PATH", ""),
-            "kafka_ssl_keystore_password": _optional_env("KAFKA_SSL_KEYSTORE_PASSWORD", ""),
             "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
             "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
             "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),

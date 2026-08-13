@@ -2,7 +2,7 @@ import os
 import unittest
 
 from app.kafka_security import build_kafka_client_config
-from app.settings import clear_settings_cache
+from app.settings import Settings, clear_settings_cache
 
 
 class KafkaSecurityTests(unittest.TestCase):
@@ -15,6 +15,12 @@ class KafkaSecurityTests(unittest.TestCase):
         ]:
             os.environ.pop(key, None)
         clear_settings_cache()
+
+    def test_settings_do_not_expose_mtls_fields(self):
+        self.assertNotIn("kafka_ssl_truststore_path", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_keystore_cert_path", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_keystore_key_path", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_keystore_password", Settings.model_fields)
 
     def test_build_kafka_client_config_uses_keycloak_oauthbearer(self):
         os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_PLAINTEXT"

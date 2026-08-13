@@ -8,7 +8,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/fraud_detection")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions_topic")
 os.environ.setdefault("KAFKA_CONSUMER_GROUP_ID", "fraud-worker-group")

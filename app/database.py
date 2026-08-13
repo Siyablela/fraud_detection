@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -32,8 +34,17 @@ class TransactionRecord(Base):
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("timezone('UTC', now())"),
+    )
+    updated_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("timezone('UTC', now())"),
+        onupdate=sa.text("timezone('UTC', now())"),
     )
 
 
@@ -54,7 +65,9 @@ class TransactionHistoryRecord(Base):
     source_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     processed_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("timezone('UTC', now())"),
     )
 
 
@@ -158,6 +171,8 @@ async def save_transaction(
         sqlalchemy.exc.SQLAlchemyError: If the database operation or commit
             fails.
     """
+    resolved_correlation_id = correlation_id or str(uuid4())
+    now_utc = datetime.now(timezone.utc)
     stmt = insert(TransactionRecord).values(
         transaction_id=result["transaction_id"],
         user_id=result["user_id"],
@@ -166,6 +181,9 @@ async def save_transaction(
         timestamp=result["timestamp"],
         is_fraud=result["is_fraud"],
         triggered_rules=result["triggered_rules"],
+        correlation_id=resolved_correlation_id,
+        created_at=now_utc,
+        updated_at=now_utc,
     )
     upsert_stmt = stmt.on_conflict_do_update(
         index_elements=[TransactionRecord.transaction_id],
@@ -176,6 +194,8 @@ async def save_transaction(
             "timestamp": stmt.excluded.timestamp,
             "is_fraud": stmt.excluded.is_fraud,
             "triggered_rules": stmt.excluded.triggered_rules,
+            "correlation_id": stmt.excluded.correlation_id,
+            "updated_at": datetime.now(timezone.utc),
         },
     )
 
@@ -210,6 +230,7 @@ def _build_history_values(
     """
     source_metadata = source_metadata or {}
     resolved_correlation_id = correlation_id or str(uuid4())
+    processed_at = datetime.now(timezone.utc)
     return {
         "transaction_id": result["transaction_id"],
         "user_id": result["user_id"],
@@ -223,6 +244,7 @@ def _build_history_values(
         "source_offset": source_metadata.get("source_offset"),
         "source_timestamp": source_metadata.get("source_timestamp"),
         "correlation_id": resolved_correlation_id,
+        "processed_at": processed_at,
     }
 
 

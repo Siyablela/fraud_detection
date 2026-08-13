@@ -3,10 +3,10 @@
 This application uses a split security model:
 
 - Synchronous API traffic is protected with OAuth 2.0 / JWT access tokens.
-- Asynchronous Kafka traffic is protected with mTLS and Kafka ACLs.
+- Asynchronous Kafka traffic is protected with SASL/OAUTHBEARER and Kafka ACLs.
 
 That separation is intentional. Low-latency financial systems should not reuse a single security mechanism for both request/response APIs and high-throughput streaming pipelines.
-JWT gives fine-grained caller identity and scope enforcement for REST/gRPC calls. mTLS plus ACLs gives strong service identity and broker-level authorization for Kafka producers and consumers.
+JWT gives fine-grained caller identity and scope enforcement for REST/gRPC calls. SASL/OAUTHBEARER plus ACLs gives strong service identity and broker-level authorization for Kafka producers and consumers without unnecessary client certificate complexity.
 
 ## Synchronous API security
 
@@ -38,7 +38,7 @@ That keeps the API stateless while aligning the auth flow with the two audiences
 
 ## Kafka stream security
 
-Kafka clients use TLS client authentication instead of SASL.
+Kafka clients use SASL/OAUTHBEARER with service-account credentials and do not require client certificates or mTLS.
 
 Python client configuration snippet:
 
@@ -46,40 +46,36 @@ Python client configuration snippet:
 from confluent_kafka import Consumer, Producer
 
 common_security = {
-    "security.protocol": "SSL",
-    "ssl.context": ssl_context,
+    "security.protocol": "SASL_PLAINTEXT",
+    "sasl.mechanisms": "OAUTHBEARER",
+    "sasl.oauthbearer.client.id": "fraud-service-cli",
+    "sasl.oauthbearer.client.secret": "secret",
+    "oauth_cb": oauth_callback,
 }
 
-producer = Producer({"bootstrap.servers": "kafka:9093", **common_security})
+producer = Producer({"bootstrap.servers": "kafka:9092", **common_security})
 consumer = Consumer({
-    "bootstrap.servers": "kafka:9093",
+    "bootstrap.servers": "kafka:9092",
     "group.id": "fraud-worker-group",
     **common_security,
 })
 ```
 
-Environment-driven TLS file inputs:
-
-- `KAFKA_SSL_TRUSTSTORE_PATH`
-- `KAFKA_SSL_KEYSTORE_CERT_PATH`
-- `KAFKA_SSL_KEYSTORE_KEY_PATH`
-- `KAFKA_SSL_KEYSTORE_PASSWORD`
-
-In Python, these map to the CA bundle, client certificate, client private key, and key passphrase used to build the SSL context.
+This app intentionally avoids certificate-based Kafka authentication to keep the runtime lean and operationally simple.
 
 Kafka ACL example:
 
 ```bash
-kafka-acls --bootstrap-server kafka:9093 \
-  --command-config client-ssl.properties \
+kafka-acls --bootstrap-server kafka:9092 \
+  --command-config client.properties \
   --add \
-  --allow-principal User:fraud-real-time-consumer \
+  --allow-principal User:fraud-service-cli \
   --operation READ \
-  --topic transactions.raw \
+  --topic transactions_topic \
   --group fraud-worker-group
 ```
 
-`client-ssl.properties` should contain the TLS bootstrap settings for the admin client that runs `kafka-acls`.
+`client.properties` should contain the broker bootstrap and SASL/OAUTHBEARER client settings for the admin client that runs `kafka-acls`.
 
 ## Local development
 
@@ -93,6 +89,6 @@ For Compose-based local development:
 
 - Validate JWT signatures with JWKS or a public key from the identity provider.
 - Keep scopes narrow and route-specific.
-- Use mTLS for Kafka producer/consumer identity.
+- Use SASL/OAUTHBEARER for Kafka producer/consumer identity.
 - Use ACLs to bind service principals to specific topics and consumer groups.
-- Rotate keys and certificates on a defined schedule.
+- Rotate service credentials and OAuth client secrets on a defined schedule.

@@ -14,10 +14,16 @@ os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 
-from app.database import _build_history_values
+from app.database import TransactionRecord, _build_history_values
 
 
 class TransactionHistoryTests(unittest.TestCase):
+    def test_transaction_record_tracks_audit_fields(self):
+        self.assertIn("correlation_id", TransactionRecord.__table__.columns)
+        self.assertIn("updated_at", TransactionRecord.__table__.columns)
+        self.assertTrue(TransactionRecord.__table__.c["created_at"].type.timezone)
+        self.assertTrue(TransactionRecord.__table__.c["updated_at"].type.timezone)
+
     def test_build_history_values_includes_result_and_source_metadata(self):
         result = {
             "transaction_id": "tx-1",
