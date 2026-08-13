@@ -29,22 +29,36 @@ helm upgrade --install fraud-system .\fraud-detection `
 ## System overview
 
 ```text
-Kafka
-  |
-  | transaction events (transactions_topic)
-  v
-Worker
-  |-- Rules evaluation
-  |-- PostgreSQL latest-state upsert
-  |-- PostgreSQL append-only history
-  v
+Client / External Producer
+      |
+      |  POST /api/v1/transactions or Kafka event
+      v
+Kafka topic: transactions_topic
+      |
+      |  transaction events
+      v
+Worker process
+      |-- validates schema and correlation metadata
+      |-- loads configured fraud rules
+      |-- evaluates transaction risk
+      |-- writes latest record to PostgreSQL
+      |-- appends decision history to PostgreSQL
+      |-- publishes poison messages to DLQ topic on failure
+      v
 Query API (FastAPI :8000)
-  |
-  | GET /api/v1/transactions/{transaction_id}
-  | GET /api/v1/categories/{category_name}?limit=N
-  v
+      |
+      |  GET /api/v1/transactions/{transaction_id}
+      |  GET /api/v1/categories/{category_name}?limit=N
+      |  GET /health
+      v
+Keycloak / JWT validation
+      |
+      |  bearer-token verification and scope checks
+      v
 Client
 ```
+
+The app behavior is split between an asynchronous Kafka worker and a synchronous query API. The worker owns event ingestion, fraud scoring, persistence, and DLQ handling, while the API serves read requests and validates access with Keycloak-issued JWTs.
 
 ## API endpoints
 
@@ -54,7 +68,7 @@ Query API:
 - GET `/api/v1/categories/{category_name}`
 - GET `/health`
 
-See [SECURITY.md](SECURITY.md) for the JWT scope model and Kafka mTLS / ACL guidance.
+See [SECURITY.md](SECURITY.md) for the JWT scope model and Kafka ACL guidance.
 
 Protected query endpoints require a Bearer token with `fraud:transactions:read`.
 
@@ -236,17 +250,18 @@ docker exec fraud_api python -m alembic upgrade head
 
 ## Configuration
 
-Main environment variables (see [.env.example](.env.example)):
+The app expects the values in [.env.example](.env.example) and honors file-backed secrets via `*_FILE` variables, which is useful for Kubernetes and Vault-injected Secret mounts.
 
-- `DATABASE_URL`
-- `KAFKA_BOOTSTRAP_SERVERS`
-- `KAFKA_SECURITY_PROTOCOL`
-- `KAFKA_SSL_TRUSTSTORE_PATH`
-- `KAFKA_SSL_KEYSTORE_CERT_PATH`
-- `KAFKA_SSL_KEYSTORE_KEY_PATH`
-- `KAFKA_SSL_KEYSTORE_PASSWORD`
+Current environment surface:
 
-Do not commit real credentials.
+- Core app config: `DATABASE_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC_NAME`, `KAFKA_DLQ_TOPIC_NAME`, `KAFKA_CONSUMER_GROUP_ID`, `FRAUD_RULES_CONFIG_PATH`
+- JWT validation: `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_JWKS_URL`, `JWT_PUBLIC_KEY_PATH`, `JWT_ALGORITHMS`, `JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ`
+- Auth token helpers: `AUTH_TOKEN_ENDPOINT_ENABLED`, `KEYCLOAK_TOKEN_CLIENT_ID`, `KEYCLOAK_TOKEN_CLIENT_SECRET`, `KEYCLOAK_SERVICE_CLIENT_ID`, `KEYCLOAK_SERVICE_CLIENT_SECRET`, `KEYCLOAK_SERVICE_TOKEN_SCOPE`
+- Kafka security: `KAFKA_SECURITY_PROTOCOL`, `KAFKA_PRODUCER_ACKS`, `KAFKA_PRODUCER_ENABLE_IDEMPOTENCE`
+- Runtime defaults: `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`, `DEFAULT_HIGH_VALUE_THRESHOLD`, `DEFAULT_RESTRICTED_CATEGORIES`
+- Integration checks: `INTEGRATION_API_URL`, `INTEGRATION_KAFKA_BOOTSTRAP_SERVERS`, `INTEGRATION_KAFKA_TOPIC_NAME`, `INTEGRATION_ACCESS_TOKEN`
+
+Do not commit real credentials. Prefer external secret injection or local-only placeholders.
 
 Dead-letter behavior:
 
