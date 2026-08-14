@@ -96,6 +96,12 @@ async def lifespan(app: FastAPI):
         apply_tracing(app)
     async with database_pool() as pool:
         app.state.database = pool
+        try:
+            await _validate_database_ready(pool)
+            logger.info("startup_dependency_check_passed")
+        except Exception:
+            logger.exception("startup_dependency_check_failed", detail="database is unavailable")
+            raise
         yield
 
 
@@ -124,6 +130,30 @@ def _database_from_request(request: Request | SimpleNamespace):
     return request.app.state.database
 
 
+async def _validate_database_ready(database) -> None:
+    """Check that the database is reachable before the app is considered ready for traffic."""
+    await ping_database(database)
+
+
+@router.get("/live")
+async def live() -> dict[str, str]:
+    """Return a lightweight liveness signal indicating the process is running."""
+    logger.info("liveness_check_passed")
+    return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready(request: Request):
+    """Return the service readiness state only when the database is reachable."""
+    try:
+        await _validate_database_ready(_database_from_request(request))
+        logger.info("readiness_check_passed")
+        return {"status": "ready"}
+    except Exception:
+        logger.exception("readiness_check_failed", detail="database is unavailable")
+        raise HTTPException(status_code=503, detail="Database is unavailable")
+
+
 @router.get("/health")
 async def health(request: Request):
     """Return the application health status after confirming the database is reachable.
@@ -137,9 +167,8 @@ async def health(request: Request):
     Raises:
         HTTPException: If the database cannot be reached and the service is unhealthy.
     """
-    # Health checks verify that the database pool is reachable before returning success.
     try:
-        await ping_database(_database_from_request(request))
+        await _validate_database_ready(_database_from_request(request))
         logger.info("health_check_passed")
         return {"status": "ok"}
     except Exception:

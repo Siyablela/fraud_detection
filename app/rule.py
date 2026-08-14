@@ -1,6 +1,7 @@
-import time
 from pydantic import BaseModel, Field
+
 from app.config import RulesConfigProvider
+from app.time_utils import utc_now_unix_epoch
 
 _rules = RulesConfigProvider()
 
@@ -20,7 +21,7 @@ class Transaction(BaseModel):
     user_id: str
     amount: float
     category: str
-    timestamp: float = Field(default_factory=time.time)
+    timestamp: float = Field(default_factory=utc_now_unix_epoch)
 
 # Rules engine executing synchronous, high-speed checks
 def evaluate_transaction(transaction: Transaction) -> dict:

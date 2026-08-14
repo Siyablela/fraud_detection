@@ -2,12 +2,17 @@ import asyncio
 import json
 import os
 import random
-import time
 import uuid
 from pathlib import Path
 
 from aiokafka import AIOKafkaProducer
 import httpx
+
+from app.observability import configure_logging, get_logger
+from app.time_utils import utc_now_unix_epoch
+
+configure_logging("integration-test")
+logger = get_logger(__name__)
 
 
 def load_env_file() -> None:
@@ -46,7 +51,7 @@ def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict
         "transaction_id": str(uuid.uuid4()),
         "user_id": str(user_id),
         "amount": amount if amount is not None else round(random.uniform(5.0, 2000.0), 2),
-        "timestamp": int(time.time()),
+        "timestamp": int(utc_now_unix_epoch()),
         "category": random.choice(["GROCERIES", "ELECTRONICS", "ENTERTAINMENT", "GAMING"]),
     }
 
@@ -68,7 +73,12 @@ async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -
             timeout=5.0,
         )
         if response.status_code == 200:
-            print(f"Verified transaction {transaction_id} on attempt {attempt}")
+            logger.info(
+                "integration_transaction_verified",
+                transaction_id=transaction_id,
+                attempt=attempt,
+                status_code=response.status_code,
+            )
             return
         if response.status_code == 401:
             raise RuntimeError("Integration token is missing or invalid for the protected query API.")
@@ -76,6 +86,12 @@ async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -
             raise RuntimeError(
                 f"Unexpected response while polling transaction {transaction_id}: {response.status_code} {response.text}"
             )
+        logger.info(
+            "integration_transaction_pending",
+            transaction_id=transaction_id,
+            attempt=attempt,
+            status_code=response.status_code,
+        )
         await asyncio.sleep(1.0)
 
     raise RuntimeError(f"Transaction {transaction_id} was not visible through the API before timeout.")
@@ -87,19 +103,28 @@ async def main():
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     await producer.start()
     try:
-        print("Starting end-to-end integration smoke test")
-        print(f"Kafka bootstrap: {KAFKA_BOOTSTRAP_SERVERS}")
-        print(f"Kafka topic: {KAFKA_TOPIC_NAME}")
-        print(f"API endpoint: {API_URL}")
-        print(f"Transaction id: {payload['transaction_id']}\n")
+        logger.info(
+            "integration_smoke_test_started",
+            kafka_bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            kafka_topic_name=KAFKA_TOPIC_NAME,
+            api_url=API_URL,
+            transaction_id=payload["transaction_id"],
+        )
 
         await publish_transaction(producer, payload)
-        print("Published transaction to Kafka")
+        logger.info(
+            "integration_transaction_published",
+            transaction_id=payload["transaction_id"],
+            kafka_topic_name=KAFKA_TOPIC_NAME,
+        )
 
         async with httpx.AsyncClient() as client:
             await wait_for_transaction(client, payload["transaction_id"])
 
-        print("Integration smoke test passed")
+        logger.info(
+            "integration_smoke_test_passed",
+            transaction_id=payload["transaction_id"],
+        )
     finally:
         await producer.stop()
 

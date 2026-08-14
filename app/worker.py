@@ -7,7 +7,7 @@ import structlog
 from confluent_kafka import Consumer, Producer
 from prometheus_client import start_http_server
 
-from app.database import create_pool, save_transaction
+from app.database import create_pool, ping_database, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
@@ -180,6 +180,7 @@ async def main() -> None:
         setup_tracing(SERVICE_NAME)
 
     database_engine, database = create_pool()
+    await ping_database(database)
     start_http_server(settings.worker_metrics_port)
     logger.info("worker_metrics_started", port=settings.worker_metrics_port)
 
