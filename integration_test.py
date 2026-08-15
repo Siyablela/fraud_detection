@@ -5,9 +5,10 @@ import random
 import uuid
 from pathlib import Path
 
-from aiokafka import AIOKafkaProducer
 import httpx
+from confluent_kafka import Producer
 
+from app.kafka_security import build_kafka_client_config
 from app.observability import configure_logging, get_logger
 from app.time_utils import utc_now_unix_epoch
 
@@ -56,11 +57,12 @@ def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict
     }
 
 
-async def publish_transaction(producer: AIOKafkaProducer, payload: dict) -> None:
-    await producer.send_and_wait(
+async def publish_transaction(producer: Producer, payload: dict) -> None:
+    producer.produce(
         KAFKA_TOPIC_NAME,
         json.dumps(payload).encode("utf-8"),
     )
+    producer.flush(timeout=30)
 
 
 async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -> None:
@@ -100,8 +102,12 @@ async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -
 async def main():
     payload = generate_mock_transaction(user_id=random.randint(1000, 2000))
 
-    producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-    await producer.start()
+    producer = Producer(
+        {
+            "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+            **build_kafka_client_config(),
+        }
+    )
     try:
         logger.info(
             "integration_smoke_test_started",
@@ -126,7 +132,7 @@ async def main():
             transaction_id=payload["transaction_id"],
         )
     finally:
-        await producer.stop()
+        producer.flush(timeout=30)
 
 
 if __name__ == "__main__":
