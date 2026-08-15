@@ -1,0 +1,57 @@
+{{- if .Values.alerting.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: fraud-alerts
+  labels:
+    app: fraud-detection
+    team: {{ .Values.alerting.team | quote }}
+    owner: {{ .Values.alerting.owner | quote }}
+spec:
+  groups:
+    - name: fraud-service.alerts
+      rules:
+        - alert: FraudDatabaseDown
+          expr: fraud_database_up{service="fraud-service"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: {{ .Values.alerting.team | quote }}
+            owner: {{ .Values.alerting.owner | quote }}
+          annotations:
+            summary: Fraud service database is unavailable
+            description: The fraud service database gauge has been 0 for more than 2 minutes. Check PostgreSQL availability and connectivity.
+
+        - alert: FraudKafkaConsumerDown
+          expr: fraud_kafka_up{service="fraud-worker", component="consumer"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: {{ .Values.alerting.team | quote }}
+            owner: {{ .Values.alerting.owner | quote }}
+          annotations:
+            summary: Kafka consumer is down
+            description: The worker Kafka consumer is reporting unhealthy connectivity. Check Kafka and broker connectivity.
+
+        - alert: FraudKafkaProducerDown
+          expr: fraud_kafka_up{service="fraud-worker", component="producer"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: {{ .Values.alerting.team | quote }}
+            owner: {{ .Values.alerting.owner | quote }}
+          annotations:
+            summary: Kafka producer is down
+            description: The worker Kafka producer is reporting unhealthy connectivity. Check Kafka broker health and configuration.
+
+        - alert: FraudApiHigh5xxRate
+          expr: sum by (service) (rate(fraud_http_requests_total{service="fraud-query-api",status_code=~"5.."}[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: {{ .Values.alerting.team | quote }}
+            owner: {{ .Values.alerting.owner | quote }}
+          annotations:
+            summary: Fraud API has elevated 5xx errors
+            description: The fraud query API is returning elevated server-side errors. Inspect logs and downstream dependencies.
+{{- end }}

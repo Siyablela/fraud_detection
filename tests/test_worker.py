@@ -41,7 +41,21 @@ class WorkerCommitTests(unittest.TestCase):
             await commit_processed_message(FakeConsumer(), msg)
 
             self.assertEqual(captured, {("transactions", 2): 42})
+    def test_commit_processed_message_supports_sync_consumer_commit(self):
+        async def run_test() -> None:
+            captured = {}
 
+            class FakeConsumer:
+                def commit(self, offsets):
+                    captured.update(offsets)
+
+            msg = SimpleNamespace(topic="transactions", partition=3, offset=17)
+
+            await commit_processed_message(FakeConsumer(), msg)
+
+            self.assertEqual(captured, {("transactions", 3): 18})
+
+        asyncio.run(run_test())
         asyncio.run(run_test())
 
     def test_route_message_to_dlq_uses_incoming_correlation_id(self):

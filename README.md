@@ -60,6 +60,25 @@ Client
 
 The app behavior is split between an asynchronous Kafka worker and a synchronous query API. The worker owns event ingestion, fraud scoring, persistence, and DLQ handling, while the API serves read requests and validates access with Keycloak-issued JWTs.
 
+## Alerting and operations
+
+This service exposes Prometheus metrics at `/metrics` and includes health gauges for PostgreSQL and Kafka state so alerting can stay simple and operationally useful.
+
+Key alert conditions already supported by the app:
+
+- database is down: `fraud_database_up == 0`
+- Kafka consumer is down: `fraud_kafka_up{component="consumer"} == 0`
+- Kafka producer is down: `fraud_kafka_up{component="producer"} == 0`
+- high API error rate: `rate(fraud_http_requests_total{status_code=~"5.."}[5m]) > 0.1`
+
+The Helm chart includes a lean Prometheus rule set for alerts to the `support` and `developers` teams. If you also run a Postgres exporter and Kafka exporter in the same monitoring stack, you can extend the alerting rules to cover database connection pressure and consumer lag without adding extra app complexity.
+
+A typical alert-routing pattern is:
+
+- route `severity=critical` to the on-call or support channel
+- route `severity=warning` to the engineering team
+- keep the app-level rules narrow and actionable so noise stays low
+
 ## API endpoints
 
 Query API:

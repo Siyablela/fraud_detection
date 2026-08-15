@@ -5,7 +5,7 @@ from contextvars import ContextVar
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 import structlog
@@ -41,6 +41,18 @@ _worker_message_latency_seconds = Histogram(
     "fraud_worker_message_duration_seconds",
     "Worker message processing time in seconds",
     ["service", "topic"],
+)
+
+_database_up = Gauge(
+    "fraud_database_up",
+    "Database availability for the fraud service (1=up, 0=down)",
+    ["service"],
+)
+
+_kafka_up = Gauge(
+    "fraud_kafka_up",
+    "Kafka connectivity status for the fraud service (1=up, 0=down)",
+    ["service", "component"],
 )
 
 
@@ -405,3 +417,13 @@ def worker_fraud_decision(service_name: str, is_fraud: bool) -> None:
         None: The fraud decision counter is incremented in place.
     """
     _worker_decisions_total.labels(service=service_name, is_fraud=str(is_fraud).lower()).inc()
+
+
+def set_database_health(service_name: str, is_healthy: bool) -> None:
+    """Publish the database health signal used in Prometheus alert rules."""
+    _database_up.labels(service=service_name).set(1 if is_healthy else 0)
+
+
+def set_kafka_health(service_name: str, component: str, is_healthy: bool) -> None:
+    """Publish the Kafka health signal used in Prometheus alert rules."""
+    _kafka_up.labels(service=service_name, component=component).set(1 if is_healthy else 0)

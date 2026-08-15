@@ -15,8 +15,9 @@ os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
-from app.database import TransactionRecord, _build_history_values, _row_to_result
+from app.database import TransactionRecord, _build_history_values, _row_to_result, save_transaction
 
 
 class TransactionHistoryTests(unittest.TestCase):
@@ -72,6 +73,68 @@ class TransactionHistoryTests(unittest.TestCase):
         self.assertEqual(values["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
         self.assertTrue(values["correlation_id"])
         uuid.UUID(values["correlation_id"])
+
+    def test_build_history_values_preserves_explicit_correlation_id(self):
+        result = {
+            "transaction_id": "tx-2",
+            "user_id": "user-2",
+            "amount": 77.0,
+            "category": "RETAIL",
+            "timestamp": 1722436000,
+            "is_fraud": False,
+            "triggered_rules": [],
+        }
+
+        values = _build_history_values(result, correlation_id="corr-456")
+
+        self.assertEqual(values["correlation_id"], "corr-456")
+
+    def test_save_transaction_uses_single_generated_correlation_id_for_transaction_and_history(self):
+        result = {
+            "transaction_id": "tx-3",
+            "user_id": "user-3",
+            "amount": 42.5,
+            "category": "FOOD",
+            "timestamp": 1722437000,
+            "is_fraud": False,
+            "triggered_rules": [],
+        }
+        executed = []
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def execute(self, stmt):
+                executed.append(stmt)
+
+            async def commit(self):
+                return None
+
+        class FakeSessionFactory:
+            def __call__(self):
+                return FakeSession()
+
+        async def run_test() -> None:
+            with patch("app.database.uuid4", side_effect=["generated-correlation-id", "fallback-correlation-id"]):
+                with patch("app.database._retry_async", new=lambda operation, **kwargs: operation()):
+                    await save_transaction(FakeSessionFactory(), result)
+
+            upsert_stmt = executed[0]
+            history_stmt = executed[1]
+            upsert_values = upsert_stmt.compile().params
+            history_values = history_stmt.compile().params
+
+            self.assertEqual(upsert_values["correlation_id"], "generated-correlation-id")
+            self.assertEqual(history_values["correlation_id"], "generated-correlation-id")
+            self.assertNotEqual(history_values["correlation_id"], "fallback-correlation-id")
+
+        import asyncio
+
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

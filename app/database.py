@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.observability import set_database_health
 from app.settings import get_settings
 from app.time_utils import normalize_utc_datetime, utc_now
 
@@ -127,13 +128,25 @@ async def database_pool():
         await engine.dispose()
 
 
-async def _retry_async(operation, *, retries: int = 3, delay_seconds: float = 0.5):
-    """Retry an async operation a few times with short exponential backoff."""
+async def _retry_async(
+    operation,
+    *,
+    retries: int = 3,
+    delay_seconds: float = 0.5,
+    retry_exceptions: tuple[type[BaseException], ...] = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError),
+):
+    """Retry only a narrow, explicitly transient set of network and timeout failures."""
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
             return await operation()
         except Exception as exc:  # pragma: no cover - exercised via runtime behavior
+            message = str(exc).lower()
+            is_sqlalchemy_transient = isinstance(exc, sa.exc.OperationalError) and any(
+                marker in message for marker in ("timeout", "could not connect", "connection refused", "connection reset")
+            )
+            if not isinstance(exc, retry_exceptions) and not is_sqlalchemy_transient:
+                raise
             last_error = exc
             if attempt == retries:
                 raise
@@ -163,7 +176,12 @@ async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> No
         async with session_factory() as session:
             await session.execute(text("SELECT 1"))
 
-    await _retry_async(_execute_ping, retries=3, delay_seconds=0.5)
+    try:
+        await _retry_async(_execute_ping, retries=3, delay_seconds=0.5)
+        set_database_health("fraud-service", True)
+    except Exception:
+        set_database_health("fraud-service", False)
+        raise
 
 
 async def save_transaction(
@@ -226,7 +244,7 @@ async def save_transaction(
             await session.execute(upsert_stmt)
             await session.execute(
                 insert(TransactionHistoryRecord).values(
-                    _build_history_values(result, source_metadata, correlation_id=correlation_id)
+                    _build_history_values(result, source_metadata, correlation_id=resolved_correlation_id)
                 )
             )
             await session.commit()
