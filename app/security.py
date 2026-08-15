@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -23,7 +24,8 @@ class AuthenticatedPrincipal:
     claims: dict[str, Any]
 
 
-class _TokenVerifier:
+class _TokenVerifier(ABC):
+    @abstractmethod
     def decode(self, token: str) -> dict[str, Any]:
         """Decode and validate a JWT using the configured verifier strategy.
 

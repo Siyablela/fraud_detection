@@ -103,6 +103,29 @@ observability:
   workerMetricsPort: 9100
   otlpEndpoint: ""
 
+alerting:
+  enabled: true
+  team: support
+  owner: developers
+  alertmanager:
+    enabled: false
+    smtp:
+      enabled: false
+      smarthost: "smtp.example.com:587"
+      from: "fraud-alerts@example.com"
+      to: "support@example.com"
+      username: ""
+      password: ""
+      require_tls: true
+    jarvis:
+      enabled: false
+      webhookUrl: ""
+      username: ""
+      password: ""
+    teamsWebhookUrl: ""
+    slackWebhookUrl: ""
+    slackChannel: "#fraud-alerts"
+
 instana:
   enabled: false
   otlpEndpoint: "http://instana-agent.instana-agent.svc.cluster.local:4318/v1/traces"

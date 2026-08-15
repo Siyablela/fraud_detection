@@ -7,7 +7,7 @@ import structlog
 from confluent_kafka import Consumer, Producer
 from prometheus_client import start_http_server
 
-from app.database import create_pool, save_transaction
+from app.database import create_pool, ping_database, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
@@ -17,6 +17,7 @@ from app.observability import (
     extract_correlation_id,
     get_correlation_id,
     get_logger,
+    set_kafka_health,
     setup_tracing,
     worker_fraud_decision,
     worker_message_outcome,
@@ -76,20 +77,25 @@ async def commit_processed_message(consumer: Consumer, msg: Any) -> None:
     if commit_method is None:
         return
 
+    topic = _message_value(msg, "topic")
+    offset = _message_value(msg, "offset") + 1
+    partition = _message_value(msg, "partition")
+    if isinstance(offset, int) and isinstance(partition, int):
+        commit_offsets = {(topic, partition): offset}
+    else:
+        commit_offsets = {topic: offset}
+
     if inspect.iscoroutinefunction(commit_method):
         try:
             await commit_method(message=msg, asynchronous=False)
         except TypeError:
-            topic = _message_value(msg, "topic")
-            offset = _message_value(msg, "offset") + 1
-            partition = _message_value(msg, "partition")
-            if isinstance(offset, int) and isinstance(partition, int):
-                await commit_method({(topic, partition): offset})
-            else:
-                await commit_method({topic: offset})
+            await commit_method(commit_offsets)
         return
 
-    await _invoke_callable(commit_method, message=msg, asynchronous=False)
+    try:
+        await _invoke_callable(commit_method, message=msg, asynchronous=False)
+    except TypeError:
+        await _invoke_callable(commit_method, commit_offsets)
 
 
 async def route_message_to_dlq(
@@ -140,6 +146,8 @@ async def route_message_to_dlq(
         dlq_payload.setdefault("correlation_id", correlation_id)
 
     target_producer = dlq_producer or producer
+    if target_producer is None:
+        raise RuntimeError("No Kafka producer is configured for DLQ delivery.")
     if hasattr(target_producer, "produce"):
         await _invoke_callable(
             target_producer.produce,
@@ -180,6 +188,7 @@ async def main() -> None:
         setup_tracing(SERVICE_NAME)
 
     database_engine, database = create_pool()
+    await ping_database(database)
     start_http_server(settings.worker_metrics_port)
     logger.info("worker_metrics_started", port=settings.worker_metrics_port)
 
@@ -199,6 +208,8 @@ async def main() -> None:
 
     consumer = Consumer(consumer_config)
     producer = Producer(producer_config)
+    set_kafka_health(SERVICE_NAME, "consumer", True)
+    set_kafka_health(SERVICE_NAME, "producer", True)
 
     try:
         consumer.subscribe([topic_name])
@@ -214,8 +225,10 @@ async def main() -> None:
             if msg is None:
                 continue
             if msg.error():
+                set_kafka_health(SERVICE_NAME, "consumer", False)
                 logger.warning("kafka_poll_error", error=str(msg.error()))
                 continue
+            set_kafka_health(SERVICE_NAME, "consumer", True)
 
             raw_event = msg.value().decode("utf-8")
 
@@ -278,9 +291,10 @@ async def main() -> None:
 
     finally:
         logger.info("worker_shutdown")
+        set_kafka_health(SERVICE_NAME, "consumer", False)
+        set_kafka_health(SERVICE_NAME, "producer", False)
         consumer.close()
         producer.flush(30)
-        await asyncio.to_thread(lambda: None)
         await database_engine.dispose()
 
 

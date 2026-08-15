@@ -1,5 +1,5 @@
+import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -9,7 +9,10 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.observability import set_database_health
 from app.settings import get_settings
+from app.time_utils import normalize_utc_datetime, utc_now
+
 
 def _as_async_sqlalchemy_url(url: str) -> str:
     """Convert a PostgreSQL URL to the asyncpg-backed SQLAlchemy dialect when needed."""
@@ -125,6 +128,34 @@ async def database_pool():
         await engine.dispose()
 
 
+async def _retry_async(
+    operation,
+    *,
+    retries: int = 3,
+    delay_seconds: float = 0.5,
+    retry_exceptions: tuple[type[BaseException], ...] = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError),
+):
+    """Retry only a narrow, explicitly transient set of network and timeout failures."""
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return await operation()
+        except Exception as exc:  # pragma: no cover - exercised via runtime behavior
+            message = str(exc).lower()
+            is_sqlalchemy_transient = isinstance(exc, sa.exc.OperationalError) and any(
+                marker in message for marker in ("timeout", "could not connect", "connection refused", "connection reset")
+            )
+            if not isinstance(exc, retry_exceptions) and not is_sqlalchemy_transient:
+                raise
+            last_error = exc
+            if attempt == retries:
+                raise
+            await asyncio.sleep(delay_seconds * attempt)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Retry helper did not return a result.")
+
+
 async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> None:
     """Verify database connectivity.
 
@@ -140,8 +171,17 @@ async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> No
         sqlalchemy.exc.SQLAlchemyError: If a connection cannot be established
             or the query execution fails.
     """
-    async with session_factory() as session:
-        await session.execute(text("SELECT 1"))
+
+    async def _execute_ping() -> None:
+        async with session_factory() as session:
+            await session.execute(text("SELECT 1"))
+
+    try:
+        await _retry_async(_execute_ping, retries=3, delay_seconds=0.5)
+        set_database_health("fraud-service", True)
+    except Exception:
+        set_database_health("fraud-service", False)
+        raise
 
 
 async def save_transaction(
@@ -172,7 +212,7 @@ async def save_transaction(
             fails.
     """
     resolved_correlation_id = correlation_id or str(uuid4())
-    now_utc = datetime.now(timezone.utc)
+    now_utc = utc_now()
     stmt = insert(TransactionRecord).values(
         transaction_id=result["transaction_id"],
         user_id=result["user_id"],
@@ -195,18 +235,21 @@ async def save_transaction(
             "is_fraud": stmt.excluded.is_fraud,
             "triggered_rules": stmt.excluded.triggered_rules,
             "correlation_id": stmt.excluded.correlation_id,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": utc_now(),
         },
     )
 
-    async with session_factory() as session:
-        await session.execute(upsert_stmt)
-        await session.execute(
-            insert(TransactionHistoryRecord).values(
-                _build_history_values(result, source_metadata, correlation_id=correlation_id)
+    async def _persist_transaction() -> None:
+        async with session_factory() as session:
+            await session.execute(upsert_stmt)
+            await session.execute(
+                insert(TransactionHistoryRecord).values(
+                    _build_history_values(result, source_metadata, correlation_id=resolved_correlation_id)
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
+
+    await _retry_async(_persist_transaction, retries=3, delay_seconds=0.5)
 
 
 def _build_history_values(
@@ -230,7 +273,7 @@ def _build_history_values(
     """
     source_metadata = source_metadata or {}
     resolved_correlation_id = correlation_id or str(uuid4())
-    processed_at = datetime.now(timezone.utc)
+    processed_at = utc_now()
     return {
         "transaction_id": result["transaction_id"],
         "user_id": result["user_id"],
@@ -326,4 +369,7 @@ def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
         "timestamp": row.timestamp,
         "is_fraud": row.is_fraud,
         "triggered_rules": row.triggered_rules,
+        "correlation_id": row.correlation_id,
+        "created_at": normalize_utc_datetime(row.created_at),
+        "updated_at": normalize_utc_datetime(row.updated_at),
     }

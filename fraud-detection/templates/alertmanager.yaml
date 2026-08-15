@@ -1,0 +1,112 @@
+{{- if and .Values.alerting.enabled .Values.alerting.alertmanager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-alertmanager-config
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: ['alertname', 'service']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      receiver: 'default'
+      routes:
+        - matchers:
+            - severity="critical"
+          receiver: 'critical-team'
+        - matchers:
+            - severity="warning"
+          receiver: 'warning-team'
+
+    receivers:
+      - name: 'default'
+        {{- if .Values.alerting.alertmanager.smtp.enabled }}
+        email_configs:
+          - to: {{ .Values.alerting.alertmanager.smtp.to | quote }}
+            from: {{ .Values.alerting.alertmanager.smtp.from | quote }}
+            smarthost: {{ .Values.alerting.alertmanager.smtp.smarthost | quote }}
+            auth_username: {{ .Values.alerting.alertmanager.smtp.username | quote }}
+            auth_password: {{ .Values.alerting.alertmanager.smtp.password | quote }}
+            require_tls: {{ .Values.alerting.alertmanager.smtp.require_tls }}
+            send_resolved: true
+        {{- end }}
+        webhook_configs:
+          {{- if .Values.alerting.alertmanager.jarvis.enabled }}
+          - url: {{ .Values.alerting.alertmanager.jarvis.webhookUrl | quote }}
+            send_resolved: true
+            http_config:
+              basic_auth:
+                username: {{ .Values.alerting.alertmanager.jarvis.username | quote }}
+                password: {{ .Values.alerting.alertmanager.jarvis.password | quote }}
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.teamsWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.teamsWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.slackWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.slackWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+
+      - name: 'critical-team'
+        {{- if .Values.alerting.alertmanager.smtp.enabled }}
+        email_configs:
+          - to: {{ .Values.alerting.alertmanager.smtp.to | quote }}
+            from: {{ .Values.alerting.alertmanager.smtp.from | quote }}
+            smarthost: {{ .Values.alerting.alertmanager.smtp.smarthost | quote }}
+            auth_username: {{ .Values.alerting.alertmanager.smtp.username | quote }}
+            auth_password: {{ .Values.alerting.alertmanager.smtp.password | quote }}
+            require_tls: {{ .Values.alerting.alertmanager.smtp.require_tls }}
+            send_resolved: true
+        {{- end }}
+        webhook_configs:
+          {{- if .Values.alerting.alertmanager.jarvis.enabled }}
+          - url: {{ .Values.alerting.alertmanager.jarvis.webhookUrl | quote }}
+            send_resolved: true
+            http_config:
+              basic_auth:
+                username: {{ .Values.alerting.alertmanager.jarvis.username | quote }}
+                password: {{ .Values.alerting.alertmanager.jarvis.password | quote }}
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.teamsWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.teamsWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.slackWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.slackWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+
+      - name: 'warning-team'
+        {{- if .Values.alerting.alertmanager.smtp.enabled }}
+        email_configs:
+          - to: {{ .Values.alerting.alertmanager.smtp.to | quote }}
+            from: {{ .Values.alerting.alertmanager.smtp.from | quote }}
+            smarthost: {{ .Values.alerting.alertmanager.smtp.smarthost | quote }}
+            auth_username: {{ .Values.alerting.alertmanager.smtp.username | quote }}
+            auth_password: {{ .Values.alerting.alertmanager.smtp.password | quote }}
+            require_tls: {{ .Values.alerting.alertmanager.smtp.require_tls }}
+            send_resolved: true
+        {{- end }}
+        webhook_configs:
+          {{- if .Values.alerting.alertmanager.jarvis.enabled }}
+          - url: {{ .Values.alerting.alertmanager.jarvis.webhookUrl | quote }}
+            send_resolved: true
+            http_config:
+              basic_auth:
+                username: {{ .Values.alerting.alertmanager.jarvis.username | quote }}
+                password: {{ .Values.alerting.alertmanager.jarvis.password | quote }}
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.teamsWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.teamsWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+          {{- if .Values.alerting.alertmanager.slackWebhookUrl }}
+          - url: {{ .Values.alerting.alertmanager.slackWebhookUrl | quote }}
+            send_resolved: true
+          {{- end }}
+{{- end }}
