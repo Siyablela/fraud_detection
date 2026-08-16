@@ -119,6 +119,25 @@ services:
       keycloak:
         condition: service_started
 
+  batch-worker:
+    build: .
+    container_name: fraud_batch_worker
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    command: python -u -m app.batch_worker
+    environment:
+      BATCH_JOB_ENABLED: ${BATCH_JOB_ENABLED:-false}
+      BATCH_RUN_HOUR: ${BATCH_RUN_HOUR:-0}
+      BATCH_RUN_MINUTE: ${BATCH_RUN_MINUTE:-0}
+      DATABASE_URL: ${DATABASE_URL}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
+      OBSERVABILITY_LOG_LEVEL: ${OBSERVABILITY_LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   keycloak-init:
     build: .
     container_name: fraud_keycloak_init

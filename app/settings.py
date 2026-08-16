@@ -106,6 +106,9 @@ class Settings(BaseModel):
     kafka_topic_name: str = Field(..., alias="KAFKA_TOPIC_NAME")
     kafka_dlq_topic_name: str = Field(default="", alias="KAFKA_DLQ_TOPIC_NAME")
     kafka_consumer_group_id: str = Field(..., alias="KAFKA_CONSUMER_GROUP_ID")
+    batch_job_enabled: bool = Field(default=False, alias="BATCH_JOB_ENABLED")
+    batch_run_hour: int = Field(default=0, alias="BATCH_RUN_HOUR")
+    batch_run_minute: int = Field(default=0, alias="BATCH_RUN_MINUTE")
     fraud_rules_config_path: str = Field(..., alias="FRAUD_RULES_CONFIG_PATH")
 
     jwt_issuer: str = Field(..., alias="JWT_ISSUER")
@@ -201,6 +204,9 @@ class Settings(BaseModel):
             "kafka_topic_name": _required_env("KAFKA_TOPIC_NAME"),
             "kafka_dlq_topic_name": _optional_env("KAFKA_DLQ_TOPIC_NAME", ""),
             "kafka_consumer_group_id": _required_env("KAFKA_CONSUMER_GROUP_ID"),
+            "batch_job_enabled": _optional_env("BATCH_JOB_ENABLED", "False"),
+            "batch_run_hour": _optional_env("BATCH_RUN_HOUR", "0"),
+            "batch_run_minute": _optional_env("BATCH_RUN_MINUTE", "0"),
             "fraud_rules_config_path": _required_env("FRAUD_RULES_CONFIG_PATH"),
             "jwt_issuer": _required_env("JWT_ISSUER"),
             "jwt_audience": _required_env("JWT_AUDIENCE"),
