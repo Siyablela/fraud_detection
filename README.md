@@ -29,15 +29,23 @@ helm upgrade --install fraud-system .\fraud-detection `
 ## System overview
 
 ```text
-Client / External Producer
+Real-time path
+  Client / API request
       |
-      |  POST /api/v1/transactions or Kafka event
       v
-Kafka topic: transactions_topic
+  Query API (FastAPI :8000)
       |
-      |  transaction events
+      |  direct read / live fraud evaluation
       v
-Worker process
+  PostgreSQL
+      |
+      |  latest transaction state + history
+      v
+  Kafka topic: transactions_topic
+      |
+      |  live event stream for fraud-check processing
+      v
+  Fraud worker
       |-- validates schema and correlation metadata
       |-- loads configured fraud rules
       |-- evaluates transaction risk
@@ -45,20 +53,36 @@ Worker process
       |-- appends decision history to PostgreSQL
       |-- publishes poison messages to DLQ topic on failure
       v
-Query API (FastAPI :8000)
+  DLQ topic: transactions_topic.dlq
+
+Deferred path
+  Scheduled batch worker (time-bound)
       |
-      |  GET /api/v1/transactions/{transaction_id}
-      |  GET /api/v1/categories/{category_name}?limit=N
-      |  GET /health
+      |  runs at configured clock time (for example midnight)
+      |  performs heavier scheduled analysis or cleanup work
       v
-Keycloak / JWT validation
-      |
-      |  bearer-token verification and scope checks
-      v
-Client
+  PostgreSQL / historical review jobs
 ```
 
-The app behavior is split between an asynchronous Kafka worker and a synchronous query API. The worker owns event ingestion, fraud scoring, persistence, and DLQ handling, while the API serves read requests and validates access with Keycloak-issued JWTs.
+The architecture intentionally separates the hot path from deferred work. The live API and Kafka fraud worker handle immediate transaction processing with low latency, while a separate batch worker runs on a configurable schedule for heavier or non-urgent processing such as historical review, summarization, cleanup, or recalculation. The real-time request path does not depend on queue lag for user-facing results.
+
+## Scheduled batch worker
+
+The batch worker is optional and can be enabled with environment variables.
+
+Example configuration:
+
+```env
+BATCH_JOB_ENABLED=true
+BATCH_RUN_HOUR=2
+BATCH_RUN_MINUTE=0
+```
+
+This configures the batch process to run once per day at 02:00 UTC. The worker waits until the configured time, runs the batch job, and then sleeps until the next scheduled run.
+
+If `BATCH_JOB_ENABLED=false`, the batch worker exits without doing any work.
+
+Note: in the Kubernetes chart, the deferred batch path is modeled as a scheduled CronJob rather than a queue-backed consumer. This keeps the live request path low-latency and makes the nightly or scheduled processing explicit and operationally simpler.
 
 ## Alerting and operations
 

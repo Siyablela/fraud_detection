@@ -21,6 +21,14 @@ api:
     tag: latest
     pullPolicy: IfNotPresent
 
+batch:
+  enabled: true
+  runHour: 2
+  runMinute: 0
+  suspend: false
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
 security:
   jwtIssuer: https://auth.example.com/
   jwtAudience: fraud-api
