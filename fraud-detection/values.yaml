@@ -49,7 +49,7 @@ security:
   keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
 
 kafkaSecurity:
-  protocol: SASL_PLAINTEXT
+  protocol: PLAINTEXT
 
 resilience:
   enablePreferredAntiAffinity: true
@@ -65,8 +65,11 @@ resilience:
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
     worker:
+      # Capped at the transactions topic's partition count (3): a consumer
+      # group can't use more concurrent consumers than partitions, so extra
+      # replicas above this would sit idle.
       minReplicas: 2
-      maxReplicas: 5
+      maxReplicas: 3
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
     kong:

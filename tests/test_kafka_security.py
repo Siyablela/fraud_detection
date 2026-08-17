@@ -40,3 +40,15 @@ class KafkaSecurityTests(unittest.TestCase):
         self.assertEqual(config["sasl.oauthbearer.client.id"], "fraud-service-cli")
         self.assertEqual(config["sasl.oauthbearer.client.secret"], "service-secret")
         self.assertTrue(callable(config["oauth_cb"]))
+
+    def test_build_kafka_client_config_preserves_sasl_ssl_protocol(self):
+        os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
+        os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_ID"] = "fraud-service-cli"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_SECRET"] = "service-secret"
+        clear_settings_cache()
+
+        config = build_kafka_client_config()
+
+        self.assertEqual(config["security.protocol"], "SASL_SSL")
+        self.assertEqual(config["sasl.mechanisms"], "OAUTHBEARER")
