@@ -11,6 +11,8 @@ from app.observability import get_logger
 from app.settings import get_settings
 
 logger = get_logger(__name__)
+_MAX_BOOTSTRAP_ATTEMPTS = 60
+_RETRY_DELAY_SECONDS = 3
 
 
 def build_client_payload(
@@ -95,6 +97,22 @@ def build_user_payload(*, username: str, password: str, email: str) -> dict[str,
     }
 
 
+def build_admin_token_url(keycloak_base_url: str) -> str:
+    """Build the admin-cli token endpoint URL for the Keycloak admin bootstrap flow.
+
+    The bootstrap admin user Keycloak creates in dev mode lives in the
+    built-in "master" realm (not the app's own realm), so this always targets
+    ``/realms/master/...`` regardless of which realm the app itself uses.
+
+    Args:
+        keycloak_base_url: The Keycloak server's base URL, e.g. ``http://keycloak:8080``.
+
+    Returns:
+        str: The full admin-cli token endpoint URL.
+    """
+    return f"{keycloak_base_url.rstrip('/')}/realms/master/protocol/openid-connect/token"
+
+
 async def bootstrap_keycloak() -> None:
     """Create or update the expected Keycloak realm, clients, and demo user when needed.
 
@@ -112,7 +130,8 @@ async def bootstrap_keycloak() -> None:
     keycloak_base_url = os.getenv("KEYCLOAK_ADMIN_URL", "").strip()
     if not keycloak_base_url:
         keycloak_base_url = issuer.rsplit("/realms/", 1)[0]
-    token_url = f"{keycloak_base_url.rstrip('/')}/protocol/openid-connect/token"
+    keycloak_base_url = keycloak_base_url.rstrip("/")
+    token_url = build_admin_token_url(keycloak_base_url)
 
     auth_payload = {
         "grant_type": "password",
@@ -122,7 +141,7 @@ async def bootstrap_keycloak() -> None:
     }
 
     last_error: Exception | None = None
-    for attempt in range(1, 31):
+    for attempt in range(1, _MAX_BOOTSTRAP_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 token_response = await client.post(token_url, data=auth_payload)
@@ -196,9 +215,9 @@ async def bootstrap_keycloak() -> None:
                     )
         except Exception as exc:  # pragma: no cover - exercised during startup retries
             last_error = exc
-            if attempt == 30:
+            if attempt == _MAX_BOOTSTRAP_ATTEMPTS:
                 raise
-            await asyncio.sleep(2)
+            await asyncio.sleep(_RETRY_DELAY_SECONDS)
             continue
 
         logger.info("keycloak_bootstrap_complete", realm=realm_name)

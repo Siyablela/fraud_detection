@@ -3,6 +3,7 @@ services:
     image: postgres:16-alpine
     container_name: fraud_postgres
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     environment:
@@ -21,6 +22,7 @@ services:
     image: apache/kafka:latest
     container_name: fraud_kafka_broker
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     ports:
@@ -43,6 +45,7 @@ services:
   kafka-init:
     image: apache/kafka:latest
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     depends_on:
@@ -62,6 +65,7 @@ services:
     build: .
     container_name: fraud_worker
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     command: python -u -m app.worker
@@ -123,6 +127,7 @@ services:
     build: .
     container_name: fraud_batch_worker
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     command: python -u -m app.batch_worker
@@ -142,13 +147,14 @@ services:
     build: .
     container_name: fraud_keycloak_init
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     command: python -u -m app.keycloak_bootstrap
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
-      KEYCLOAK_ADMIN_URL: ${KEYCLOAK_ADMIN_URL:-http://keycloak:8080}
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080
       KEYCLOAK_DEMO_USERNAME: ${KEYCLOAK_DEMO_USERNAME:-demo}
       KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD:-demo}
       JWT_ISSUER: ${JWT_ISSUER}
@@ -166,6 +172,7 @@ services:
     build: .
     container_name: fraud_api
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -185,7 +192,7 @@ services:
       AUTH_TOKEN_ENDPOINT_ENABLED: ${AUTH_TOKEN_ENDPOINT_ENABLED:-true}
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
-      KEYCLOAK_ADMIN_URL: ${KEYCLOAK_ADMIN_URL:-http://keycloak:8080}
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080
       KEYCLOAK_DEMO_USERNAME: ${KEYCLOAK_DEMO_USERNAME:-demo}
       KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD:-demo}
       KEYCLOAK_TOKEN_CLIENT_ID: ${KEYCLOAK_TOKEN_CLIENT_ID:-fraud-cli}
@@ -227,6 +234,7 @@ services:
     image: quay.io/keycloak/keycloak:26.0
     container_name: fraud_keycloak
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     command: start-dev
@@ -240,6 +248,7 @@ services:
     image: ghcr.io/kafbat/kafka-ui:latest
     container_name: fraud_kafka_ui
     dns:
+      - 127.0.0.11
       - 1.1.1.1
       - 8.8.8.8
     ports:

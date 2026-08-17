@@ -1,4 +1,4 @@
-from app.keycloak_bootstrap import build_client_payload, build_user_payload
+from app.keycloak_bootstrap import build_admin_token_url, build_client_payload, build_user_payload
 
 
 def test_public_client_payload_enables_oauth_flows_and_audience_mapper() -> None:
@@ -43,3 +43,17 @@ def test_user_payload_sets_enabled_and_credentials() -> None:
     assert payload["enabled"] is True
     assert payload["email"] == "demo@example.com"
     assert payload["credentials"][0]["value"] == "demo"
+
+
+def test_build_admin_token_url_targets_master_realm() -> None:
+    assert (
+        build_admin_token_url("http://keycloak:8080")
+        == "http://keycloak:8080/realms/master/protocol/openid-connect/token"
+    )
+
+
+def test_build_admin_token_url_strips_trailing_slash() -> None:
+    assert (
+        build_admin_token_url("http://keycloak:8080/")
+        == "http://keycloak:8080/realms/master/protocol/openid-connect/token"
+    )

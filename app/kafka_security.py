@@ -7,8 +7,12 @@ import httpx
 from app.settings import get_settings
 
 
-def _build_oauthbearer_config() -> dict[str, Any]:
+def _build_oauthbearer_config(security_protocol: str) -> dict[str, Any]:
     """Construct the SASL/OAUTHBEARER Kafka configuration for Keycloak-based auth.
+
+    Args:
+        security_protocol: The resolved SASL security protocol to use, either
+            ``SASL_PLAINTEXT`` or ``SASL_SSL``.
 
     Returns:
         dict[str, Any]: Kafka client configuration parameters for OAUTHBEARER authentication.
@@ -46,7 +50,7 @@ def _build_oauthbearer_config() -> dict[str, Any]:
         }
 
     return {
-        "security.protocol": "SASL_PLAINTEXT",
+        "security.protocol": security_protocol,
         "sasl.mechanisms": "OAUTHBEARER",
         "sasl.oauthbearer.token.endpoint.url": f"{issuer}/protocol/openid-connect/token",
         "sasl.oauthbearer.client.id": settings.keycloak_service_client_id,
@@ -67,6 +71,6 @@ def build_kafka_client_config() -> dict[str, Any]:
     protocol = settings.kafka_security_protocol.upper()
 
     if protocol in {"SASL_PLAINTEXT", "SASL_SSL"}:
-        return _build_oauthbearer_config()
+        return _build_oauthbearer_config(protocol)
 
     return {"security.protocol": "PLAINTEXT"}
