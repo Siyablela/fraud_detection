@@ -21,9 +21,9 @@ jobs:
       matrix:
         image:
           - name: fraud-api
-            dockerfile: ./fraud-detection/Dockerfile
+            dockerfile: ./Dockerfile
           - name: fraud-worker
-            dockerfile: ./fraud-detection/worker/Dockerfile
+            dockerfile: ./Dockerfile
 
     steps:
       - name: Checkout repository
