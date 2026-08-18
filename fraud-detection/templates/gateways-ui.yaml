@@ -13,6 +13,10 @@ spec:
       labels:
         app: kong
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       {{- if .Values.resilience.enablePreferredAntiAffinity }}
       affinity:
         podAntiAffinity:
@@ -140,6 +144,10 @@ spec:
       labels:
         app: keycloak
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: keycloak
           image: {{ .Values.keycloak.image }}
@@ -178,6 +186,10 @@ spec:
       labels:
         app: kafka-ui
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: kafka-ui
           image: {{ .Values.kafkaUi.image }}

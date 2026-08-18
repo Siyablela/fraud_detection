@@ -3,15 +3,16 @@ global:
 worker:
   replicaCount: 2
   image:
-    repository: ghcr.io/siyablela/fraud_detection
-    tag: 3d97e0731347c9e182c2a54c03134a6bfba65b46
-    pullPolicy: IfNotPresent
+    repository: ghcr.io/siyablela/fraud-detection/fraud-worker
+    tag: "1.0.0"
+    pullPolicy: Always
+
 api:
   replicaCount: 2
   image:
-    repository: ghcr.io/siyablela/fraud_detection
-    tag: 3d97e0731347c9e182c2a54c03134a6bfba65b46
-    pullPolicy: IfNotPresent
+    repository: ghcr.io/siyablela/fraud-detection/fraud-api
+    tag: "1.0.0"
+    pullPolicy: Always
 security:
   jwtIssuer: https://auth.example.com/
   jwtAudience: fraud-api

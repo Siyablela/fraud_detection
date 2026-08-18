@@ -438,7 +438,98 @@ kubectl logs -n fraud-system job/<batch-job-name>
 
 ---
 
-## 14. Common customization points
+## 14. Image registry configuration for production
+
+The chart supports pulling images from GitHub Container Registry (ghcr.io) or other container registries using Kubernetes image pull secrets.
+
+### GitHub Container Registry (ghcr.io) setup
+
+For production deployments using GitHub Container Registry:
+
+1. **Build and push images to ghcr.io:**
+
+```bash
+# Build and push fraud-worker image
+docker build -f Dockerfile.worker -t ghcr.io/siyablela/fraud-detection/fraud-worker:1.0.0 .
+docker push ghcr.io/siyablela/fraud-detection/fraud-worker:1.0.0
+
+# Build and push fraud-api image
+docker build -f Dockerfile.api -t ghcr.io/siyablela/fraud-detection/fraud-api:1.0.0 .
+docker push ghcr.io/siyablela/fraud-detection/fraud-api:1.0.0
+```
+
+2. **For private ghcr.io repos, create image pull secret in your cluster:**
+
+```bash
+kubectl create secret docker-registry ghcr-credentials \
+  --docker-server=ghcr.io \
+  --docker-username=<github-username> \
+  --docker-password=<github-token> \
+  --docker-email=<email> \
+  -n fraud-system
+```
+
+3. **Update values-prod.yaml (if using private repos):**
+
+```yaml
+imagePullSecrets:
+  - name: ghcr-credentials
+
+worker:
+  image:
+    repository: ghcr.io/siyablela/fraud-detection/fraud-worker
+    tag: "1.0.0"
+    pullPolicy: Always
+
+api:
+  image:
+    repository: ghcr.io/siyablela/fraud-detection/fraud-api
+    tag: "1.0.0"
+    pullPolicy: Always
+```
+
+4. **Deploy with Helm:**
+
+```bash
+helm upgrade --install fraud-system ./fraud-detection \
+  -f ./fraud-detection/values.yaml \
+  -f ./fraud-detection/values-prod.yaml \
+  -n fraud-system --create-namespace
+```
+
+### Alternative: Private registries (ACR, ECR, etc.)
+
+For Azure Container Registry or other private registries, update `values-prod.yaml`:
+
+```yaml
+imagePullSecrets:
+  - name: acr-credentials  # or your registry credentials secret name
+
+worker:
+  image:
+    repository: myregistry.azurecr.io/fraud-worker  # Update to your registry
+    tag: "1.0.0"
+    pullPolicy: Always
+
+api:
+  image:
+    repository: myregistry.azurecr.io/fraud-api  # Update to your registry
+    tag: "1.0.0"
+    pullPolicy: Always
+```
+
+### Important notes
+
+- **Public ghcr.io repos**: If your repository is public, `imagePullSecrets` can remain empty (`[]`)
+- **Private repos**: Only required if your ghcr.io repo is private
+- **Use semantic versioning**: Always use versioned tags (e.g., `v1.0.0`) in production, never `latest`
+- **Use `pullPolicy: Always`**: Ensures images are always pulled from the registry for consistency
+- **Third-party images**: Postgres, Kafka, Keycloak, Kong are pulled from public registries (Docker Hub, Quay.io, etc.) automatically
+- **Image pull secret must exist** before deployment if configured
+
+---
+
+## 15. Common customization points
 
 If you want to tune the deployment, the most common places to edit are:
 

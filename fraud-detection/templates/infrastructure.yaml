@@ -1,5 +1,6 @@
 # --- POSTGRESQL ---
 {{- if .Values.persistence.postgres.enabled }}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,9 +14,9 @@ spec:
   {{- if .Values.persistence.postgres.storageClassName }}
   storageClassName: {{ .Values.persistence.postgres.storageClassName | quote }}
   {{- end }}
+{{- end }}
 
 ---
-{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,6 +31,10 @@ spec:
       labels:
         app: postgres
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
@@ -115,6 +120,10 @@ spec:
       labels:
         app: kafka
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: kafka
           image: {{ .Values.kafka.image }}
@@ -131,7 +140,7 @@ spec:
               value: "CONTROLLER"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-            - name: KAFKA_CONTROLLER_QUORUM_VOTERS   # <--- FIX: Ensure no trailing colon here
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
               value: "1@kafka:9093"
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
               value: {{ .Values.kafka.durability.offsetsTopicReplicationFactor | quote }}
@@ -173,6 +182,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+
 ---
 apiVersion: v1
 kind: Service
