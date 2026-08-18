@@ -30,6 +30,10 @@ spec:
       labels:
         app: postgres
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}
@@ -115,9 +119,13 @@ spec:
       labels:
         app: kafka
     spec:
-      containers:
-        - name: kafka
-          image: {{ .Values.kafka.image }}
+     {{- if .Values.imagePullSecrets }}
+     imagePullSecrets:
+       {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+     {{- end }}
+     containers:
+       - name: kafka
+         image: {{ .Values.kafka.image }}
           env:
             - name: KAFKA_NODE_ID
               value: "1"

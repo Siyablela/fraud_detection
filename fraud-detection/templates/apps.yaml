@@ -13,6 +13,10 @@ spec:
       labels:
         app: fraud-worker
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       {{- if .Values.resilience.enablePreferredAntiAffinity }}
       affinity:
         podAntiAffinity:
@@ -149,6 +153,10 @@ spec:
           labels:
             app: fraud-batch-worker
         spec:
+          {{- if .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml .Values.imagePullSecrets | nindent 12 }}
+          {{- end }}
           restartPolicy: OnFailure
           initContainers:
             - name: wait-for-postgres
@@ -197,6 +205,10 @@ spec:
       labels:
         app: fraud-api
     spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
       {{- if .Values.resilience.enablePreferredAntiAffinity }}
       affinity:
         podAntiAffinity:
