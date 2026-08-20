@@ -2,10 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: fraud_postgres
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -21,10 +18,7 @@ services:
   kafka:
     image: apache/kafka:latest
     container_name: fraud_kafka_broker
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     ports:
       - "9092:9092"
     environment:
@@ -44,10 +38,7 @@ services:
 
   kafka-init:
     image: apache/kafka:latest
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     depends_on:
       - kafka
     command:
@@ -64,10 +55,7 @@ services:
   worker:
     build: .
     container_name: fraud_worker
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     command: python -u -m app.worker
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
@@ -126,10 +114,7 @@ services:
   batch-worker:
     build: .
     container_name: fraud_batch_worker
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     command: python -u -m app.batch_worker
     environment:
       BATCH_JOB_ENABLED: ${BATCH_JOB_ENABLED:-false}
@@ -146,10 +131,7 @@ services:
   keycloak-init:
     build: .
     container_name: fraud_keycloak_init
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     command: python -u -m app.keycloak_bootstrap
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
@@ -171,10 +153,7 @@ services:
   api:
     build: .
     container_name: fraud_api
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
@@ -233,10 +212,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: fraud_keycloak
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     command: start-dev
     ports:
       - "8081:8080"
@@ -247,10 +223,7 @@ services:
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:latest
     container_name: fraud_kafka_ui
-    dns:
-      - 127.0.0.11
-      - 1.1.1.1
-      - 8.8.8.8
+
     ports:
       - "8080:8080"
     environment:

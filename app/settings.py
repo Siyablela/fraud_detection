@@ -114,6 +114,9 @@ class Settings(BaseModel):
     jwt_issuer: str = Field(..., alias="JWT_ISSUER")
     jwt_audience: str = Field(..., alias="JWT_AUDIENCE")
     jwt_jwks_url: str = Field(default="", alias="JWT_JWKS_URL")
+    jwt_jwks_refresh_interval_seconds: int = Field(
+        default=300, ge=0, alias="JWT_JWKS_REFRESH_INTERVAL_SECONDS"
+    )
     jwt_public_key_path: str = Field(default="", alias="JWT_PUBLIC_KEY_PATH")
     jwt_algorithms: list[str] = Field(default_factory=lambda: ["RS256"], alias="JWT_ALGORITHMS")
     jwt_required_scope_for_transaction_read: str = Field(
@@ -211,6 +214,9 @@ class Settings(BaseModel):
             "jwt_issuer": _required_env("JWT_ISSUER"),
             "jwt_audience": _required_env("JWT_AUDIENCE"),
             "jwt_jwks_url": _optional_env("JWT_JWKS_URL", ""),
+            "jwt_jwks_refresh_interval_seconds": _optional_env(
+                "JWT_JWKS_REFRESH_INTERVAL_SECONDS", "300"
+            ),
             "jwt_public_key_path": _optional_env("JWT_PUBLIC_KEY_PATH", ""),
             "jwt_algorithms": _optional_env("JWT_ALGORITHMS", "RS256"),
             "jwt_required_scope_for_transaction_read": _optional_env(
