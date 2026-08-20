@@ -3,15 +3,14 @@ global:
 worker:
   replicaCount: 2
   image:
-    repository: ghcr.io/siyablela/fraud-detection/fraud-worker
-    tag: "1.0.0"
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: d328b1db42a8633dbb8189636f3e037437ea308c
     pullPolicy: Always
-
 api:
   replicaCount: 2
   image:
-    repository: ghcr.io/siyablela/fraud-detection/fraud-api
-    tag: "1.0.0"
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: d328b1db42a8633dbb8189636f3e037437ea308c
     pullPolicy: Always
 security:
   jwtIssuer: https://auth.example.com/
@@ -22,18 +21,20 @@ security:
   requiredReadScope: fraud:transactions:read
   authTokenEndpointEnabled: false
   keycloakAdminUrl: http://keycloak:8081
-  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }}"
-  keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password }}"
-  keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username }}"
-  keycloakDemoPassword: "{{ vault:secret/data/keycloak/demo#password }}"
+  keycloakAdminUsername: '{{ vault:secret/data/keycloak/admin#username }}'
+  keycloakAdminPassword: '{{ vault:secret/data/keycloak/admin#password }}'
+  keycloakDemoUsername: '{{ vault:secret/data/keycloak/demo#username }}'
+  keycloakDemoPassword: '{{ vault:secret/data/keycloak/demo#password }}'
   keycloakTokenClientId: fraud-cli
-  keycloakTokenClientSecret: "{{ vault:secret/data/keycloak/clients#token-client-secret }}"
+  keycloakTokenClientSecret: '{{ vault:secret/data/keycloak/clients#token-client-secret
+    }}'
   keycloakServiceClientId: fraud-service-cli
-  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
-  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
+  keycloakServiceClientSecret: '{{ vault:secret/data/keycloak/clients#service-client-secret
+    }}'
+  keycloakServiceTokenScope: '{{ vault:secret/data/keycloak/clients#service-token-scope
+    }}'
 kafkaSecurity:
   protocol: PLAINTEXT
-
 resilience:
   enablePreferredAntiAffinity: true
   topologyKey: kubernetes.io/hostname
