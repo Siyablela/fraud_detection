@@ -127,6 +127,8 @@ spec:
               value: {{ .Values.observability.enableTracing | quote }}
             - name: WORKER_METRICS_PORT
               value: {{ .Values.observability.workerMetricsPort | quote }}
+            - name: ALLOWED_ORIGINS
+              value: {{ .Values.security.allowedOrigins | quote }}
           volumeMounts:
             - name: rules-volume
               mountPath: /config/rules.json

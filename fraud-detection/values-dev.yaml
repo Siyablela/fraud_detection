@@ -29,6 +29,7 @@ security:
   keycloakServiceClientId: fraud-service-cli
   keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
   keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
+  allowedOrigins: ["*"]
 
 kong:
   service:

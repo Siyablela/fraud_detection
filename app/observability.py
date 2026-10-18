@@ -322,61 +322,98 @@ def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
 
 
 def setup_tracing(service_name: str) -> None:
-    """Enable OTel tracing when the exporter endpoint is configured for this service.
+    """Configure the OpenTelemetry tracer provider.
+
+    This function:
+        1. Reads the OTLP exporter endpoint.
+        2. Skips tracing when no endpoint is configured.
+        3. Loads the OpenTelemetry dependencies.
+        4. Creates the tracer provider.
+        5. Configures the OTLP exporter.
+        6. Registers the provider globally.
+
+    OpenTelemetry is optional. If tracing is enabled but the required
+    dependencies are not installed, the application logs a warning
+    and continues without tracing.
 
     Args:
-        service_name: The logical service name to publish in tracing metadata.
+        service_name: Logical name used to identify the service in traces.
 
     Returns:
-        None: If a tracer endpoint is configured, the global tracer provider is set.
+        None.
     """
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    endpoint = os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "",
+    ).strip()
+
     if not endpoint:
         return
 
     try:
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except Exception:
+
+    except ImportError:
         get_logger(__name__).warning(
             "tracing_dependencies_missing",
-            detail="Tracing is enabled through environment variables, but OpenTelemetry dependencies are missing.",
+            detail=(
+                "Tracing is enabled, but the required "
+                "OpenTelemetry dependencies are not installed."
+            ),
             service_name=service_name,
         )
         return
 
+    # Avoid creating multiple tracer providers.
     if isinstance(trace.get_tracer_provider(), TracerProvider):
         return
 
-    resource = Resource.create({"service.name": service_name})
-    provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+        }
+    )
+
+    provider = TracerProvider(
+        resource=resource,
+    )
+
+    exporter = OTLPSpanExporter(
+        endpoint=endpoint,
+    )
+
+    provider.add_span_processor(
+        BatchSpanProcessor(exporter)
+    )
+
     trace.set_tracer_provider(provider)
-
-    # Return an instrument helper so API apps can opt-in without importing otel directly.
-    def _instrument_fastapi(app: FastAPI) -> None:
-        """Instrument a FastAPI app with OpenTelemetry tracing when available."""
-        FastAPIInstrumentor.instrument_app(app)
-
-    setattr(apply_tracing, "instrument_fastapi", _instrument_fastapi)
 
 
 def apply_tracing(app: FastAPI) -> None:
-    """Instrument the app with the configured tracing helper if available.
+    """Instrument the FastAPI application with OpenTelemetry.
+
+    This function is separate from ``setup_tracing``.
+
+    ``setup_tracing`` configures the OpenTelemetry SDK and exporter,
+    while this function adds FastAPI request instrumentation.
 
     Args:
         app: The FastAPI application to instrument.
 
     Returns:
-        None: The app is instrumented only if the tracing helper is available.
+        None.
     """
-    instrument = getattr(apply_tracing, "instrument_fastapi", None)
-    if callable(instrument):
-        instrument(app)
+    from opentelemetry.instrumentation.fastapi import (
+        FastAPIInstrumentor,
+    )
+
+    FastAPIInstrumentor.instrument_app(app)
 
 
 def worker_message_timer(service_name: str, topic: str):

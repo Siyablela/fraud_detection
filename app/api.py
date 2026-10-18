@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from math import ceil
 from types import SimpleNamespace
+from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -79,29 +80,49 @@ async def require_transaction_read_scope(
         )
     return principal
 
-@asynccontextmanager
+@asynccontextmanager 
 async def lifespan(app: FastAPI):
-    """Initialize app state and optional tracing during startup and cleanup on shutdown.
+    """Manage resources required during the FastAPI application lifecycle. 
+    The code before ``yield`` runs during application startup. 
+    This is where application-wide resources such as logging, tracing, and database connections are initialized.
+    Once startup completes successfully, ``yield`` allows FastAPI to begin serving requests.
+    When FastAPI shuts down, execution resumes after ``yield``. 
+    Exiting the ``database_pool`` context manager then releases the database resources.
+    Startup process: 
+        1. Load application settings. 
+        2. Configure logging. 
+        3. Optionally configure OpenTelemetry tracing. 
+        4. Create the database pool. 
+        5. Verify that the database is available. 
+        6. Store the database resource on ``app.state``.
+    Args: app: The FastAPI application instance. 
+    Yields: None: The application remains running while its startup resources are available. 
+    """ 
+    settings = get_settings() 
 
-    Args:
-        app: The FastAPI application instance being started.
+    configure_logging( SERVICE_NAME, settings.observability_log_level, ) 
+    # OpenTelemetry is optional. Only configure tracing when explicitly 
+    # enabled through the application settings.
 
-    Yields:
-        None: The app remains alive while the database pool is attached to the state.
-    """
-    settings = get_settings()
-    configure_logging(SERVICE_NAME, settings.observability_log_level)
-    if settings.observability_enable_tracing:
+    if settings.observability_enable_tracing: 
         setup_tracing(SERVICE_NAME)
         apply_tracing(app)
-    async with database_pool() as pool:
+     
+    # Create the database pool during application startup. 
+    # database_pool() is an async context manager. It keeps the pool 
+    # available while the application is running and automatically 
+    # cleans it up when the application shuts down. 
+    async with database_pool() as pool:  
         app.state.database = pool
-        try:
-            await _validate_database_ready(pool)
-            logger.info("startup_dependency_check_passed")
+
+        try:  
+            await _validate_database_ready(pool) 
+            logger.info("startup_dependency_check_passed") 
         except Exception:
-            logger.exception("startup_dependency_check_failed", detail="database is unavailable")
-            raise
+            logger.exception( "startup_dependency_check_failed",
+                              detail="database is unavailable", ) 
+            raise 
+
         yield
 
 
@@ -112,6 +133,16 @@ def create_app() -> FastAPI:
         FastAPI: A configured application with middleware, tracing, and route registration.
     """
     app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
+    settings = get_settings()
+     # Middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     install_fastapi_observability(app, SERVICE_NAME)
     app.include_router(router)
     return app

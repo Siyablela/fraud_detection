@@ -146,6 +146,8 @@ class Settings(BaseModel):
     observability_enable_tracing: bool = Field(default=False, alias="OBSERVABILITY_ENABLE_TRACING")
     worker_metrics_port: int = Field(default=9100, alias="WORKER_METRICS_PORT")
 
+    allowed_origins: list[str] = Field(default=["*"], alias="ALLOWED_ORIGINS")
+
     model_config = ConfigDict(populate_by_name=True)
 
     @field_validator("jwt_algorithms", mode="before")
