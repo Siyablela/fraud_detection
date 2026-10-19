@@ -39,13 +39,20 @@ class _TokenVerifier(ABC):
 
 
 class _JwksTokenVerifier(_TokenVerifier):
-    def __init__(self, jwks_url: str):
+    def __init__(self, jwks_url: str, cache_lifespan_seconds: int = 300):
         """Create a verifier backed by a JWKS endpoint.
 
         Args:
             jwks_url: The remote JWKS URL used to resolve signing keys.
+            cache_lifespan_seconds: How long resolved signing keys should be cached
+            before the JWKS endpoint is queried again, so rotated keys are
+            used without restart.
         """
-        self._jwks_client = PyJWKClient(jwks_url)
+        self._jwks_client = PyJWKClient(
+            jwks_url, 
+            cache_keys=True, 
+            lifespan=cache_lifespan_seconds,
+        )
 
     def decode(self, token: str) -> dict[str, Any]:
         """Validate the token against the configured issuer, audience, and signing key.
@@ -109,7 +116,10 @@ def _get_token_verifier() -> _TokenVerifier:
     """
     settings = get_settings()
     if settings.jwt_jwks_url:
-        return _JwksTokenVerifier(settings.jwt_jwks_url)
+        return _JwksTokenVerifier(
+            settings.jwt_jwks_url, 
+            cache_lifespan_seconds=settings.jwt_jwks_refresh_interval_seconds,
+        )
     if settings.jwt_public_key_path:
         return _PublicKeyTokenVerifier(settings.jwt_public_key_path)
     raise RuntimeError(

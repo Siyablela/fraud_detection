@@ -38,6 +38,8 @@ spec:
           image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           command: ["python", "-u", "-m", "app.worker"]
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
           livenessProbe:
             exec:
               command:
@@ -127,7 +129,7 @@ spec:
               value: {{ .Values.observability.enableTracing | quote }}
             - name: WORKER_METRICS_PORT
               value: {{ .Values.observability.workerMetricsPort | quote }}
-            - name: ALLOWED_ORIGINS
+            - name: CORS_ALLOWED_ORIGINS
               value: {{ .Values.security.allowedOrigins | quote }}
           volumeMounts:
             - name: rules-volume
@@ -139,6 +141,7 @@ spec:
             name: fraud-configs
 
 {{- if .Values.batch.enabled }}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -170,6 +173,8 @@ spec:
               image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
               imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
               command: ["python", "-u", "-m", "app.batch_worker"]
+              resources:
+                {{- toYaml .Values.batch.resources | nindent 16 }}
               env:
                 - name: BATCH_JOB_ENABLED
                   value: "true"
@@ -235,6 +240,8 @@ spec:
           ports:
             - containerPort: 8000
               name: api-port
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /health
@@ -245,7 +252,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: 8000
             initialDelaySeconds: 20
             periodSeconds: 20

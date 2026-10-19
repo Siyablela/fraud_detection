@@ -146,9 +146,28 @@ class Settings(BaseModel):
     observability_enable_tracing: bool = Field(default=False, alias="OBSERVABILITY_ENABLE_TRACING")
     worker_metrics_port: int = Field(default=9100, alias="WORKER_METRICS_PORT")
 
-    allowed_origins: list[str] = Field(default=["*"], alias="ALLOWED_ORIGINS")
+    cors_allowed_origins: list[str] = Field(default=["*"], alias="CORS_ALLOWED_ORIGINS")
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def parse_cors_allowed_origins(cls, value: object) -> object:
+        """Parse the allowed origins for CORS.
+
+        Args:
+            value: A list of allowed origins or a comma-separated string.
+
+        Returns:
+            object: A list of allowed origins.
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(origin).strip() for origin in value]
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        raise ValueError("CORS_ALLOWED_ORIGINS must be a list or a comma-separated string")
 
     @field_validator("jwt_algorithms", mode="before")
     @classmethod
@@ -242,6 +261,7 @@ class Settings(BaseModel):
             "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
             "observability_enable_tracing": _optional_env("OBSERVABILITY_ENABLE_TRACING", "False"),
             "worker_metrics_port": _optional_env("WORKER_METRICS_PORT", "9100"),
+            "cors_allowed_origins": _optional_env("CORS_ALLOWED_ORIGINS", "*"),
         }
         try:
             return cls.model_validate(data)

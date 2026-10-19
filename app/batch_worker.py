@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from app.database import get_database_pool, ping_database, summarize_transactions
 from app.observability import configure_logging, get_logger
 from app.settings import get_settings
 
@@ -24,9 +25,30 @@ async def process_batch_job() -> None:
     is time-bound and designed for heavier deferred maintenance tasks such as
     recalculation, historical review, or summarization rather than low-latency
     request handling.
-    """
-    logger.info("batch_job_started", service=SERVICE_NAME)
 
+    The current job produces a daily fraud-activity summary over configured
+    window (processed-transaction totals, fraud counts, and category
+    breakdowns) and emits a structured log line for operation review.
+    """
+    settings = get_settings()
+    window_hours = settings.batch_summary_window_hours
+    since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    logger.info("batch_job_started", service=SERVICE_NAME, window_hours=window_hours)
+
+    async with get_database_pool() as pool:
+        await ping_database(pool)
+        summary = await summarize_transactions(pool, since)
+
+    logger.info(
+        "batch_job_summary",
+        service=SERVICE_NAME,
+        window_hours=window_hours,
+        since=since.isoformat(),
+        total_transactions=summary["total"],
+        total_fraudulent=summary["fraud"],
+        category_breakdown=summary["by_category"],
+    )
+    
 
 async def main() -> None:
     """Run the scheduled batch worker at a configured time of day."""

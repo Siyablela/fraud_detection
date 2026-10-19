@@ -1,10 +1,14 @@
 from contextlib import asynccontextmanager
 from math import ceil
 from types import SimpleNamespace
-from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from app.rate_limit import PrincipalRateLimitMiddleware
 from app.database import database_pool, get_transaction as find_transaction
 from app.database import get_transactions_by_category as find_by_category
 from app.database import ping_database
@@ -30,6 +34,34 @@ SERVICE_NAME = "fraud-query-api"
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class TransactionResponse(BaseModel):
+    transaction_id: str
+    user_id: str
+    amount: Decimal
+    category: str
+    timestamp: float
+    is_fraud: bool
+    triggered_rules: list[str]
+    correlation_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CategoryPageResponse(BaseModel):
+    category: str
+    page: int
+    page_size: int
+    count: int
+    total_count: int
+    total_pages: int
+    has_previous: bool
+    has_more: bool
+    previous_page: int | None = None
+    next_page: int | None = None
+    data: list[TransactionResponse]
+    correlation_id: str | None = None
 
 
 class TokenExchangeRequest(BaseModel):
@@ -82,47 +114,27 @@ async def require_transaction_read_scope(
 
 @asynccontextmanager 
 async def lifespan(app: FastAPI):
-    """Manage resources required during the FastAPI application lifecycle. 
-    The code before ``yield`` runs during application startup. 
-    This is where application-wide resources such as logging, tracing, and database connections are initialized.
-    Once startup completes successfully, ``yield`` allows FastAPI to begin serving requests.
-    When FastAPI shuts down, execution resumes after ``yield``. 
-    Exiting the ``database_pool`` context manager then releases the database resources.
-    Startup process: 
-        1. Load application settings. 
-        2. Configure logging. 
-        3. Optionally configure OpenTelemetry tracing. 
-        4. Create the database pool. 
-        5. Verify that the database is available. 
-        6. Store the database resource on ``app.state``.
-    Args: app: The FastAPI application instance. 
-    Yields: None: The application remains running while its startup resources are available. 
+    """Initiates app state and optional tracing on startup, and cleans up resources on shutdown.
+
+    Args: 
+        app: The FastAPI application instance being started. 
+
+    Yields: 
+        None: The application remains running while its startup resources are available. 
     """ 
     settings = get_settings() 
-
     configure_logging( SERVICE_NAME, settings.observability_log_level, ) 
-    # OpenTelemetry is optional. Only configure tracing when explicitly 
-    # enabled through the application settings.
-
     if settings.observability_enable_tracing: 
         setup_tracing(SERVICE_NAME)
         apply_tracing(app)
-     
-    # Create the database pool during application startup. 
-    # database_pool() is an async context manager. It keeps the pool 
-    # available while the application is running and automatically 
-    # cleans it up when the application shuts down. 
     async with database_pool() as pool:  
         app.state.database = pool
-
         try:  
             await _validate_database_ready(pool) 
             logger.info("startup_dependency_check_passed") 
         except Exception:
-            logger.exception( "startup_dependency_check_failed",
-                              detail="database is unavailable", ) 
+            logger.exception( "startup_dependency_check_failed", detail="database is unavailable", ) 
             raise 
-
         yield
 
 
@@ -132,21 +144,30 @@ def create_app() -> FastAPI:
     Returns:
         FastAPI: A configured application with middleware, tracing, and route registration.
     """
-    app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
     settings = get_settings()
-     # Middleware
+    app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
+    install_fastapi_observability(app, SERVICE_NAME)
+    # Rate limiting middleware (inner). Added before CORS to ensure that rate limits are applied before any CORS headers are added to the response.
+    if settings.rate_limit_enabled:
+        app.add_middleware(
+            PrincipalRateLimitMiddleware,
+            max_requests=settings.rate_limit_max_requests,
+            window_seconds=settings.rate_limit_window_seconds,
+            burst_capacity=settings.rate_limit_burst_capacity,
+        )
+    # CORS middleware (outer). Added after rate limiting to ensure that CORS headers are applied to all responses, including those that may be rate-limited.
+    # Credentials (cookies/basic-auth/client-certs) are intentionally not enabled.
+    # This is a stateless Bearer-token API, amd a Bearer header set by js is a 
+    # normal header (allowed via allow_headers), not a CORS "credential".
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.ALLOWED_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=settings.cors_allowed_origins,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
-    install_fastapi_observability(app, SERVICE_NAME)
     app.include_router(router)
     return app
-
 
 def _database_from_request(request: Request | SimpleNamespace):
     """Return the shared database pool from a FastAPI request or test double.
@@ -206,7 +227,7 @@ async def health(request: Request):
         logger.exception("health_check_failed", detail="database is unavailable")
         raise HTTPException(status_code=503, detail="Database is unavailable")
 
-@router.get("/api/v1/transactions/{transaction_id}")
+@router.get("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
 async def get_transaction(
     transaction_id: str,
     request: Request,
@@ -220,7 +241,7 @@ async def get_transaction(
         _principal: The caller principal validated by the read-scope dependency.
 
     Returns:
-        dict[str, Any]: The transaction payload with the active correlation ID attached.
+        TransactionResponse: The transaction payload with the active correlation ID attached.
 
     Raises:
         HTTPException: If no matching transaction is found.
@@ -235,12 +256,12 @@ async def get_transaction(
     response_payload["correlation_id"] = get_correlation_id()
     return response_payload
 
-@router.get("/api/v1/categories/{category_name}")
+@router.get("/api/v1/categories/{category_name}", response_model=CategoryPageResponse)
 async def get_transactions_by_category(
     category_name: str,
     request: Request,
-    page: int = 1,
-    page_size: int = 100,
+    page: int = Query(1, ge=1, description="1-based page number to fetch."),
+    page_size: int = Query(100, ge=1, le=1000, description="Number of records to fetch per page."),
     _principal=Depends(require_transaction_read_scope),
 ):
     """Return a paginated category view with metadata and correlation details.
@@ -253,10 +274,8 @@ async def get_transactions_by_category(
         _principal: The caller principal validated by the read-scope dependency.
 
     Returns:
-        dict[str, Any]: Paginated category result metadata and the matching transaction rows.
+        CategoryPageResponse: Paginated category result metadata and the matching transaction rows.
     """
-    page = max(1, page)
-    page_size = max(1, min(page_size, 1000))
     offset = (page - 1) * page_size
     logger.info(
         "fetch_category_transactions",
