@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import inspect
 import json
 from typing import Any
@@ -7,7 +8,7 @@ import structlog
 from confluent_kafka import Consumer, Producer
 from prometheus_client import start_http_server
 
-from app.database import create_pool, ping_database, save_transaction
+from app.database import create_pool, get_recent_user_activity, ping_database, save_transaction
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
@@ -23,7 +24,7 @@ from app.observability import (
     worker_message_outcome,
     worker_message_timer,
 )
-from app.rule import Transaction, evaluate_transaction
+from app.rule import Transaction, evaluate_transaction, get_active_rules_config
 from app.settings import get_settings
 
 SERVICE_NAME = "fraud-worker"
@@ -245,7 +246,25 @@ async def main() -> None:
                     }
                     transaction = Transaction(**transaction_payload)
 
-                    result = evaluate_transaction(transaction)
+                    # Stateful velocity rule: look up the user's recent activity
+                    # within the configured window so evaluate_transaction can flag
+                    # rapid bursts pr spend spikes. Skipped when velocity is disabled.
+                    rules_config = get_active_rules_config()
+                    recent_count = None
+                    recent_amount_sum = None
+                    if rules_config.velocity_enabled:
+                        since = datetime.now(timezone.utc) - timedelta(
+                            seconds=rules_config.velocity_window_seconds
+                        )
+                        recent_count, recent_amount_sum = await get_recent_user_activity(
+                            database, transaction.user_id, since
+                        )
+
+                    result = evaluate_transaction(
+                        transaction,
+                        recent_count=recent_count,
+                        recent_amount_sum=recent_amount_sum
+                    )
                     correlation_id = extract_correlation_id(event_data) or ensure_correlation_id()
                     event_data = attach_correlation_id(event_data)
                     if correlation_id != event_data.get("correlation_id"):

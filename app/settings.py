@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timezone, timezone
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -135,18 +136,38 @@ class Settings(BaseModel):
     kafka_security_protocol: str = Field(default="PLAINTEXT", alias="KAFKA_SECURITY_PROTOCOL")
     kafka_producer_acks: str = Field(default="all", alias="KAFKA_PRODUCER_ACKS")
     kafka_producer_enable_idempotence: bool = Field(default=True, alias="KAFKA_PRODUCER_ENABLE_IDEMPOTENCE")
+    # TLS/mTLS  material for SSL and  SASL brokers (libdkafka property names).
+    # When left empty, no ssl.* options are added and behaviour is unchanged.
+    kafka_ssl_ca_location: str = Field(default="", alias="KAFKA_SSL_CA_LOCATION")
+    kafka_ssl_certificate_location: str = Field(default="", alias="KAFKA_SSL_CERTIFICATE_LOCATION")
+    kafka_ssl_key_location: str = Field(default="", alias="KAFKA_SSLKEY_LOCATION")
+    kafka_ssl_key_password: str = Field(default="", alias="KAFKA_SSLKEY_PASSWORD")
 
     db_pool_min_size: int = Field(..., alias="DB_POOL_MIN_SIZE")
     db_pool_max_size: int = Field(..., alias="DB_POOL_MAX_SIZE")
 
     default_high_value_threshold: float = Field(..., alias="DEFAULT_HIGH_VALUE_THRESHOLD")
     default_restricted_categories: dict[str, float] = Field(..., alias="DEFAULT_RESTRICTED_CATEGORIES")
-
+    # Velocity (stateful) fraud rule defaults. A window or threshold of 0 disables
+    # the corresponding velocity check.
+    default_velocity_window_seconds: int = Field(default=60, ge=0, alias="DEFAULT_VELOCITY_WINDOW_SECONDS")
+    default_velocity_max_count: int = Field(default=5, ge=0, alias="DEFAULT_VELOCITY_MAX_COUNT")
+    default_velocity_max_amount: float = Field(default=5000.0, ge=0, alias="DEFAULT_VELOCITY_MAX_AMOUNT")
+    batch_summary_window_hours: int = Field(default=24, ge=1, alias="BATCH_SUMMARY_WINDOW_HOURS")
+    
     observability_log_level: str = Field(default="INFO", alias="OBSERVABILITY_LOG_LEVEL")
     observability_enable_tracing: bool = Field(default=False, alias="OBSERVABILITY_ENABLE_TRACING")
     worker_metrics_port: int = Field(default=9100, alias="WORKER_METRICS_PORT")
 
+    # CORS empty list means no cross-origin access is permitted (most restrictive)
     cors_allowed_origins: list[str] = Field(default=["*"], alias="CORS_ALLOWED_ORIGINS")
+    # Per instance fixed-window rate limiting on the API
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_requests: bool = Field(default=100, ge=1, alias="RATE_LIMIT_REQUESTS")
+    rate_limit_window_seconds: bool = Field(default=60, ge=1, alias="RATE_LIMIT_WINDOW_SECONDS")
+    # Token-bucket burst capacity. 0 means "use rate_limit_requests"
+    rate_limit_burst: bool = Field(default=0, ge=0, alias="RATE_LIMIT_BURST")
+
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -253,15 +274,27 @@ class Settings(BaseModel):
             "keycloak_service_token_scope": _optional_env("KEYCLOAK_SERVICE_TOKEN_SCOPE", ""),
             "kafka_security_protocol": _optional_env("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
             "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
+            "kafka_ssl_ca_location": _optional_env("KAFKA_SSL_CA_LOCATION", ""),
+            "kafka_ssl_certificate_location": _optional_env("KAFKA_SSL_CERTIFICATE_LOCATION", ""),
+            "kafka_ssl_key_location": _optional_env("KAFKA_SSLKEY_LOCATION", ""),
+            "kafka_ssl_key_password": _optional_env("KAFKA_SSLKEY_PASSWORD", ""),
             "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
             "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
             "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),
             "default_high_value_threshold": _required_env("DEFAULT_HIGH_VALUE_THRESHOLD"),
             "default_restricted_categories": _required_env("DEFAULT_RESTRICTED_CATEGORIES"),
             "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
+            "default_velocity_window_seconds": _optional_env("DEFAULT_VELOCITY_WINDOW_SECONDS", "60"),
+            "default_velocity_max_count": _optional_env("DEFAULT_VELOCITY_MAX_COUNT", "5"),
+            "default_velocity_max_amount": _optional_env("DEFAULT_VELOCITY_MAX_AMOUNT", "5000"),
+            "batch_summary_window_hours": _optional_env("BATCH_SUMMARY_WINDOW_HOURS", "24"),
             "observability_enable_tracing": _optional_env("OBSERVABILITY_ENABLE_TRACING", "False"),
             "worker_metrics_port": _optional_env("WORKER_METRICS_PORT", "9100"),
             "cors_allowed_origins": _optional_env("CORS_ALLOWED_ORIGINS", "*"),
+            "rate_limit_enabled": _optional_env("RATE_LIMIT_ENABLED", "True"),
+            "rate_limit_requests": _optional_env("RATE_LIMIT_REQUESTS", "100"),
+            "rate_limit_window_seconds": _optional_env("RATE_LIMIT_WINDOW_SECONDS", "60"),
+            "rate_limit_burst": _optional_env("RATE_LIMIT_BURST", "0"),
         }
         try:
             return cls.model_validate(data)

@@ -1,247 +1,113 @@
-
-"""Per-principal token-bucket rate limiting for FastAPI."""
-
-import asyncio
-import base64
-import json
+from _future_ import annotations
 import math
 import time
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Awaitable, Callable, Iterable
 
+import jwt 
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
 
+# Paths that must never be rate limited (health/observability probes).
+DEFAULT_EXEMPT_PATHS = frozenset(("/live", "/ready", "/health", "/metrics"))
 
-ANONYMOUS_PRINCIPAL = "anonymous"
-
-
-@dataclass(slots=True)
-class TokenBucket:
-    """Mutable rate-limit state for one principal."""
-
-    tokens: float
-    last_refill: float
-    last_seen: float
-
-
-class PrincipalRateLimitMiddleware:
-    """Apply an in-memory token bucket to a selected API path.
-
-    The JWT is decoded without signature verification only to derive a
-    bucket key. Authentication and authorization remain the responsibility
-    of the application's existing security dependencies.
-
-    This implementation coordinates requests within one middleware instance.
-    It does not coordinate separate worker processes or application replicas.
+def _unverified_principal(token: str) -> str | None:
+    """Read a stable principal id from a bearer token without verifying it. 
+    Used only for rate-limit bucketing, never for authentication. 
+    Prefers the 'sub' claim and falls back to the authorized-party/client 
+    identifiers used by client-credentials tokens.
     """
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return None
+        
+    for claim in ("sub", "azp", "client_id"):
+        value = claims.get(claim)
+        if value:
+            return str(value)
+    return None
 
-    def __init__(
-        self,
-        app: ASGIApp,
-        *,
-        max_requests: int = 100,
-        window_seconds: float = 60.0,
-        burst_capacity: int | None = None,
-        path_prefix: str = "/api/query",
-        cleanup_interval: int = 1024,
-        bucket_ttl_seconds: float = 3600.0,
+#: Shared bucket for all requests that carry no resolvable principal.
+ANONYMOUS_KEY = "anon"
+
+def principal_key(request: Request) -> str:
+    """Resolve a rate-limit bucket key from the caller's identity (never the IP). 
+    Returns "sub:<principal>" for a bearer-token request, or a single shared 
+    'anon' bucket for tokenless requests. The "sub:" namespace prevents an 
+    authenticated principal from ever colliding with the anonymous bucket.
+    """
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        principal = _unverified_principal(authorization[7:].strip())
+        if principal:
+            return f"sub:{principal}"
+    return ANONYMOUS_KEY
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Token-bucket rate limiter keyed by caller identity.
+    
+    Args:
+        app: The wrapped ASGI application.
+        max_requests: Sustained request budget per "window_seconds" (sets the continuous refill rate).
+        window_seconds: Window the sustained rate is expressed over.
+        burst: Bucket capacity - the largest instantaneous burst allowed. Defaults to "max_requests" when not set ("None" or "0").
+        exempt_paths: Request paths that bypass rate limiting entirely.
+        key_func: Resolves the bucket key from a request (defaults to principal keying, with a shared anonymous bucket for tokenless calls).
+        clock: Injectable monotonic clock (seconds) for deterministic testing.
+    """
+    def _init_(
+        self, 
+        app, 
+        max_requests: int, 
+        window_seconds: int, 
+        burst: int | None = None, 
+        exempt_paths: Iterable[str] = DEFAULT_EXEMPT_PATHS, 
+        key_func: Callable[[Request], str] = principal_key, 
+        clock: Callable[[], float] = time.monotonic
     ) -> None:
-        """Configure the token bucket and the paths it protects.
+        super()._init_(app)
+        self._refill_rate = max_requests / window_seconds  # tokens per second
+        self._capacity = float(burst) if burst and burst > 0 else float(max_requests)
+        self._exempt_paths = frozenset(exempt_paths)
+        self._key_func = key_func
+        self._clock = clock
+        
+        # key -> (available_tokens, last_refill_time)
+        self._buckets: dict[str, tuple[float, float]] = {}
 
-        Args:
-            app: The downstream ASGI application.
-            max_requests: Sustained refill allowance per time window.
-            window_seconds: Duration used to calculate the refill rate.
-            burst_capacity: Maximum tokens available to a principal.
-                Defaults to max_requests.
-            path_prefix: API path prefix to protect.
-            cleanup_interval: Number of bucket checks between cleanup passes.
-            bucket_ttl_seconds: Remove buckets not seen within this period.
+    def _consume(self, key: str) -> tuple[bool, int]:
+        """Refill the bucket for "key" and try to take one token. 
+        Returns "(allowed, retry_after_seconds)". 
+        "retry_after_seconds" is the whole-second wait until a token is available when the request is denied.
         """
-        if max_requests <= 0:
-            raise ValueError("max_requests must be positive")
-        if window_seconds <= 0:
-            raise ValueError("window_seconds must be positive")
-        if burst_capacity is not None and burst_capacity <= 0:
-            raise ValueError("burst_capacity must be positive")
-        if cleanup_interval <= 0:
-            raise ValueError("cleanup_interval must be positive")
-        if bucket_ttl_seconds <= 0:
-            raise ValueError("bucket_ttl_seconds must be positive")
-        if not path_prefix.startswith("/"):
-            raise ValueError("path_prefix must start with '/'")
+        now = self._clock()
+        tokens, last_refill = self._buckets.get(key, (self._capacity, now))
+        
+        tokens = min(self._capacity, tokens + (now - last_refill) * self._refill_rate)
+        
+        if tokens >= 1.0:
+            self._buckets[key] = (tokens - 1.0, now)
+            return True, 0
+            
+        self._buckets[key] = (tokens, now)
+        deficit = 1.0 - tokens
+        retry_after = math.ceil(deficit / self._refill_rate) if self._refill_rate > 0 else 1
+        return False, max(1, retry_after)
 
-        self.app = app
-        self.capacity = float(
-            burst_capacity if burst_capacity is not None else max_requests
-        )
-        self.refill_rate = max_requests / window_seconds
-        self.path_prefix = path_prefix.rstrip("/") or "/"
-        self.cleanup_interval = cleanup_interval
-        self.bucket_ttl_seconds = bucket_ttl_seconds
-
-        self._buckets: dict[str, TokenBucket] = {}
-        self._lock = asyncio.Lock()
-        self._checks_since_cleanup = 0
-
-    async def __call__(
-        self,
-        scope: Scope,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        """Limit matching HTTP requests before passing them downstream."""
-        if scope["type"] != "http" or not self._is_protected_path(
-            scope.get("path", "")
-        ):
-            await self.app(scope, receive, send)
-            return
-
-        request = Request(scope)
-        principal = self._get_principal(request)
-
-        allowed, retry_after = await self._consume_token(principal)
-
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Enforce the per-principal token budget, exempting probe endpoints."""
+        if request.url.path in self._exempt_paths:
+            return await call_next(request)
+            
+        allowed, retry_after = self._consume(self._key_func(request))
         if not allowed:
-            response = JSONResponse(
-                status_code=429,
-                content={
-                    "detail": "Rate limit exceeded. Try again later."
-                },
-                headers={
-                    "Retry-After": str(retry_after),
-                    "Cache-Control": "no-store",
-                },
+            return JSONResponse(
+                status_code=429, 
+                content={"detail": "Rate limit exceeded. Try again later."}, 
+                headers={"Retry-After": str(retry_after)}
             )
-            await response(scope, receive, send)
-            return
-
-        await self.app(scope, receive, send)
-
-    def _is_protected_path(self, path: str) -> bool:
-        """Match the configured prefix without matching similarly named paths."""
-        if self.path_prefix == "/":
-            return True
-        return (
-            path == self.path_prefix
-            or path.startswith(self.path_prefix + "/")
-        )
-
-    @staticmethod
-    def _get_principal(request: Request) -> str:
-        """Derive a bucket key from unverified JWT claims.
-
-        Prefer sub, then azp, then client_id. Missing, malformed, or
-        unsupported credentials share the anonymous bucket.
-
-        These claims are untrusted here. Never use this method to authenticate
-        a request or grant access to a protected resource.
-        """
-        authorization = request.headers.get("authorization", "")
-        scheme, separator, token = authorization.partition(" ")
-
-        if not separator or scheme.lower() != "bearer" or not token.strip():
-            return ANONYMOUS_PRINCIPAL
-
-        claims = PrincipalRateLimitMiddleware._decode_unverified_jwt(
-            token.strip()
-        )
-        if claims is None:
-            return ANONYMOUS_PRINCIPAL
-
-        for claim_name in ("sub", "azp", "client_id"):
-            value = claims.get(claim_name)
-
-            # Bound the key size and accept only non-empty string claims.
-            if isinstance(value, str) and 0 < len(value) <= 256:
-                return f"{claim_name}:{value}"
-
-        return ANONYMOUS_PRINCIPAL
-
-    @staticmethod
-    def _decode_unverified_jwt(token: str) -> dict[str, Any] | None:
-        """Decode a JWT payload without verifying its signature.
-
-        This is deliberately not an authentication function. The normal
-        authentication dependency must independently validate the token.
-        """
-        try:
-            parts = token.split(".")
-            if len(parts) != 3:
-                return None
-
-            payload = parts[1]
-            # Reject unusually large payloads before allocating decoded data.
-            if len(payload) > 16_384:
-                return None
-
-            padded_payload = payload + "=" * (-len(payload) % 4)
-            decoded = base64.b64decode(
-                padded_payload,
-                altchars=b"-_",
-                validate=True,
-            )
-            claims = json.loads(decoded)
-
-            return claims if isinstance(claims, dict) else None
-        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-
-    async def _consume_token(self, principal: str) -> tuple[bool, int]:
-        """Atomically refill a principal's bucket and consume one token.
-
-        Returns:
-            A tuple containing whether the request is allowed and the
-            Retry-After value in whole seconds. The latter is zero when
-            the request is allowed.
-        """
-        now = time.monotonic()
-
-        async with self._lock:
-            self._checks_since_cleanup += 1
-
-            bucket = self._buckets.get(principal)
-            if bucket is None:
-                bucket = TokenBucket(
-                    tokens=self.capacity,
-                    last_refill=now,
-                    last_seen=now,
-                )
-                self._buckets[principal] = bucket
-            else:
-                elapsed = max(0.0, now - bucket.last_refill)
-                bucket.tokens = min(
-                    self.capacity,
-                    bucket.tokens + elapsed * self.refill_rate,
-                )
-                bucket.last_refill = now
-                bucket.last_seen = now
-
-            if self._checks_since_cleanup >= self.cleanup_interval:
-                self._cleanup_stale_buckets(now)
-                self._checks_since_cleanup = 0
-
-            if bucket.tokens >= 1.0:
-                bucket.tokens -= 1.0
-                return True, 0
-
-            missing_tokens = 1.0 - bucket.tokens
-            retry_after = math.ceil(missing_tokens / self.refill_rate)
-            return False, max(1, retry_after)
-
-    def _cleanup_stale_buckets(self, now: float) -> None:
-        """Remove inactive buckets to bound retained state over time.
-
-        Must be called while holding self._lock.
-        """
-        cutoff = now - self.bucket_ttl_seconds
-        stale_principals = [
-            principal
-            for principal, bucket in self._buckets.items()
-            if bucket.last_seen < cutoff
-        ]
-
-        for principal in stale_principals:
-            del self._buckets[principal]
+            
+        return await call_next(request)
