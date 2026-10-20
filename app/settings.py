@@ -140,8 +140,8 @@ class Settings(BaseModel):
     # When left empty, no ssl.* options are added and behaviour is unchanged.
     kafka_ssl_ca_location: str = Field(default="", alias="KAFKA_SSL_CA_LOCATION")
     kafka_ssl_certificate_location: str = Field(default="", alias="KAFKA_SSL_CERTIFICATE_LOCATION")
-    kafka_ssl_key_location: str = Field(default="", alias="KAFKA_SSLKEY_LOCATION")
-    kafka_ssl_key_password: str = Field(default="", alias="KAFKA_SSLKEY_PASSWORD")
+    kafka_ssl_key_location: str = Field(default="", alias="KAFKA_SSL_KEY_LOCATION")
+    kafka_ssl_key_password: str = Field(default="", alias="KAFKA_SSL_KEY_PASSWORD")
 
     db_pool_min_size: int = Field(..., alias="DB_POOL_MIN_SIZE")
     db_pool_max_size: int = Field(..., alias="DB_POOL_MAX_SIZE")
@@ -276,8 +276,8 @@ class Settings(BaseModel):
             "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
             "kafka_ssl_ca_location": _optional_env("KAFKA_SSL_CA_LOCATION", ""),
             "kafka_ssl_certificate_location": _optional_env("KAFKA_SSL_CERTIFICATE_LOCATION", ""),
-            "kafka_ssl_key_location": _optional_env("KAFKA_SSLKEY_LOCATION", ""),
-            "kafka_ssl_key_password": _optional_env("KAFKA_SSLKEY_PASSWORD", ""),
+            "kafka_ssl_key_location": _optional_env("KAFKA_SSL_KEY_LOCATION", ""),
+            "kafka_ssl_key_password": _optional_env("KAFKA_SSL_KEY_PASSWORD", ""),
             "kafka_producer_enable_idempotence": _optional_env("KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"),
             "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
             "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),

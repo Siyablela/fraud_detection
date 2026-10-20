@@ -70,7 +70,7 @@ def evaluate_transaction(
             and recent_count is not None
             and recent_count + 1 > config.velocity_max_count
         ):
-            flags.append("VELOCITY_COUNT")
+            flags.append("VELOCITY_COUNT_EXCEEDED")
         if (
             config.velocity_max_amount is not None
             and recent_amount_sum is not None

@@ -56,7 +56,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key_func: Resolves the bucket key from a request (defaults to principal keying, with a shared anonymous bucket for tokenless calls).
         clock: Injectable monotonic clock (seconds) for deterministic testing.
     """
-    def _init_(
+    def __init__(
         self, 
         app, 
         max_requests: int, 
@@ -66,7 +66,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key_func: Callable[[Request], str] = principal_key, 
         clock: Callable[[], float] = time.monotonic
     ) -> None:
-        super()._init_(app)
+        super().__init__(app)
         self._refill_rate = max_requests / window_seconds  # tokens per second
         self._capacity = float(burst) if burst and burst > 0 else float(max_requests)
         self._exempt_paths = frozenset(exempt_paths)

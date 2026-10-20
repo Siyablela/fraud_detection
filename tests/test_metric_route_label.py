@@ -3,8 +3,7 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# Mock or substitute import based on your environment
-# from app_observability import install_fastapi_observability
+from app.observability import install_fastapi_observability
 
 # Set environment defaults
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
@@ -18,21 +17,6 @@ os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
-
-
-def install_fastapi_observability(app: FastAPI, service_name: str):
-    """
-    Mock implementation of install_fastapi_observability for testing.
-    Replace or remove this if you are importing the actual library.
-    """
-
-    @app.get("/metrics")
-    def metrics():
-        # Simulating metrics output matching the test expectations
-        return (
-            'http_requests_total{route="/items/{item_id}"} 1\n'
-            'http_requests_total{route="<unmatched>"} 1'
-        )
 
 
 def _app() -> FastAPI:

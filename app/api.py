@@ -153,7 +153,7 @@ def create_app() -> FastAPI:
             RateLimitMiddleware,
             max_requests=settings.rate_limit_requests,
             window_seconds=settings.rate_limit_window_seconds,
-            burst_capacity=settings.rate_limit_bursts,
+            burst=settings.rate_limit_burst,
         )
     # CORS middleware (outer). Added after rate limiting to ensure that CORS headers are applied to all responses, including those that may be rate-limited.
     # Credentials (cookies/basic-auth/client-certs) are intentionally not enabled.

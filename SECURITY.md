@@ -73,7 +73,7 @@ client id `fraud-cli`.
  permits no cross-origin requests. 
 - **Rate limiting** applied a per-instance **token-bucket** budget - a sustained 
  rate of `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS` with a burst 
- capacity of `RATE_LIMIT_BURSTS` (defaults to the request budget) - and returns
+ capacity of `RATE_LIMIT_BURST` (defaults to the request budget) - and returns
  `4290` with a `Retry-After` header when exceeded. It is **keyed by the 
  authenticated pricinpal** (JWT `sub` failing back to `azp`/ `client_id`), not by
  IP 

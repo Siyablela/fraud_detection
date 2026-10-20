@@ -124,7 +124,7 @@ class CreateAppWiringTests(unittest.TestCase):
         app = create_app()
 
         # Fixed syntax error for list comprehension and accessing middleware names safely
-        middleware_names = [entry.cls._name_ for entry in app.user_middleware]
+        middleware_names = [entry.cls.__name__ for entry in app.user_middleware]
 
         self.assertIn("CORSMiddleware", middleware_names)
         self.assertIn("RateLimitMiddleware", middleware_names)
