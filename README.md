@@ -1,384 +1,243 @@
 # Fraud Detection
 
-Fraud Detection is an event-driven service built with FastAPI, Kafka, PostgreSQL, SQLAlchemy async, and Alembic.
+A containerized fraud-detection service that accepts transaction events, evaluates configurable rules, and stores the results for later lookup.
 
-It processes categorized transaction events from Kafka, evaluates configurable fraud rules, stores results in PostgreSQL, maintains an append-only decision history, and exposes query endpoints for lookup.
+The project currently supports:
 
-This repository is intentionally scoped as a small service, but it is built with production-minded practices: validated configuration, explicit auth, structured logging, metrics, DLQ handling, and deployable Compose and Helm manifests. The goal is to show disciplined engineering on a narrow problem, not to simulate a larger platform with placeholder features.
+- Local development on your machine with Docker Compose.
+- Production deployment with Kubernetes and CI-built container images.
+- Runtime rule changes through a mounted JSON file or Kubernetes ConfigMap.
 
-## Quick commands
+The Kubernetes deployment now lives in the Helm chart at [fraud-detection](fraud-detection). The intended end state is to move the infrastructure code into a separate repository and keep this repo focused on the application.
 
-```powershell
-# 1) Start local stack from a clean slate
-docker compose down --remove-orphans
-docker compose up -d --build --force-recreate
-
-# 2) Apply DB migrations (inside compose network)
-docker exec fraud_api python -m alembic upgrade head
-
-# 3) Run the submission smoke test
-.\scripts\run-submission-smoke.ps1
-
-# 4) Deploy to Kubernetes (prod values)
-helm upgrade --install fraud-system .\fraud-detection `
-  -f .\fraud-detection\values.yaml `
-  -f .\fraud-detection\values-prod.yaml `
-  -n fraud-system --create-namespace
-```
-
-## System overview
+## Architecture
 
 ```text
-Real-time path
-  Client / API request
-      |
-      v
-  Query API (FastAPI :8000)
-      |
-      |  direct read / live fraud evaluation
-      v
-  PostgreSQL
-      |
-      |  latest transaction state + history
-      v
-  Kafka topic: transactions_topic
-      |
-      |  live event stream for fraud-check processing
-      v
-  Fraud worker
-      |-- validates schema and correlation metadata
-      |-- loads configured fraud rules
-      |-- evaluates transaction risk
-      |-- writes latest record to PostgreSQL
-      |-- appends decision history to PostgreSQL
-      |-- publishes poison messages to DLQ topic on failure
-      v
-  DLQ topic: transactions_topic.dlq
-
-Deferred path
-  Scheduled batch worker (time-bound)
-      |
-      |  runs at configured clock time (for example midnight)
-      |  performs heavier scheduled analysis or cleanup work
-      v
-  PostgreSQL / historical review jobs
+Client
+	│
+	│ POST /api/v1/transactions
+	▼
+Transaction Producer :8001
+	│
+	│ Kafka produce transactions_topic
+	▼
+Kafka
+	▼
+Fraud Worker
+	│
+	├── Evaluates configurable rules
+	└── Stores results in PostgreSQL
+	│
+	▼
+Query API :8000
+	│
+	│ GET /api/v1/transactions/{transaction_id}
+	▼
+Client
 ```
 
-The architecture intentionally separates the hot path from deferred work. The live API and Kafka fraud worker handle immediate transaction processing with low latency, while a separate batch worker runs on a configurable schedule for heavier or non-urgent processing such as historical review, summarization, cleanup, or recalculation. The real-time request path does not depend on queue lag for user-facing results.
+The producer and query API are HTTP services. The worker is a background process that consumes Kafka messages. PostgreSQL is the system of record; Redis is internal infrastructure for short-lived velocity state.
 
-## Scheduled batch worker
+## Project structure
 
-The batch worker is optional and can be enabled with environment variables.
-
-Example configuration:
-
-```env
-BATCH_JOB_ENABLED=true
-BATCH_RUN_HOUR=2
-BATCH_RUN_MINUTE=0
+```text
+fraud_detection/
+├── app/
+│   ├── api.py                    # Query API
+│   ├── config.py                 # Runtime rule configuration
+│   ├── producer.py               # Transaction ingestion API
+│   ├── rule.py                   # Transaction model and fraud rules
+│   └── worker.py                 # Kafka consumer and transaction processor
+├── fraud-detection/              # Helm chart for Kubernetes deployment
+├── infra/
+│   └── README.md                 # Infrastructure runbook and split guidance
+├── tests/                        # Automated tests
+├── Dockerfile                    # Application image definition
+├── docker-compose.yml            # Local multi-container deployment
+├── rules.json                    # Default local rule configuration
+├── requirements.txt              # Python dependencies
+└── .gitignore
 ```
 
-This configures the batch process to run once per day at 02:00 UTC. The worker waits until the configured time, runs the batch job, and then sleeps until the next scheduled run.
+## Transaction format
 
-If `BATCH_JOB_ENABLED=false`, the batch worker exits without doing any work.
-
-Note: in the Kubernetes chart, the deferred batch path is modeled as a scheduled CronJob rather than a queue-backed consumer. This keeps the live request path low-latency and makes the nightly or scheduled processing explicit and operationally simpler.
-
-## Alerting and operations
-
-This service exposes Prometheus metrics at `/metrics` and includes health gauges for PostgreSQL and Kafka state so alerting can stay simple and operationally useful.
-
-Key alert conditions already supported by the app:
-
-- database is down: `fraud_database_up == 0`
-- Kafka consumer is down: `fraud_kafka_up{component="consumer"} == 0`
-- Kafka producer is down: `fraud_kafka_up{component="producer"} == 0`
-- high API error rate: `rate(fraud_http_requests_total{status_code=~"5.."}[5m]) > 0.1`
-
-The Helm chart includes a lean Prometheus rule set for alerts to the `support` and `developers` teams. If you also run a Postgres exporter and Kafka exporter in the same monitoring stack, you can extend the alerting rules to cover database connection pressure and consumer lag without adding extra app complexity.
-
-A typical alert-routing pattern is:
-
-- route `severity=critical` to the on-call or support channel
-- route `severity=warning` to the engineering team
-- keep the app-level rules narrow and actionable so noise stays low
-
-## API endpoints
-
-Query API:
-
-- GET `/api/v1/transactions/{transaction_id}`
-- GET `/api/v1/categories/{category_name}`
-- GET `/health`
-
-See [SECURITY.md](SECURITY.md) for the JWT scope model and Kafka ACL guidance.
-
-Protected query endpoints require a Bearer token with `fraud:transactions:read`.
-
-Keycloak guidance:
-
-- Human-facing clients (web UI, CLI, or internal dashboard) should use a public client with PKCE and the `fraud-cli` client.
-- Backend microservices should use a confidential client with the client-credentials grant and the `fraud-service-cli` client.
-- The FastAPI app itself only validates incoming bearer tokens using Keycloak-issued JWTs and JWKS; it does not need to implement PKCE on the server side.
-
-Transaction payload:
+The producer accepts JSON with these fields:
 
 ```json
 {
-  "transaction_id": "tx-1001",
-  "user_id": "user-42",
-  "amount": 12500,
-  "category": "RETAIL",
-  "timestamp": 1722435000
+	"transaction_id": "tx-1001",
+	"user_id": "user-42",
+	"amount": 12500,
+	"category": "RETAIL"
 }
 ```
 
-`timestamp` is optional. If omitted, it is generated by the Pydantic model.
-
-The transaction lookup endpoints require `fraud:transactions:read`.
+`timestamp` is optional and is generated automatically when omitted.
 
 ## Fraud rules
 
-Rules are loaded from [rules.json](rules.json) and can be overridden by environment defaults.
+The default configuration is in [rules.json](rules.json):
 
-Default rule flags:
-
-- `HIGH_VALUE_THRESHOLD`
-- `RISKY_CATEGORY_LIMIT`
-
-
-## Local development (Docker Compose)
-
-Prerequisites:
-
-- Docker or Rancher Desktop with Docker Compose v2
-
-Submission runbook:
-
-1. Copy [.env.example](.env.example) to `.env` if you do not already have a local environment file.
-2. Start from a clean Compose state so old containers do not keep stale commands or images.
-3. Apply Alembic migrations inside the API container.
-4. Run the included smoke script, which publishes a Kafka message and verifies both the latest-state table and the append-only history table.
-5. If Docker Compose times out on Rancher Desktop, use [scripts/recover-rancher-compose.ps1](scripts/recover-rancher-compose.ps1) and then rerun the migration plus smoke steps.
-
-Start the stack from repository root:
-
-```powershell
-docker compose down --remove-orphans
-docker compose up -d --build --force-recreate
-docker exec fraud_api python -m alembic upgrade head
+```json
+{
+	"high_value_threshold": 10000,
+	"velocity_threshold": 5,
+	"restricted_categories": {
+		"GAMBLING": 5000,
+		"CRYPTO": 5000
+	}
+}
 ```
 
-If Rancher Desktop hits a transient backend timeout on `docker compose up`, use:
+The rules currently flag:
+
+- `HIGH_VALUE_TRANSACTION` when the amount exceeds `high_value_threshold`.
+- `VELOCITY_LIMIT_EXCEEDED` when a user's count exceeds `velocity_threshold` within the worker's 60-second Redis window.
+- `RISKY_CATEGORY_LIMIT` when a configured restricted category exceeds its amount limit.
+
+The worker reloads the rule file when its modification time changes. In Kubernetes, update the `fraud-rules` ConfigMap and restart the relevant pods if the cluster's ConfigMap projection does not refresh the file quickly enough.
+
+## Run with Docker Compose
+
+### Prerequisites
+
+- Docker Desktop with the Docker engine running.
+- Docker Compose v2.
+
+### Start the application
+
+From the repository root:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\recover-rancher-compose.ps1 -ComposeArgs "up -d --build --force-recreate"
-docker exec fraud_api python -m alembic upgrade head
+$env:REDIS_PASSWORD = "use-a-strong-local-password"
+docker compose up --build
 ```
 
-Direct local endpoints:
+The services are:
 
-- Query API: `http://127.0.0.1:8000`
+| Service | Address | Purpose |
+|---|---|---|
+| Producer | `http://127.0.0.1:8001` | Accepts transactions |
+| Query API | `http://127.0.0.1:8000` | Retrieves processed transactions |
+| PostgreSQL | Internal only | Durable transaction storage |
+| Redis | Internal only | Velocity counters and short-lived state |
+| Worker | Internal only | Evaluates transactions |
 
-On some Rancher Desktop setups, published host ports can be slower to stabilize than the containers themselves. The submission smoke script avoids that fragility by verifying API and worker readiness from inside the running containers.
+### Send a transaction
 
-Quick test:
+With Compose running, open another PowerShell window:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 5
-```
-
-Submission smoke test:
-
-```powershell
-.\scripts\run-submission-smoke.ps1
-```
-
-The smoke test publishes a fraud-like transaction to Kafka and waits until it appears in both `transactions` and `transaction_history` inside PostgreSQL.
-
-End-to-end smoke test:
-
-```powershell
-$env:INTEGRATION_API_URL="http://127.0.0.1:8000"
-$env:INTEGRATION_KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
-$env:INTEGRATION_KAFKA_TOPIC_NAME="transactions_topic"
-$env:INTEGRATION_ACCESS_TOKEN="<JWT access token with fraud:transactions:read>"
-.venv\Scripts\python.exe .\integration_test.py
-```
-
-Optional local token helper endpoint:
-
-- Route: `POST /api/v1/auth/token`
-- Purpose: exchanges test username/password against Keycloak and returns an access token.
-- Route: `POST /api/v1/auth/service-token`
-- Purpose: exchanges client credentials against Keycloak and returns a service access token.
-- Safety: disabled by default; enable only for local testing.
-
-Enable in `.env`:
-
-```env
-AUTH_TOKEN_ENDPOINT_ENABLED=true
-KEYCLOAK_TOKEN_CLIENT_ID=fraud-cli
-KEYCLOAK_TOKEN_CLIENT_SECRET=
-KEYCLOAK_SERVICE_CLIENT_ID=fraud-service-cli
-KEYCLOAK_SERVICE_CLIENT_SECRET=<service-client-secret>
-KEYCLOAK_SERVICE_TOKEN_SCOPE=fraud:transactions:read
-```
-
-Example request (resource owner password):
-
-```powershell
-$token = Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/auth/token" `
-  -ContentType "application/json" `
-  -Body '{"username":"tester","password":"your-password"}'
+$body = @{
+		transaction_id = "compose-001"
+		user_id        = "user-1"
+		amount         = 12500
+		category       = "RETAIL"
+} | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/transactions/tx-1001" `
-  -Headers @{ Authorization = "Bearer $($token.access_token)" }
+		-Uri http://127.0.0.1:8001/api/v1/transactions `
+		-Method Post `
+		-ContentType "application/json" `
+		-Body $body
 ```
 
-Example request (client credentials):
+### Query the result
 
 ```powershell
-$serviceToken = Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/auth/service-token" `
-  -ContentType "application/json" `
-  -Body '{"client_id":"fraud-service-cli","client_secret":"<service-client-secret>"}'
-
+Start-Sleep -Seconds 2
 Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/transactions/tx-1001" `
-  -Headers @{ Authorization = "Bearer $($serviceToken.access_token)" }
+		http://127.0.0.1:8000/api/v1/transactions/compose-001 | `
+		ConvertTo-Json -Depth 5
 ```
 
-Stop:
+Health checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/health
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+Stop the application with `Ctrl+C`, or run:
 
 ```powershell
 docker compose down
 ```
 
-## Database layer and migrations
+Use `docker compose down -v` only when you also want to remove the Redis data volume.
 
-Database access is implemented with SQLAlchemy async in [app/database.py](app/database.py).
+## Run locally on your machine
 
-Alembic configuration:
-
-- [alembic.ini](alembic.ini)
-- [alembic/env.py](alembic/env.py)
-- [alembic/versions](alembic/versions)
-
-Run migrations in local venv:
+Use Docker Compose for local development. The short version is:
 
 ```powershell
-.venv\Scripts\python.exe -m alembic upgrade head
+$env:REDIS_PASSWORD = "use-a-strong-local-password"
+docker compose up --build
 ```
 
-Create a migration:
+Open a browser or second terminal to verify the health endpoints:
 
 ```powershell
-.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe change"
+Invoke-RestMethod http://127.0.0.1:8001/health
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Rollback one migration:
+Use `docker compose down` to stop the stack, or `docker compose down -v` to remove the Redis volume too.
 
-```powershell
-.venv\Scripts\python.exe -m alembic downgrade -1
-```
+## Infrastructure
 
-If your `DATABASE_URL` host is `postgres` (Compose network hostname), run Alembic inside the container:
+Kubernetes and cluster operations live in [infra/README.md](infra/README.md).
 
-```powershell
-docker exec fraud_api python -m alembic upgrade head
-```
+The app repository keeps the local developer workflow, while the infra docs cover Helm-based deployment, dev/prod values files, rollout validation, and the eventual split into a separate infrastructure repository.
 
 ## Configuration
 
-The app expects the values in [.env.example](.env.example) and honors file-backed secrets via `*_FILE` variables, which is useful for Kubernetes and Vault-injected Secret mounts.
+| Variable | Purpose | Default |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection URL | `postgresql://fraud_user:change-me@localhost:5432/fraud_detection` |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `rules.json` |
+| `REDIS_PASSWORD` | Compose Redis password | `change-me` in Compose only |
+| `POSTGRES_PASSWORD` | Compose PostgreSQL password | `change-me` in Compose only |
 
-Current environment surface:
+Do not commit real passwords. Use Kubernetes Secrets, Docker secrets, or an external secret manager in production.
 
-- Core app config: `DATABASE_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC_NAME`, `KAFKA_DLQ_TOPIC_NAME`, `KAFKA_CONSUMER_GROUP_ID`, `FRAUD_RULES_CONFIG_PATH`
-- JWT validation: `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_JWKS_URL`, `JWT_PUBLIC_KEY_PATH`, `JWT_ALGORITHMS`, `JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ`
-- Auth token helpers: `AUTH_TOKEN_ENDPOINT_ENABLED`, `KEYCLOAK_TOKEN_CLIENT_ID`, `KEYCLOAK_TOKEN_CLIENT_SECRET`, `KEYCLOAK_SERVICE_CLIENT_ID`, `KEYCLOAK_SERVICE_CLIENT_SECRET`, `KEYCLOAK_SERVICE_TOKEN_SCOPE`
-- Kafka security: `KAFKA_SECURITY_PROTOCOL`, `KAFKA_PRODUCER_ACKS`, `KAFKA_PRODUCER_ENABLE_IDEMPOTENCE`
-- Runtime defaults: `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`, `DEFAULT_HIGH_VALUE_THRESHOLD`, `DEFAULT_RESTRICTED_CATEGORIES`
-- Integration checks: `INTEGRATION_API_URL`, `INTEGRATION_KAFKA_BOOTSTRAP_SERVERS`, `INTEGRATION_KAFKA_TOPIC_NAME`, `INTEGRATION_ACCESS_TOKEN`
+## Testing
 
-Do not commit real credentials. Prefer external secret injection or local-only placeholders.
-
-Dead-letter behavior:
-
-- Worker processing failures are published to `KAFKA_DLQ_TOPIC_NAME` as JSON payloads containing source topic/partition/offset and error details.
-- The worker commits the source offset only after successful DLQ publication to prevent poison-message retry loops.
-
-## Kubernetes and gateway
-
-Helm chart: [fraud-detection](fraud-detection)
-
-Relevant files:
-
-- [fraud-detection/templates/gateways-ui.yaml](fraud-detection/templates/gateways-ui.yaml)
-- [fraud-detection/values.yaml](fraud-detection/values.yaml)
-- [fraud-detection/values-dev.yaml](fraud-detection/values-dev.yaml)
-- [fraud-detection/values-prod.yaml](fraud-detection/values-prod.yaml)
-
-Development mode uses direct service access in Compose.
-Production mode is intended to route through Kong (and optional Ingress) from the Helm deployment.
-
-Production secrets are provisioned externally and exposed to the chart as Kubernetes Secret data.
-
-## CI and CD
-
-This repository uses GitHub Actions for CI and GitOps release updates, and Argo CD for cluster reconciliation.
-
-- CI workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml)
-  - Runs unit tests.
-  - Compiles key Python modules for syntax validation.
-  - Runs Helm lint and Helm template checks with production values.
-- CD workflow: [.github/workflows/cd-gitops.yml](.github/workflows/cd-gitops.yml)
-  - Builds and pushes a container image to GHCR.
-  - Updates image repository and immutable SHA tag in [fraud-detection/values-prod.yaml](fraud-detection/values-prod.yaml).
-  - Commits the values change back to main so Argo CD auto-sync deploys it.
-
-Required repository settings:
-
-1. Actions permission to read and write repository contents.
-2. Package permission to write GHCR images.
-3. Protected branch rules on main so only passing CI can merge.
-
-Deployment flow:
-
-1. Open a PR and pass CI checks.
-2. Merge to main.
-3. CD workflow builds and publishes image, then commits updated Helm values.
-4. Argo CD detects Git change and reconciles the cluster.
-
-## Tests
-
-Run unit tests:
+Configure the project virtual environment, then run:
 
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Integration stream test script:
+The tests cover loading rules from a file and evaluating a transaction with configured thresholds.
 
-- [integration_test.py](integration_test.py)
+## Queue behavior
 
-- [scripts/run-submission-smoke.ps1](scripts/run-submission-smoke.ps1)
+The current implementation uses Kafka for the transaction queue:
 
-The integration smoke test publishes a transaction directly to Kafka, then polls the query API until the worker persists the record.
+- Producer: writes to `transactions_topic`
+- Worker: consumes from `transactions_topic`
+- Persistence: PostgreSQL `transactions` table
 
-## Repository layout
+Consumer-group behavior, retries, and partition ordering are handled by Kafka rather than Redis list operations.
 
-```text
-app/                    Application services and core logic
-alembic/                Migration environment and revisions
-tests/                  Unit tests
-fraud-detection/        Helm chart
-infra/                  Deployment runbook
-docker-compose.yml      Local stack
-Dockerfile              Application container build
-requirements.txt        Python dependencies
-rules.json              Fraud rule configuration
-```
+## Production considerations
+
+Before treating this as production-ready, add or confirm:
+
+- CI tests, image builds, vulnerability scanning, and registry publishing.
+- Immutable image tags or image digests.
+- Managed PostgreSQL with backups, migrations, and a high-availability strategy.
+- Managed Redis or a highly available Redis deployment for queueing and velocity state.
+- External Secret management.
+- Ingress/API gateway authentication, TLS, rate limiting, and request authorization.
+- Redis and application NetworkPolicies.
+- Structured logs, metrics, tracing, and alerting.
+- Dead-letter handling and retry policy for malformed or failed messages.
+- Database/data retention and disaster-recovery policies.
+- Horizontal scaling and load testing for the producer and worker.
+
+## Repository workflow
+
+The Kubernetes work is developed on the `feature/initial_k8_addition` branch and can be merged through a GitHub pull request. The production image should be built by CI after code review rather than built manually on a cluster node.

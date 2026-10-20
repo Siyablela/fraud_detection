@@ -1,4 +1,4 @@
-from _future_ import annotations
+from __future__ import annotations
 import math
 import time
 from collections.abc import Awaitable, Callable, Iterable

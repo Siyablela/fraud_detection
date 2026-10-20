@@ -66,13 +66,13 @@ def evaluate_transaction(
     # activity, so stateless callers keep the original two-rule behaviour/
     if config.velocity_window_seconds:
         if (
-            config.velocity_max_amount
+            config.velocity_max_amount is not None
             and recent_count is not None
             and recent_count + 1 > config.velocity_max_count
         ):
             flags.append("VELOCITY_COUNT")
         if (
-            config.velocity_max_amount
+            config.velocity_max_amount is not None
             and recent_amount_sum is not None
             and recent_amount_sum + transaction.amount > Decimal(str(config.velocity_max_amount))
         ):

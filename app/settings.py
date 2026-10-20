@@ -163,10 +163,10 @@ class Settings(BaseModel):
     cors_allowed_origins: list[str] = Field(default=["*"], alias="CORS_ALLOWED_ORIGINS")
     # Per instance fixed-window rate limiting on the API
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
-    rate_limit_requests: bool = Field(default=100, ge=1, alias="RATE_LIMIT_REQUESTS")
-    rate_limit_window_seconds: bool = Field(default=60, ge=1, alias="RATE_LIMIT_WINDOW_SECONDS")
+    rate_limit_requests: int = Field(default=100, ge=1, alias="RATE_LIMIT_REQUESTS")
+    rate_limit_window_seconds: int = Field(default=60, ge=1, alias="RATE_LIMIT_WINDOW_SECONDS")
     # Token-bucket burst capacity. 0 means "use rate_limit_requests"
-    rate_limit_burst: bool = Field(default=0, ge=0, alias="RATE_LIMIT_BURST")
+    rate_limit_burst: int = Field(default=0, ge=0, alias="RATE_LIMIT_BURST")
 
 
     model_config = ConfigDict(populate_by_name=True)

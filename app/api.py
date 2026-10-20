@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.rate_limit import PrincipalRateLimitMiddleware
+from app.rate_limit import RateLimitMiddleware
 from app.database import database_pool, get_transaction as find_transaction
 from app.database import get_transactions_by_category as find_by_category
 from app.database import ping_database
@@ -150,10 +150,10 @@ def create_app() -> FastAPI:
     # Rate limiting middleware (inner). Added before CORS to ensure that rate limits are applied before any CORS headers are added to the response.
     if settings.rate_limit_enabled:
         app.add_middleware(
-            PrincipalRateLimitMiddleware,
-            max_requests=settings.rate_limit_max_requests,
+            RateLimitMiddleware,
+            max_requests=settings.rate_limit_requests,
             window_seconds=settings.rate_limit_window_seconds,
-            burst_capacity=settings.rate_limit_burst_capacity,
+            burst_capacity=settings.rate_limit_bursts,
         )
     # CORS middleware (outer). Added after rate limiting to ensure that CORS headers are applied to all responses, including those that may be rate-limited.
     # Credentials (cookies/basic-auth/client-certs) are intentionally not enabled.

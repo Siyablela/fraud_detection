@@ -12,15 +12,19 @@ class KafkaSecurityTests(unittest.TestCase):
             "KEYCLOAK_SERVICE_CLIENT_ID",
             "KEYCLOAK_SERVICE_CLIENT_SECRET",
             "JWT_ISSUER",
+            "KAFKA_SSL_CA_LOCATION",
+            "KAFKA_SSL_CERTIFICATE_LOCATION",
+            "KAFKA_SSL_KEY_LOCATION",
+            "KAFKA_SSL_KEY_PASSWORD",
         ]:
             os.environ.pop(key, None)
         clear_settings_cache()
 
     def test_settings_do_not_expose_mtls_fields(self):
-        self.assertNotIn("kafka_ssl_truststore_path", Settings.model_fields)
-        self.assertNotIn("kafka_ssl_keystore_cert_path", Settings.model_fields)
-        self.assertNotIn("kafka_ssl_keystore_key_path", Settings.model_fields)
-        self.assertNotIn("kafka_ssl_keystore_password", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_ca_location", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_certificate_location", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_key_location", Settings.model_fields)
+        self.assertNotIn("kafka_ssl_key_password", Settings.model_fields)
 
     def test_build_kafka_client_config_uses_keycloak_oauthbearer(self):
         os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_PLAINTEXT"
@@ -40,6 +44,7 @@ class KafkaSecurityTests(unittest.TestCase):
         self.assertEqual(config["sasl.oauthbearer.client.id"], "fraud-service-cli")
         self.assertEqual(config["sasl.oauthbearer.client.secret"], "service-secret")
         self.assertTrue(callable(config["oauth_cb"]))
+        self.assertNotIn("ssl.ca.location", config)
 
     def test_build_kafka_client_config_preserves_sasl_ssl_protocol(self):
         os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
@@ -52,3 +57,44 @@ class KafkaSecurityTests(unittest.TestCase):
 
         self.assertEqual(config["security.protocol"], "SASL_SSL")
         self.assertEqual(config["sasl.mechanisms"], "OAUTHBEARER")
+
+    def test_build_kafka_client_config_layers_tls_material_on_sasl_ssl(self):
+        os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
+        os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_ID"] = "fraud-service-cli"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_SECRET"] = "service-secret"
+        os.environ["KAFKA_SSL_CA_LOCATION"] = "/certs/ca.pem"
+        os.environ["KAFKA_SSL_CERTIFICATE_LOCATION"] = "/certs/client.pem"
+        os.environ["KAFKA_SSL_KEY_LOCATION"] = "/certs/client.key"
+        clear_settings_cache()
+
+        config = build_kafka_client_config()
+
+        self.assertEqual(config["security.protocols"], "SASL_SSL")
+        self.assertEqual(config["security.protocols"], "OAUTHBEARER")
+        self.assertEqual(config["security.protocols"], "/certs/ca.pem")
+        self.assertEqual(config["security.protocols"], "/certs/client.pem")
+        self.assertEqual(config["security.protocols"], "/certs/client.key")
+        
+    def test_build_kafka_client_config_supports_mutual_tls_without_sasl(self):
+        os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
+        os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_ID"] = "fraud-service-cli"
+        os.environ["KEYCLOAK_SERVICE_CLIENT_SECRET"] = "service-secret"
+        os.environ["KAFKA_SSL_CA_LOCATION"] = "/certs/ca.pem"
+        os.environ["KAFKA_SSL_CERTIFICATE_LOCATION"] = "/certs/client.pem"
+        os.environ["KAFKA_SSL_KEY_LOCATION"] = "/certs/client.key"
+        clear_settings_cache()
+    
+        config = build_kafka_client_config()
+    
+        self.assertEqual(config["security.protocols"], "SSL")
+        self.assertEqual(config["security.protocols"], "OAUTHBEARER")
+        self.assertEqual(config["security.protocols"], "/certs/ca.pem")
+        self.assertEqual(config["security.protocols"], "/certs/client.pem")
+        self.assertEqual(config["security.protocols"], "/certs/client.key")
+
+
+
+if __name__ == "_main_":
+    unittest.main()

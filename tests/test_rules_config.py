@@ -1,3 +1,4 @@
+from decimal import Decimal
 import json
 import os
 import sys
@@ -19,6 +20,7 @@ os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
 
+import app.rule as rule_module
 from app.config import load_rules_config
 from app.rule import evaluate_transaction, Transaction
 
@@ -82,6 +84,87 @@ class RulesConfigTests(unittest.TestCase):
         self.assertTrue(result["is_fraud"])
         self.assertEqual(result["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
 
+# Assuming these exist in your application code:
+# from app.models import Transaction
+# from app.rules import evaluate_transaction
+# import app.rules as rule_module
+
+
+class FraudRulesTests(unittest.TestCase):
+
+    def test_evaluate_transaction_without_velocity_context_is_stateless(self):
+        # With no recent-activity context the velocity rules must never fire,
+        # preserving the original two-rule behaviour for stateless callers.
+        transaction = Transaction(
+            transaction_id="tx-stateless",
+            user_id="user-g",
+            amount=10,
+            category="GROCERIES",
+        )
+        result = evaluate_transaction(transaction)
+        self.assertFalse(result["is_fraud"])
+        self.assertEqual(result["triggered_rules"], [])
+
+    def _with_rules(self, **overrides):
+        """Install a stub rules provider returning a fixed RulesConfig for the test."""
+        from app.config import RulesConfig
+
+        config = RulesConfig(
+            high_value_threshold=overrides.get("high_value_threshold", 10000),
+            restricted_categories=overrides.get("restricted_categories", {}),
+            velocity_window_seconds=overrides.get("velocity_window_seconds", 60),
+            velocity_max_count=overrides.get("velocity_max_count", 0),
+            velocity_max_amount=overrides.get("velocity_max_amount", 0),
+        )
+
+        class _StubProvider:
+            def get(self_inner):
+                return config
+
+        original = rule_module._rules
+        rule_module._rules = _StubProvider()
+        # Restores the original provider after the test runs
+        self.addCleanup(lambda: setattr(rule_module, "_rules", original))
+
+    def test_evaluate_transaction_flags_velocity_count(self):
+        self._with_rules(velocity_max_count=3, velocity_max_amount=0)
+
+        transaction = Transaction(
+            transaction_id="tx-velocity",
+            user_id="user-3",
+            amount=10,
+            category="GROCERIES",
+        )
+
+        # 3 prior + this one = 4, which exceeds the max of 3.
+        result = evaluate_transaction(
+            transaction, recent_count=3, recent_amount_sum=Decimal("0.00")
+        )
+
+        self.assertTrue(result["is_fraud"])
+        self.assertIn("VELOCITY_COUNT_EXCEEDED", result["triggered_rules"])
+
+    def test_evaluate_transaction_flags_velocity_amount(self):
+        from decimal import Decimal
+
+        self._with_rules (velocity_max_count=0, velocity_max_amount=1000)
+        transaction = Transaction(
+            transaction_id="tx-velocity-amount", user_id="user-4", amount=200, category="GROCERIES"
+        )
+        # 900 prior + 200 this = 1100, exceeding the 1000 window cap.
+        result = evaluate_transaction(transaction, recent_count=1, recent_amount_sum=Decimal("900"))
+        self. assertTrue( result ["is_fraud"])
+        self. assertIn("VELOCITY_AMOUNT", result ["triggered_rules"])
+                        
+    def test_velocity_not_triggered_below_thresholds (self):
+        from decimal import Decimal
+        self._with_rules(velocity_max_count=5, velocity_max_amount=1000)
+        transaction = Transaction(
+            transaction_id="tx-ok", user_id="user-5", amount=10, category="GROCERIES"
+        )
+        result = evaluate_transaction(transaction, recent_count=1, recent_amount_sum=Decimal("50"))
+        self.assertFalse(result["is_fraud"])
+        self.assertEqual( result["triggered_rules"], [])
 
 if __name__ == "__main__":
     unittest.main()
