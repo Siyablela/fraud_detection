@@ -58,7 +58,7 @@ def build_client_payload(
                 "name": "audience-mapper",
                 "protocol": "openid-connect",
                 "protocolMapper": "oidc-audience-mapper",
-                "consent": False,
+                "consentRequired": False,
                 "config": {
                     "included.custom.audience": audience,
                     "access.token.claim": "true",
