@@ -58,9 +58,9 @@ def build_client_payload(
                 "name": "audience-mapper",
                 "protocol": "openid-connect",
                 "protocolMapper": "oidc-audience-mapper",
-                "consent": "false",
+                "consent": False,
                 "config": {
-                    "included.client.audience": audience,
+                    "included.custom.audience": audience,
                     "access.token.claim": "true",
                     "id.token.claim": "true",
                 },
@@ -191,9 +191,76 @@ async def bootstrap_keycloak() -> None:
                 )
 
                 if not any(item.get("clientId") == settings.keycloak_token_client_id for item in existing_clients):
-                    await client.post(clients_url, headers=realm_admin_headers, content=json.dumps(public_client))
+                    create_public_client_response = await client.post(
+                        clients_url,
+                        headers=realm_admin_headers,
+                        content=json.dumps(public_client),
+                    )
+                    create_public_client_response.raise_for_status()
                 if not any(item.get("clientId") == settings.keycloak_service_client_id for item in existing_clients):
-                    await client.post(clients_url, headers=realm_admin_headers, content=json.dumps(service_client))
+                    create_service_client_response = await client.post(
+                        clients_url,
+                        headers=realm_admin_headers,
+                        content=json.dumps(service_client),
+                    )
+                    create_service_client_response.raise_for_status()
+
+                refreshed_clients_response = await client.get(clients_url, headers=realm_admin_headers)
+                refreshed_clients_response.raise_for_status()
+                refreshed_clients = refreshed_clients_response.json()
+                token_client = next(
+                    (item for item in refreshed_clients_response if item.get("clientId") == settings.keycloak_token_client_id),
+                    None,
+                )
+                service_client_entry = next(
+                    (item for item in refreshed_clients_response if item.get("clientId") == settings.keycloak_token_client_id),
+                    None,
+                )
+
+                client_scopes_url = f"{realm_admin_headers}/client-scopes"
+                client_scopes_response = await client.get(client_scopes_url, headers=realm_admin_headers)
+                client_scopes_response.raise_for_status()
+                existing_client_scopes = client_scopes_response.json()
+                required_scopes_name = settings.jwt_required_scope_for_transaction_read
+                required_client_scope = next(
+                    (item for item in existing_client_scopes if item.get("name") == required_scopes_name),
+                    None,
+                )
+                if required_client_scope is None:
+                    create_scope_payload = {
+                        "name": required_scopes_name,
+                        "protocol": "openid-connect",
+                        "attributes": {
+                            "display.on.consent.screen": "false",
+                            "include.in.token.scope": "true",
+                        },
+                    }
+                    create_scope_response = await client.post(
+                        client_scopes_url,
+                        headers=realm_admin_headers,
+                        content=json.dumps(create_scope_payload),
+                    )
+                    create_scope_response.raise_for_status()
+
+                    refreshed_scopes_response = await client.get(client_scopes_url, headers=realm_admin_headers)
+                    refreshed_scopes_response.raise_for_status()
+                    refreshed_scopes = refreshed_scopes_response.json()
+                    required_client_scope = next(
+                        (item for item in refreshed_scopes if item.get("name") == required_scopes_name),
+                                            None,
+                    )
+
+                scope_id = str(required_client_scope.get("id") or "") if required_client_scope else ""
+                for client_entry in (token_client, service_client_entry):
+                    client_uuid = str((client_entry or {}).get("id") or "")
+                    if not client_uuid or not scope_id:
+                        continue
+                    assign_scope_url = (
+                        f"{realm_admin_url}/clients/{client_uuid}/default-client-scopes/{scope_id}"
+                    )
+                    assign_scope_response = await client.put(assign_scope_url, headers=realm_admin_headers)
+                    if assign_scope_response.status_code not in (204, 409):
+                        assign_scope_response.raise_for_status()
 
                 users_url = f"{realm_admin_url}/users"
                 existing_users_response = await client.get(users_url, headers=realm_admin_headers)
@@ -202,7 +269,7 @@ async def bootstrap_keycloak() -> None:
                 demo_username = os.getenv("KEYCLOAK_DEMO_USERNAME", "demo")
                 demo_password = os.getenv("KEYCLOAK_DEMO_PASSWORD", "demo")
                 if not any(item.get("username") == demo_username for item in existing_users):
-                    await client.post(
+                    create_user_response = await client.post(
                         users_url,
                         headers=realm_admin_headers,
                         content=json.dumps(
@@ -213,6 +280,8 @@ async def bootstrap_keycloak() -> None:
                             )
                         ),
                     )
+                    create_user_response.raise_for_status()
+
         except Exception as exc:  # pragma: no cover - exercised during startup retries
             last_error = exc
             if attempt == _MAX_BOOTSTRAP_ATTEMPTS:

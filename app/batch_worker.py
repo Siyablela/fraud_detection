@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from app.database import get_database_pool, ping_database, summarize_transactions
+from app.database import database_pool, ping_database, summarize_transactions
 from app.observability import configure_logging, get_logger
 from app.settings import get_settings
 
@@ -35,7 +35,7 @@ async def process_batch_job() -> None:
     since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     logger.info("batch_job_started", service=SERVICE_NAME, window_hours=window_hours)
 
-    async with get_database_pool() as pool:
+    async with database_pool() as pool:
         await ping_database(pool)
         summary = await summarize_transactions(pool, since)
 

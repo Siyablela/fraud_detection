@@ -417,15 +417,16 @@ async def get_recent_user_activity(
     Returns:
         tuple[int, Decimal]: the number of matching transactions and sum of their amounts.
     """
+    since_epoch = since.timestamp()
     async with session_factory() as session:
         count = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since)
+            .where(TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch)
         )
         total = await session.scalar(
             select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
-                TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since
+                TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch
                 )
         )
     return int(count or 0), Decimal(str(total or 0))

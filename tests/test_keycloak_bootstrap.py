@@ -14,7 +14,8 @@ def test_public_client_payload_enables_oauth_flows_and_audience_mapper() -> None
     assert payload["standardFlowEnabled"] is True
     assert payload["directAccessGrantsEnabled"] is True
     assert payload["attributes"]["pkce.code.challenge.method"] == "S256"
-    assert payload["protocolMappers"][0]["config"]["included.client.audience"] == "fraud-api"
+    assert payload["protocolMappers"][0]["consentRequired"] is False
+    assert payload["protocolMappers"][0]["config"]["included.custom.audience"] == "fraud-api"
 
 
 def test_service_client_payload_enables_service_account_and_secret() -> None:
@@ -29,7 +30,8 @@ def test_service_client_payload_enables_service_account_and_secret() -> None:
     assert payload["secret"] == "service-secret"
     assert payload["serviceAccountsEnabled"] is True
     assert payload["standardFlowEnabled"] is False
-    assert payload["protocolMappers"][0]["config"]["included.client.audience"] == "fraud-api"
+    assert payload["protocolMappers"][0]["consentRequired"] is False
+    assert payload["protocolMappers"][0]["config"]["included.custom.audience"] == "fraud-api"
 
 
 def test_user_payload_sets_enabled_and_credentials() -> None:
