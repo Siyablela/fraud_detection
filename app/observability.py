@@ -8,7 +8,32 @@ from fastapi import FastAPI, Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from starlette.routing import Route, Match
 import structlog
+
+def _resolved_route_template(request: Request) -> str:
+    """Return the matched route template for a request, never the raw path.
+
+    Prefers the route already attached to the request scope; otherwise re-matches
+    against the app's routes so the templated path (e.g. ``/x/{id}``) is recovered
+    even when the scope's ``route`` was not populated for the middleware. Falls back
+    to a single bounded ``"<unmatched>"`` bucket so no identifier-bearing raw path is
+    ever used as a metric label.
+
+    Only ``starlette.routing.Route`` instances are considered (FastAPI's ``APIRoute`` 
+    is one); they guarantee both ``matches`` and ``path``, so no attribute probing is
+    needed and non-path routes (mounts, hosts) are skipped.
+    """
+    scoped_route = request.scope.get("route")
+    if isinstance(scoped_route, Route):
+        return scoped_route.path
+    for route in request.app.routes:
+        if isinstance(route, Route):
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                return route.path
+
+    return "<unmatched>"
 
 _request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
 _correlation_id_context: ContextVar[str] = ContextVar("correlation_id", default="-")
@@ -196,7 +221,6 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
         structlog.contextvars.bind_contextvars(request_id=request_id, correlation_id=correlation_id)
         start_time = time.perf_counter()
         status_code = 500
-        route = request.url.path
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -205,8 +229,12 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed = time.perf_counter() - start_time
-            if request.scope.get("route") and getattr(request.scope["route"], "path", None):
-                route = request.scope["route"].path
+            # Label with the matched route **template** (e.g. /api/v1/transactions/{transaction_id}).
+            # Never fall back to the raw path. That would embed identifiers such as
+            # transaction IDs in the metric labels, wleaking them via /metric and exploding
+            # label cardinality (a memory exhaustion vector). Unmatched paths collapse to a 
+            # single bounded bucket.
+            route = _resolved_route_template(request)
 
             _http_requests_total.labels(
                 service=self.service_name,
@@ -322,15 +350,15 @@ def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
 
 
 def setup_tracing(service_name: str) -> None:
-    """Enable OTel tracing when the exporter endpoint is configured for this service.
+    """Enable Otel tracing when the exporter endpoint is configured for this service.
 
     Args:
-        service_name: The logical service name to publish in tracing metadata.
-
+        service_name: The logical service name used in tracing metadata.
+    
     Returns:
         None: If a tracer endpoint is configured, the global tracer provider is set.
     """
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT","",).strip()
     if not endpoint:
         return
 
@@ -344,7 +372,7 @@ def setup_tracing(service_name: str) -> None:
     except Exception:
         get_logger(__name__).warning(
             "tracing_dependencies_missing",
-            detail="Tracing is enabled through environment variables, but OpenTelemetry dependencies are missing.",
+            detail="Tracing is enabled, but the required OpenTelemetry dependencies are not installed.",
             service_name=service_name,
         )
         return
@@ -357,26 +385,26 @@ def setup_tracing(service_name: str) -> None:
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     trace.set_tracer_provider(provider)
 
-    # Return an instrument helper so API apps can opt-in without importing otel directly.
+    # Return an instrument helper so API apps can opt-in without otel directly.
     def _instrument_fastapi(app: FastAPI) -> None:
-        """Instrument a FastAPI app with OpenTelemetry tracing when available."""
+        """Instrument a FastAPI app with OpenTelemetry tracing when availale."""
         FastAPIInstrumentor.instrument_app(app)
 
     setattr(apply_tracing, "instrument_fastapi", _instrument_fastapi)
 
 
 def apply_tracing(app: FastAPI) -> None:
-    """Instrument the app with the configured tracing helper if available.
+    """Instrument yhe app with configured tracing helper if available.
 
     Args:
         app: The FastAPI application to instrument.
 
     Returns:
-        None: The app is instrumented only if the tracing helper is available.
+        None: The app instrumented only if the tracing helper is available.
     """
-    instrument = getattr(apply_tracing, "instrument_fastapi", None)
-    if callable(instrument):
-        instrument(app)
+    from opentelemetry.instrumentation.fastapi import (FastAPIInstrumentor )
+    
+    FastAPIInstrumentor.instrument_app(app)
 
 
 def worker_message_timer(service_name: str, topic: str):

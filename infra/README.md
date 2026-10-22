@@ -1,24 +1,16 @@
 # Infrastructure Runbook
 
-This repository is intentionally simple: the application is a FastAPI API plus a Kafka consumer worker. It does not manage Kafka broker lifecycle or topic provisioning; those are platform concerns.
+This directory is the home for Helm-based Kubernetes operations. Helm is the only deployment source; Kustomize has been removed.
 
-Local development uses Docker Compose from the repository root. Production uses the Helm chart in [fraud-detection](../fraud-detection).
+Application workflow: [README.md](../README.md) and Docker Compose.
+Infrastructure workflow: the Helm chart in [fraud-detection](../fraud-detection) and the deployment notes in this file.
 
-## What is live vs. optional
+## Current scope
 
-Live runtime components:
-
-- FastAPI API on port 8000
-- Kafka worker process for transaction processing
-- PostgreSQL for latest-state and history tables
-- Keycloak for JWT validation and local auth bootstrap only
-
-Optional or external concerns:
-
-- Kafka cluster/topic provisioning
-- ingress or gateway routing
-- platform secrets injection and rotation
-- GitOps deployment automation
+- Helm-based local parity checks with Minikube.
+- Helm-based production deployment with CI-built images.
+- Phase-specific values files for `dev` and `prod`.
+- Cluster-specific secrets and rollout checks.
 
 ## Chart locations
 
@@ -27,70 +19,54 @@ Optional or external concerns:
 - Dev values: [fraud-detection/values-dev.yaml](../fraud-detection/values-dev.yaml)
 - Prod values: [fraud-detection/values-prod.yaml](../fraud-detection/values-prod.yaml)
 
+## Local deployment
+
+Build the image once and load it into Minikube:
+
+```powershell
+docker build -t fraud-detection:dev .
+minikube image load fraud-detection:dev
+helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-dev.yaml --namespace fraud-detection --create-namespace
+```
+
+Verify the deployment:
+
+```powershell
+kubectl -n fraud-detection get pods
+kubectl -n fraud-detection get svc postgres redis kafka api producer
+```
+
+Forward the HTTP services in separate terminal windows:
+
+```powershell
+kubectl -n fraud-detection port-forward service/producer 8001:8001
+kubectl -n fraud-detection port-forward service/api 8000:8000
+```
+
 ## Production deployment
 
 Use the production values file when deploying to a cluster:
 
 ```powershell
-helm upgrade --install fraud-system .\fraud-detection `
-  -f .\fraud-detection\values.yaml `
-  -f .\fraud-detection\values-prod.yaml `
-  --namespace fraud-detection --create-namespace
-
+helm upgrade --install fraud-system .\fraud-detection -f .\fraud-detection\values.yaml -f .\fraud-detection\values-prod.yaml --namespace fraud-detection --create-namespace
+kubectl -n fraud-detection rollout status statefulset/redis
 kubectl -n fraud-detection rollout status deployment/fraud-api
+kubectl -n fraud-detection rollout status deployment/fraud-producer
 kubectl -n fraud-detection rollout status deployment/fraud-worker
-kubectl -n fraud-detection get svc
 ```
 
-Production notes:
+Before applying production resources:
 
-1. Use immutable image tags or commit SHAs for deployment stability.
-2. Keep application credentials and secret material out of Helm values; provision them as Kubernetes Secrets from an external system.
-3. Kafka topics must already exist before the app is expected to consume from them.
-4. The application is not responsible for Kafka cluster lifecycle, permissions, or topic management.
+1. Replace the placeholder Redis and PostgreSQL values in the release pipeline, or source them from an external secret manager.
+2. Configure the CI pipeline to replace `IMAGE_TAG` with a commit SHA or immutable image tag.
+3. Ensure stable PostgreSQL and Redis connectivity. For production, prefer managed services and store full connection URLs in Secrets.
+4. Expose only the producer through an Ingress or API gateway as required. Keep the query API and Redis internal by default.
 
-## Local development notes
+## Split plan
 
-Use Docker Compose from the repository root:
+When this infrastructure is moved to its own repository, keep the Helm chart and this runbook together and leave the application repository focused on:
 
-```powershell
-docker compose down --remove-orphans
-docker compose up -d --build --force-recreate
-docker exec fraud_api python -m alembic upgrade head
-```
-
-This is a convenience environment for testing the app, not a deployment model for Kafka as a managed service.
-
-## CI to Argo CD release flow
-
-- CI validation workflow: [.github/workflows/ci.yml](../.github/workflows/ci.yml)
-- GitOps release workflow: [.github/workflows/cd-gitops.yml](../.github/workflows/cd-gitops.yml)
-- Argo application definition: [argocd/applications/fraud-detection.yaml](../argocd/applications/fraud-detection.yaml)
-
-How it works:
-
-1. CI runs unit tests and template validation for pull requests and main.
-2. On merge to main, CD builds and pushes an immutable image tag to GHCR.
-3. CD updates [fraud-detection/values-prod.yaml](../fraud-detection/values-prod.yaml) with the image version.
-4. Argo CD reconciles the cluster to the new commit.
-
-## Operational boundaries
-
-The app should be responsible for:
-
-- API request handling
-- JWT validation
-- Kafka event consumption
-- fraud evaluation
-- persistence to PostgreSQL
-- dead-letter publication on failure
-
-The platform or infrastructure should be responsible for:
-
-- Kafka broker availability and sizing
-- topic creation and ACLs
-- ingress and gateway configuration
-- secret injection and rotation
-- cluster deployment automation
-
-This keeps the service focused and avoids coupling application logic to platform administration.
+- Docker Compose
+- application code under [app/](../app)
+- tests under [tests/](../tests)
+- local developer documentation

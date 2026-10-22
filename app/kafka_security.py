@@ -61,16 +61,49 @@ def _build_oauthbearer_config(security_protocol: str) -> dict[str, Any]:
     }
 
 
+def _build_tls_config() -> dict[str, Any]:
+    """Build librdkafka TLS/mTLS options from any configured certificate material.
+
+    Only keys for values that are actually set are returned, so an operator can
+    enale one-way TLS (CA Only) or mutual TLS (CA + Client cert/key) without the
+    unset optiond intefering.
+
+    Returns:
+        dict[str, Any]: ``ssl.*`` configuration entries for the kafka client.
+    """
+    settings = get_settings()
+    tls_config: dict[str, Any] = {}
+    if settings.kafka_ssl_ca_location:
+        tls_config["ssl.ca.location"] = settings.kafka_ssl_ca_location
+    if settings.kafka_ssl_certificate_location:
+        tls_config["ssl.certificate.location"] = settings.kafka_ssl_certificate_location
+    if settings.kafka_ssl_key_location:
+        tls_config["ssl.key.location"] = settings.kafka_ssl_key_location
+    if settings.kafka_ssl_key_password:
+        tls_config["ssl.key.password"] = settings.kafka_ssl_key_password
+    return tls_config
+
+
 def build_kafka_client_config() -> dict[str, Any]:
     """Build the Kafka client configuration for the active security protocol.
 
+    Supports ``PLAIINTEXT``, ``SSL`` (mutual TLS, no SASL), and the SASL variants
+    ```SASL_PLAINTEXT`` and ``SASL_SSL`` with OAUTHBEARER authentication. TLS material layered
+    is whenever an SSL-bearing protocol is selected abd certificate paths are set.
+
     Returns:
-        dict[str, Any]: Kafka configuration values for the active SASL/OAUTHBEARER or PLAINTEXT mode.
+        dict[str, Any]: Kafka configuration values for the security mode.
     """
     settings = get_settings()
     protocol = settings.kafka_security_protocol.upper()
 
     if protocol in {"SASL_PLAINTEXT", "SASL_SSL"}:
-        return _build_oauthbearer_config(protocol)
+        config = _build_oauthbearer_config(protocol)
+        if protocol == "SASL_SSL":
+            config.update(_build_tls_config())
+        return config
+
+    if protocol == "SSL":
+        return {"security.protocol": "SSL", **_build_tls_config()}
 
     return {"security.protocol": "PLAINTEXT"}

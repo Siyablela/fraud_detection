@@ -1,10 +1,34 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
+
+
+def _epoch_to_utc_datetime(value: float) -> datetime:
+    """Convert a Unix epoch timestamp to a timezone-aware UTC datetime.
+    
+    Already-datetime values are returned unchanged (assume UTC is naive). None-numeric
+    Values are returned as-is so callers/tests passing other shapes are not broken.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=datetime.timezone.utc)
+    return value
+
+
+def _datetime_to_epoch(value: datetime) -> float:
+    """Convert a stored datetime back to epoch seconds for the external contracts."""
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    return value
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -32,7 +56,7 @@ class TransactionRecord(Base):
 
     transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -57,7 +81,7 @@ class TransactionHistoryRecord(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     transaction_id: Mapped[str] = mapped_column(String, nullable=False)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -372,4 +396,72 @@ def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
         "correlation_id": row.correlation_id,
         "created_at": normalize_utc_datetime(row.created_at),
         "updated_at": normalize_utc_datetime(row.updated_at),
+    }
+
+
+async def get_recent_user_activity(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    since: datetime,
+) -> list[dict[str, Any]]:
+    """Return a user's transaction count and amount total since a cutoff time.
+
+    Used by the worker to feed the stateful velocity fraud rule. Only transacyions
+    with a business ``timestamp`` at or after ``since`` are considered.
+
+    Args:
+        session_factory: Async session favtory for the database.
+        user_id: The user whose recent activity is being summed.
+        since: The inclusion lower bound for the transaction ``timestamp``.
+
+    Returns:
+        tuple[int, Decimal]: the number of matching transactions and sum of their amounts.
+    """
+    since_epoch = since.timestamp()
+    async with session_factory() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(TransactionRecord)
+            .where(TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch)
+        )
+        total = await session.scalar(
+            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
+                TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch
+                )
+        )
+    return int(count or 0), Decimal(str(total or 0))
+
+
+async def summarize_transactions(
+    session_factory: async_sessionmaker[AsyncSession], 
+    since: datetime
+) -> dict[str, Any]:
+    """Summarize transaction activity since a cutoff time, for the deffered batch job.
+
+    Args:
+        session_factory: Async session factory for the database.
+        since: The inclusion lower bound for the transaction ``timestamp``.
+
+    Returns:
+        dict[str, Any]:  total and per category breakdown of processed transactions.
+    """
+    async with session_factory() as session:
+        total = await session.scalar(
+            select(func.count()).select_from(TransactionRecord).where(TransactionRecord.created_at >= since)
+        )
+        fraud_total = await session.scalar(
+            select(func.count())
+            .select_from(TransactionRecord)
+            .where(TransactionRecord.created_at >= since, TransactionRecord.is_fraud.is_(True))
+        )
+        category_rows = await session.execute(
+            select(TransactionRecord.category, func.count())
+            .where(TransactionRecord.created_at >= since)
+            .group_by(TransactionRecord.category)
+        )
+        by_category = {category: int(count) for category, count in category_rows.all()}
+    return {
+        "total": int(total or 0),
+        "fraud": int(fraud_total or 0),
+        "by_category": by_category,
     }

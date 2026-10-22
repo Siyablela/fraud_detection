@@ -53,7 +53,11 @@ services:
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_DLQ_TOPIC_NAME:-transactions_topic.dlq}
 
   worker:
-    build: .
+    build: 
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
     container_name: fraud_worker
 
     command: python -u -m app.worker
@@ -112,7 +116,11 @@ services:
         condition: service_started
 
   batch-worker:
-    build: .
+    build: 
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
     container_name: fraud_batch_worker
 
     command: python -u -m app.batch_worker
@@ -129,7 +137,11 @@ services:
         condition: service_healthy
 
   keycloak-init:
-    build: .
+    build: 
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
     container_name: fraud_keycloak_init
 
     command: python -u -m app.keycloak_bootstrap
@@ -151,7 +163,11 @@ services:
     restart: "no"
 
   api:
-    build: .
+    build: 
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
     container_name: fraud_api
 
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000

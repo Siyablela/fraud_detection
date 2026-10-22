@@ -1,3 +1,4 @@
+from decimal import Decimal
 import json
 import os
 from dataclasses import dataclass
@@ -5,11 +6,13 @@ from pathlib import Path
 
 from app.settings import get_settings
 
-
 @dataclass(frozen=True)
 class RulesConfig:
-	high_value_threshold: float | None = None
+	high_value_threshold: Decimal | None = None
 	restricted_categories: dict[str, float] | None = None
+	velocity_window_seconds: int | None = None
+	velocity_max_count: int | None = None
+	velocity_max_amount: Decimal | None = None
 
 	def __post_init__(self):
 		"""Populate missing rule settings from the active application settings.
@@ -26,6 +29,19 @@ class RulesConfig:
 				"restricted_categories",
 				settings.default_restricted_categories,
 			)
+		if self.velocity_window_seconds is None:
+			object.__setattr__(self, "velocity_window_seconds", settings.default_velocity_window_seconds)
+		if self.velocity_max_count is None:
+			object.__setattr__(self, "velocity_max_count", settings.default_velocity_max_count)
+		if self.velocity_max_amount is None:
+			object.__setattr__(self, "velocity_max_amount", settings.default_velocity_max_amount)
+
+	@property
+	def velocity_enabled(self) -> bool:
+		"""Determine if the velocity rules are enabled based on the current configuration."""
+		return bool(self.velocity_window_seconds) and (
+			bool(self.velocity_max_count) and bool(self.velocity_max_amount)
+		)
 
 
 def load_rules_config(path: str | None = None) -> RulesConfig:
@@ -53,6 +69,13 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
 				"restricted_categories", settings.default_restricted_categories
 			).items()
 		},
+		velocity_window_seconds=int(
+			values.get("velocity_window_seconds", settings.default_velocity_window_seconds)),
+		velocity_max_count=Decimal(
+			values.get("velocity_max_count", settings.default_velocity_max_count)),
+		velocity_max_amount=Decimal(
+			values.get("velocity_max_amount", settings.default_velocity_max_amount)
+		),
 	)
 
 
