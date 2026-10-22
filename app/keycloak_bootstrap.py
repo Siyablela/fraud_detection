@@ -209,26 +209,26 @@ async def bootstrap_keycloak() -> None:
                 refreshed_clients_response.raise_for_status()
                 refreshed_clients = refreshed_clients_response.json()
                 token_client = next(
-                    (item for item in refreshed_clients_response if item.get("clientId") == settings.keycloak_token_client_id),
+                    (item for item in refreshed_clients if item.get("clientId") == settings.keycloak_token_client_id),
                     None,
                 )
                 service_client_entry = next(
-                    (item for item in refreshed_clients_response if item.get("clientId") == settings.keycloak_token_client_id),
+                    (item for item in refreshed_clients if item.get("clientId") == settings.keycloak_token_client_id),
                     None,
                 )
 
-                client_scopes_url = f"{realm_admin_headers}/client-scopes"
+                client_scopes_url = f"{realm_admin_url}/client-scopes"
                 client_scopes_response = await client.get(client_scopes_url, headers=realm_admin_headers)
                 client_scopes_response.raise_for_status()
                 existing_client_scopes = client_scopes_response.json()
-                required_scopes_name = settings.jwt_required_scope_for_transaction_read
+                required_scope_name = settings.jwt_required_scope_for_transaction_read
                 required_client_scope = next(
-                    (item for item in existing_client_scopes if item.get("name") == required_scopes_name),
+                    (item for item in existing_client_scopes if item.get("name") == required_scope_name),
                     None,
                 )
                 if required_client_scope is None:
                     create_scope_payload = {
-                        "name": required_scopes_name,
+                        "name": required_scope_name,
                         "protocol": "openid-connect",
                         "attributes": {
                             "display.on.consent.screen": "false",
@@ -246,7 +246,7 @@ async def bootstrap_keycloak() -> None:
                     refreshed_scopes_response.raise_for_status()
                     refreshed_scopes = refreshed_scopes_response.json()
                     required_client_scope = next(
-                        (item for item in refreshed_scopes if item.get("name") == required_scopes_name),
+                        (item for item in refreshed_scopes if item.get("name") == required_scope_name),
                                             None,
                     )
 
@@ -281,7 +281,6 @@ async def bootstrap_keycloak() -> None:
                         ),
                     )
                     create_user_response.raise_for_status()
-
         except Exception as exc:  # pragma: no cover - exercised during startup retries
             last_error = exc
             if attempt == _MAX_BOOTSTRAP_ATTEMPTS:

@@ -11,7 +11,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.lock .
-
 RUN set -e; \
     TRUST_ARGS=""; \
     for host in $PIP_TRUSTED_HOSTS; do \
