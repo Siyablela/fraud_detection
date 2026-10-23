@@ -21,15 +21,22 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if inspector.has_table("transaction_history"):
-        columns = {column["name"] for column in inspector.get_columns("transaction_history")}
+        columns = {
+            column["name"] for column in inspector.get_columns("transaction_history")
+        }
         if "correlation_id" not in columns:
-            op.add_column("transaction_history", sa.Column("correlation_id", sa.String(), nullable=True))
+            op.add_column(
+                "transaction_history",
+                sa.Column("correlation_id", sa.String(), nullable=True),
+            )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if inspector.has_table("transaction_history"):
-        columns = {column["name"] for column in inspector.get_columns("transaction_history")}
+        columns = {
+            column["name"] for column in inspector.get_columns("transaction_history")
+        }
         if "correlation_id" in columns:
             op.drop_column("transaction_history", "correlation_id")

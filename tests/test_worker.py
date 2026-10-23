@@ -16,7 +16,11 @@ os.environ.setdefault("DB_POOL_MAX_SIZE", "5")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "100.0")
 os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 
-from app.worker import _vlocity_window_bounds, commit_processed_message, route_message_to_dlq
+from app.worker import (
+    _vlocity_window_bounds,
+    commit_processed_message,
+    route_message_to_dlq,
+)
 
 
 class FakeProducer:
@@ -36,7 +40,7 @@ class WorkerCommitTests(unittest.TestCase):
 
         self.assertEqual(end_epoch, 1000.0)
         self.assertEqual(start_epoch, 940.0)
-        
+
     def test_commit_processed_message_commits_next_offset_for_partition(self):
         async def run_test() -> None:
             captured = {}
@@ -52,6 +56,7 @@ class WorkerCommitTests(unittest.TestCase):
             self.assertEqual(captured, {("transactions", 2): 42})
 
         asyncio.run(run_test())
+
     def test_commit_processed_message_supports_sync_consumer_commit(self):
         async def run_test() -> None:
             captured = {}

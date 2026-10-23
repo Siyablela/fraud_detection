@@ -8,7 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/fraud_detection")
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql://user:pass@localhost:5432/fraud_detection"
+)
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions_topic")
 os.environ.setdefault("KAFKA_CONSUMER_GROUP_ID", "fraud-worker-group")
@@ -18,7 +20,9 @@ os.environ.setdefault("JWT_AUDIENCE", "fraud-api")
 os.environ.setdefault("DB_POOL_MIN_SIZE", "1")
 os.environ.setdefault("DB_POOL_MAX_SIZE", "10")
 os.environ.setdefault("DEFAULT_HIGH_VALUE_THRESHOLD", "10000")
-os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}')
+os.environ.setdefault(
+    "DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 5000, "CRYPTO": 5000}'
+)
 
 import app.rule as rule_module
 from app.config import load_rules_config
@@ -84,6 +88,7 @@ class RulesConfigTests(unittest.TestCase):
         self.assertTrue(result["is_fraud"])
         self.assertEqual(result["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
 
+
 # Assuming these exist in your application code:
 # from app.models import Transaction
 # from app.rules import evaluate_transaction
@@ -147,24 +152,33 @@ class FraudRulesTests(unittest.TestCase):
     def test_evaluate_transaction_flags_velocity_amount(self):
         from decimal import Decimal
 
-        self._with_rules (velocity_max_count=0, velocity_max_amount=1000)
+        self._with_rules(velocity_max_count=0, velocity_max_amount=1000)
         transaction = Transaction(
-            transaction_id="tx-velocity-amount", user_id="user-4", amount=200, category="GROCERIES"
+            transaction_id="tx-velocity-amount",
+            user_id="user-4",
+            amount=200,
+            category="GROCERIES",
         )
         # 900 prior + 200 this = 1100, exceeding the 1000 window cap.
-        result = evaluate_transaction(transaction, recent_count=1, recent_amount_sum=Decimal("900"))
-        self. assertTrue( result ["is_fraud"])
-        self. assertIn("VELOCITY_AMOUNT", result ["triggered_rules"])
-                        
-    def test_velocity_not_triggered_below_thresholds (self):
+        result = evaluate_transaction(
+            transaction, recent_count=1, recent_amount_sum=Decimal("900")
+        )
+        self.assertTrue(result["is_fraud"])
+        self.assertIn("VELOCITY_AMOUNT", result["triggered_rules"])
+
+    def test_velocity_not_triggered_below_thresholds(self):
         from decimal import Decimal
+
         self._with_rules(velocity_max_count=5, velocity_max_amount=1000)
         transaction = Transaction(
             transaction_id="tx-ok", user_id="user-5", amount=10, category="GROCERIES"
         )
-        result = evaluate_transaction(transaction, recent_count=1, recent_amount_sum=Decimal("50"))
+        result = evaluate_transaction(
+            transaction, recent_count=1, recent_amount_sum=Decimal("50")
+        )
         self.assertFalse(result["is_fraud"])
-        self.assertEqual( result["triggered_rules"], [])
+        self.assertEqual(result["triggered_rules"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

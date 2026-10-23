@@ -110,7 +110,9 @@ def build_admin_token_url(keycloak_base_url: str) -> str:
     Returns:
         str: The full admin-cli token endpoint URL.
     """
-    return f"{keycloak_base_url.rstrip('/')}/realms/master/protocol/openid-connect/token"
+    return (
+        f"{keycloak_base_url.rstrip('/')}/realms/master/protocol/openid-connect/token"
+    )
 
 
 async def bootstrap_keycloak() -> None:
@@ -149,14 +151,21 @@ async def bootstrap_keycloak() -> None:
                 token_payload = token_response.json()
                 access_token = token_payload.get("access_token")
                 if not access_token:
-                    raise RuntimeError("Keycloak admin access token could not be obtained")
+                    raise RuntimeError(
+                        "Keycloak admin access token could not be obtained"
+                    )
 
-                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                }
                 realm_url = f"{keycloak_base_url}/admin/realms"
                 realm_exists_response = await client.get(realm_url, headers=headers)
                 realm_exists_response.raise_for_status()
                 existing_realms = realm_exists_response.json()
-                realm_exists = any(item.get("realm") == realm_name for item in existing_realms)
+                realm_exists = any(
+                    item.get("realm") == realm_name for item in existing_realms
+                )
 
                 if not realm_exists:
                     await client.post(
@@ -166,12 +175,19 @@ async def bootstrap_keycloak() -> None:
                     )
 
                 realm_admin_url = f"{realm_url}/{realm_name}"
-                realm_admin_headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                realm_response = await client.get(realm_admin_url, headers=realm_admin_headers)
+                realm_admin_headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                }
+                realm_response = await client.get(
+                    realm_admin_url, headers=realm_admin_headers
+                )
                 realm_response.raise_for_status()
 
                 clients_url = f"{realm_admin_url}/clients"
-                existing_clients_response = await client.get(clients_url, headers=realm_admin_headers)
+                existing_clients_response = await client.get(
+                    clients_url, headers=realm_admin_headers
+                )
                 existing_clients_response.raise_for_status()
                 existing_clients = existing_clients_response.json()
 
@@ -186,18 +202,25 @@ async def bootstrap_keycloak() -> None:
                     client_id=settings.keycloak_service_client_id,
                     public_client=False,
                     service_account=True,
-                    client_secret=settings.keycloak_service_client_secret or "service-secret",
+                    client_secret=settings.keycloak_service_client_secret
+                    or "service-secret",
                     audience=settings.jwt_audience,
                 )
 
-                if not any(item.get("clientId") == settings.keycloak_token_client_id for item in existing_clients):
+                if not any(
+                    item.get("clientId") == settings.keycloak_token_client_id
+                    for item in existing_clients
+                ):
                     create_public_client_response = await client.post(
                         clients_url,
                         headers=realm_admin_headers,
                         content=json.dumps(public_client),
                     )
                     create_public_client_response.raise_for_status()
-                if not any(item.get("clientId") == settings.keycloak_service_client_id for item in existing_clients):
+                if not any(
+                    item.get("clientId") == settings.keycloak_service_client_id
+                    for item in existing_clients
+                ):
                     create_service_client_response = await client.post(
                         clients_url,
                         headers=realm_admin_headers,
@@ -205,25 +228,42 @@ async def bootstrap_keycloak() -> None:
                     )
                     create_service_client_response.raise_for_status()
 
-                refreshed_clients_response = await client.get(clients_url, headers=realm_admin_headers)
+                refreshed_clients_response = await client.get(
+                    clients_url, headers=realm_admin_headers
+                )
                 refreshed_clients_response.raise_for_status()
                 refreshed_clients = refreshed_clients_response.json()
                 token_client = next(
-                    (item for item in refreshed_clients if item.get("clientId") == settings.keycloak_token_client_id),
+                    (
+                        item
+                        for item in refreshed_clients
+                        if item.get("clientId") == settings.keycloak_token_client_id
+                    ),
                     None,
                 )
                 service_client_entry = next(
-                    (item for item in refreshed_clients if item.get("clientId") == settings.keycloak_token_service_client_id),
+                    (
+                        item
+                        for item in refreshed_clients
+                        if item.get("clientId")
+                        == settings.keycloak_token_service_client_id
+                    ),
                     None,
                 )
 
                 client_scopes_url = f"{realm_admin_url}/client-scopes"
-                client_scopes_response = await client.get(client_scopes_url, headers=realm_admin_headers)
+                client_scopes_response = await client.get(
+                    client_scopes_url, headers=realm_admin_headers
+                )
                 client_scopes_response.raise_for_status()
                 existing_client_scopes = client_scopes_response.json()
                 required_scope_name = settings.jwt_required_scope_for_transaction_read
                 required_client_scope = next(
-                    (item for item in existing_client_scopes if item.get("name") == required_scope_name),
+                    (
+                        item
+                        for item in existing_client_scopes
+                        if item.get("name") == required_scope_name
+                    ),
                     None,
                 )
                 if required_client_scope is None:
@@ -242,33 +282,47 @@ async def bootstrap_keycloak() -> None:
                     )
                     create_scope_response.raise_for_status()
 
-                    refreshed_scopes_response = await client.get(client_scopes_url, headers=realm_admin_headers)
+                    refreshed_scopes_response = await client.get(
+                        client_scopes_url, headers=realm_admin_headers
+                    )
                     refreshed_scopes_response.raise_for_status()
                     refreshed_scopes = refreshed_scopes_response.json()
                     required_client_scope = next(
-                        (item for item in refreshed_scopes if item.get("name") == required_scope_name),
-                                            None,
+                        (
+                            item
+                            for item in refreshed_scopes
+                            if item.get("name") == required_scope_name
+                        ),
+                        None,
                     )
 
-                scope_id = str(required_client_scope.get("id") or "") if required_client_scope else ""
+                scope_id = (
+                    str(required_client_scope.get("id") or "")
+                    if required_client_scope
+                    else ""
+                )
                 for client_entry in (token_client, service_client_entry):
                     client_uuid = str((client_entry or {}).get("id") or "")
                     if not client_uuid or not scope_id:
                         continue
-                    assign_scope_url = (
-                        f"{realm_admin_url}/clients/{client_uuid}/default-client-scopes/{scope_id}"
+                    assign_scope_url = f"{realm_admin_url}/clients/{client_uuid}/default-client-scopes/{scope_id}"
+                    assign_scope_response = await client.put(
+                        assign_scope_url, headers=realm_admin_headers
                     )
-                    assign_scope_response = await client.put(assign_scope_url, headers=realm_admin_headers)
                     if assign_scope_response.status_code not in (204, 409):
                         assign_scope_response.raise_for_status()
 
                 users_url = f"{realm_admin_url}/users"
-                existing_users_response = await client.get(users_url, headers=realm_admin_headers)
+                existing_users_response = await client.get(
+                    users_url, headers=realm_admin_headers
+                )
                 existing_users_response.raise_for_status()
                 existing_users = existing_users_response.json()
                 demo_username = os.getenv("KEYCLOAK_DEMO_USERNAME", "demo")
                 demo_password = os.getenv("KEYCLOAK_DEMO_PASSWORD", "demo")
-                if not any(item.get("username") == demo_username for item in existing_users):
+                if not any(
+                    item.get("username") == demo_username for item in existing_users
+                ):
                     create_user_response = await client.post(
                         users_url,
                         headers=realm_admin_headers,

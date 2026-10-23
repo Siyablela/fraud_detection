@@ -26,14 +26,24 @@ def upgrade() -> None:
     if not table_exists:
         op.create_table(
             "transaction_history",
-            sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True, nullable=False),
+            sa.Column(
+                "id",
+                sa.BigInteger(),
+                primary_key=True,
+                autoincrement=True,
+                nullable=False,
+            ),
             sa.Column("transaction_id", sa.String(), nullable=False),
             sa.Column("user_id", sa.String(), nullable=False),
             sa.Column("amount", sa.Float(), nullable=False),
             sa.Column("category", sa.String(), nullable=False),
             sa.Column("timestamp", sa.Float(), nullable=False),
             sa.Column("is_fraud", sa.Boolean(), nullable=False),
-            sa.Column("triggered_rules", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+            sa.Column(
+                "triggered_rules",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+            ),
             sa.Column("source_topic", sa.String(), nullable=True),
             sa.Column("source_partition", sa.Integer(), nullable=True),
             sa.Column("source_offset", sa.BigInteger(), nullable=True),
@@ -46,7 +56,9 @@ def upgrade() -> None:
             ),
         )
 
-    index_names = {index["name"] for index in inspector.get_indexes("transaction_history")}
+    index_names = {
+        index["name"] for index in inspector.get_indexes("transaction_history")
+    }
     if "ix_transaction_history_transaction_processed_at" not in index_names:
         op.create_index(
             "ix_transaction_history_transaction_processed_at",
@@ -60,7 +72,12 @@ def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if inspector.has_table("transaction_history"):
-        index_names = {index["name"] for index in inspector.get_indexes("transaction_history")}
+        index_names = {
+            index["name"] for index in inspector.get_indexes("transaction_history")
+        }
         if "ix_transaction_history_transaction_processed_at" in index_names:
-            op.drop_index("ix_transaction_history_transaction_processed_at", table_name="transaction_history")
+            op.drop_index(
+                "ix_transaction_history_transaction_processed_at",
+                table_name="transaction_history",
+            )
         op.drop_table("transaction_history")

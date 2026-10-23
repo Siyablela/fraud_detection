@@ -137,7 +137,11 @@ class KeycloakTokenService:
         settings = get_settings()
         resolved_client_id = (client_id or settings.keycloak_service_client_id).strip()
         env_client_secret = os.getenv("KEYCLOAK_SERVICE_CLIENT_SECRET")
-        resolved_client_secret = (client_secret or env_client_secret or settings.keycloak_service_client_secret).strip()
+        resolved_client_secret = (
+            client_secret
+            or env_client_secret
+            or settings.keycloak_service_client_secret
+        ).strip()
 
         body = {
             "grant_type": "client_credentials",

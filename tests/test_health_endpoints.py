@@ -21,7 +21,9 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response.json(), {"status": "ok"})
 
     def test_readiness_uses_database_ping(self):
-        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(database=object())))
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(database=object()))
+        )
 
         with patch("app.api.ping_database", new=AsyncMock(return_value=None)):
             response = asyncio.run(ready(request))
@@ -29,9 +31,13 @@ class HealthEndpointTests(unittest.TestCase):
         self.assertEqual(response, {"status": "ready"})
 
     def test_health_returns_503_when_database_is_unavailable(self):
-        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(database=object())))
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(database=object()))
+        )
 
-        with patch("app.api.ping_database", new=AsyncMock(side_effect=RuntimeError("down"))):
+        with patch(
+            "app.api.ping_database", new=AsyncMock(side_effect=RuntimeError("down"))
+        ):
             with self.assertRaises(Exception) as context:
                 asyncio.run(health(request))
 
