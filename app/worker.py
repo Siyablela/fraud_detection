@@ -31,6 +31,19 @@ SERVICE_NAME = "fraud-worker"
 
 logger = get_logger(__name__)
 
+def _vlocity_window_bounds(transaction_timestamp: float, window_seconds: int) -> tuple[float, float]:
+    """Build an event-time velocity windo for a transaction
+
+    Args:
+        transaction_timestamp: The transactions's business timestamp as epoch seconds.
+        window_seconds: Velocity loopback window size in seconds.
+
+    Returns:
+        tuple[float, float]: Inclusive window bounds as ``(start_epoch, end_epoch)``.
+    """
+    window_end_epoch = float(transaction_timestamp)
+    window_start_epoch = window_end_epoch - float(window_seconds)
+    return window_start_epoch, window_end_epoch
 
 def _message_value(msg: Any, attribute: str) -> Any:
     """Safely resolve a Kafka message attribute, invoking callables when needed.
@@ -253,11 +266,15 @@ async def main() -> None:
                     recent_count = None
                     recent_amount_sum = None
                     if rules_config.velocity_enabled:
-                        since = datetime.now(timezone.utc) - timedelta(
-                            seconds=rules_config.velocity_window_seconds
+                        window_start_epoch, window_end_epoch = _vlocity_window_bounds(
+                            transaction.timestamp, 
+                            rules_config.velocity_window_seconds,
                         )
                         recent_count, recent_amount_sum = await get_recent_user_activity(
-                            database, transaction.user_id, since
+                            database, 
+                            transaction.user_id, 
+                            window_start_epoch,
+                            window_end_epoch,
                         )
 
                     result = evaluate_transaction(

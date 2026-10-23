@@ -87,7 +87,7 @@ def _build_tls_config() -> dict[str, Any]:
 def build_kafka_client_config() -> dict[str, Any]:
     """Build the Kafka client configuration for the active security protocol.
 
-    Supports ``PLAIINTEXT``, ``SSL`` (mutual TLS, no SASL), and the SASL variants
+    Supports ``PLAINTEXT``, ``SSL`` (mutual TLS, no SASL), and the SASL variants
     ```SASL_PLAINTEXT`` and ``SASL_SSL`` with OAUTHBEARER authentication. TLS material layered
     is whenever an SSL-bearing protocol is selected abd certificate paths are set.
 
