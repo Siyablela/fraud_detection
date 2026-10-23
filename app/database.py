@@ -6,22 +6,12 @@ from typing import Any
 from uuid import uuid4
 
 import sqlalchemy as sa
-from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    func,
-    select,
-    text,
-)
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
 
 
 def _epoch_to_utc_datetime(value: float) -> datetime:
     """Convert a Unix epoch timestamp to a timezone-aware UTC datetime.
-
+    
     Already-datetime values are returned unchanged (assume UTC is naive). None-numeric
     Values are returned as-is so callers/tests passing other shapes are not broken.
     """
@@ -39,8 +29,6 @@ def _datetime_to_epoch(value: datetime) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     return value
-
-
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -169,12 +157,7 @@ async def _retry_async(
     *,
     retries: int = 3,
     delay_seconds: float = 0.5,
-    retry_exceptions: tuple[type[BaseException], ...] = (
-        asyncio.TimeoutError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    ),
+    retry_exceptions: tuple[type[BaseException], ...] = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError),
 ):
     """Retry only a narrow, explicitly transient set of network and timeout failures."""
     last_error: Exception | None = None
@@ -184,13 +167,7 @@ async def _retry_async(
         except Exception as exc:  # pragma: no cover - exercised via runtime behavior
             message = str(exc).lower()
             is_sqlalchemy_transient = isinstance(exc, sa.exc.OperationalError) and any(
-                marker in message
-                for marker in (
-                    "timeout",
-                    "could not connect",
-                    "connection refused",
-                    "connection reset",
-                )
+                marker in message for marker in ("timeout", "could not connect", "connection refused", "connection reset")
             )
             if not isinstance(exc, retry_exceptions) and not is_sqlalchemy_transient:
                 raise
@@ -291,9 +268,7 @@ async def save_transaction(
             await session.execute(upsert_stmt)
             await session.execute(
                 insert(TransactionHistoryRecord).values(
-                    _build_history_values(
-                        result, source_metadata, correlation_id=resolved_correlation_id
-                    )
+                    _build_history_values(result, source_metadata, correlation_id=resolved_correlation_id)
                 )
             )
             await session.commit()
@@ -433,7 +408,8 @@ async def get_recent_user_activity(
     """Return a user's transaction count and amount total in an event-time window.
 
     Used by the worker to feed the stateful velocity fraud rule. Only transacyions
-    with a business ``timestamp`` between ``window_start_epoch` and ``window_end_epoch``(inclusive) are considered.
+    with a business ``timestamp`` between ```window_start_epoch`` and 
+    ``window_end_epoch``(inclusive) are considered.
 
     Args:
         session_factory: Async session favtory for the database.
@@ -448,24 +424,23 @@ async def get_recent_user_activity(
         count = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(
-                TransactionRecord.user_id == user_id,
-                TransactionRecord.timestamp >= window_start_epoch,
-                TransactionRecord.timestamp >= window_end_epoch,
+            .where(TransactionRecord.user_id == user_id, 
+                   TransactionRecord.timestamp >= window_start_epoch,
+                   TransactionRecord.timestamp >= window_end_epoch,
             )
         )
         total = await session.scalar(
-            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
-                TransactionRecord.user_id == user_id,
+            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(TransactionRecord.user_id == user_id, 
                 TransactionRecord.timestamp >= window_start_epoch,
-                TransactionRecord.timestamp >= window_end_epoch,
+                TransactionRecord.timestamp <= window_end_epoch,
             )
         )
     return int(count or 0), Decimal(str(total or 0))
 
 
 async def summarize_transactions(
-    session_factory: async_sessionmaker[AsyncSession], since: datetime
+    session_factory: async_sessionmaker[AsyncSession], 
+    since: datetime
 ) -> dict[str, Any]:
     """Summarize transaction activity since a cutoff time, for the deffered batch job.
 
@@ -478,17 +453,12 @@ async def summarize_transactions(
     """
     async with session_factory() as session:
         total = await session.scalar(
-            select(func.count())
-            .select_from(TransactionRecord)
-            .where(TransactionRecord.created_at >= since)
+            select(func.count()).select_from(TransactionRecord).where(TransactionRecord.created_at >= since)
         )
         fraud_total = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(
-                TransactionRecord.created_at >= since,
-                TransactionRecord.is_fraud.is_(True),
-            )
+            .where(TransactionRecord.created_at >= since, TransactionRecord.is_fraud.is_(True))
         )
         category_rows = await session.execute(
             select(TransactionRecord.category, func.count())
