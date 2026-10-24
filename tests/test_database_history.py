@@ -41,6 +41,8 @@ class TransactionHistoryTests(unittest.TestCase):
             timestamp=1722435000,
             is_fraud=True,
             triggered_rules=["HIGH_VALUE_THRESHOLD"],
+            rules_version="2026.10.24-test",
+            rules_hash="abc123",
             correlation_id="corr-123",
             created_at=datetime(2026, 8, 14, 20, 30, tzinfo=timezone.utc),
             updated_at=datetime(2026, 8, 14, 21, 0, tzinfo=timezone.utc),
@@ -48,6 +50,8 @@ class TransactionHistoryTests(unittest.TestCase):
 
         payload = _row_to_result(row)
 
+        self.assertEqual(payload["rules_version"], "2026.10.24-test")
+        self.assertEqual(payload["rules_hash"], "abc123")
         self.assertEqual(payload["created_at"], "2026-08-14T20:30:00+00:00")
         self.assertEqual(payload["updated_at"], "2026-08-14T21:00:00+00:00")
 
@@ -60,6 +64,8 @@ class TransactionHistoryTests(unittest.TestCase):
             "timestamp": 1722435000,
             "is_fraud": True,
             "triggered_rules": ["HIGH_VALUE_THRESHOLD"],
+            "rules_version": "2026.10.24-test",
+            "rules_hash": "hash123",
         }
         source_metadata = {
             "source_topic": "transactions",
@@ -76,6 +82,8 @@ class TransactionHistoryTests(unittest.TestCase):
         self.assertEqual(values["source_offset"], 42)
         self.assertEqual(values["source_timestamp"], 1722435001)
         self.assertEqual(values["triggered_rules"], ["HIGH_VALUE_THRESHOLD"])
+        self.assertEqual(values["rules_version"], "2026.10.24-test")
+        self.assertEqual(values["rules_hash"], "hash123")
         self.assertTrue(values["correlation_id"])
         uuid.UUID(values["correlation_id"])
 
@@ -88,11 +96,15 @@ class TransactionHistoryTests(unittest.TestCase):
             "timestamp": 1722436000,
             "is_fraud": False,
             "triggered_rules": [],
+            "rules_version": "2026.10.24-test",
+            "rules_hash": "hash456",
         }
 
         values = _build_history_values(result, correlation_id="corr-456")
 
         self.assertEqual(values["correlation_id"], "corr-456")
+        self.assertEqual(values["rules_version"], "2026.10.24-test")
+        self.assertEqual(values["rules_hash"], "hash456")
 
     def test_save_transaction_uses_single_generated_correlation_id_for_transaction_and_history(
         self,
@@ -105,6 +117,8 @@ class TransactionHistoryTests(unittest.TestCase):
             "timestamp": 1722437000,
             "is_fraud": False,
             "triggered_rules": [],
+            "rules_version": "2026.10.24-test",
+            "rules_hash": "hash789",
         }
         executed = []
 

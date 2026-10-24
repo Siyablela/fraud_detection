@@ -91,4 +91,6 @@ def evaluate_transaction(
         "timestamp": transaction.timestamp,
         "is_fraud": is_fraud,
         "triggered_rules": flags,
+        "rules_version": config.rules_version,
+        "rules_hash": config.rules_hash,
     }

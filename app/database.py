@@ -6,12 +6,22 @@ from typing import Any
 from uuid import uuid4
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, func, select, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    func,
+    select,
+    text,
+)
 
 
 def _epoch_to_utc_datetime(value: float) -> datetime:
     """Convert a Unix epoch timestamp to a timezone-aware UTC datetime.
-    
+
     Already-datetime values are returned unchanged (assume UTC is naive). None-numeric
     Values are returned as-is so callers/tests passing other shapes are not broken.
     """
@@ -29,6 +39,8 @@ def _datetime_to_epoch(value: datetime) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     return value
+
+
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -61,6 +73,8 @@ class TransactionRecord(Base):
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    rules_version: Mapped[str] = mapped_column(String, nullable=False)
+    rules_hash: Mapped[str] = mapped_column(String, nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True),
@@ -86,6 +100,8 @@ class TransactionHistoryRecord(Base):
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    rules_version: Mapped[str] = mapped_column(String, nullable=False)
+    rules_hash: Mapped[str] = mapped_column(String, nullable=False)
     source_topic: Mapped[str | None] = mapped_column(String, nullable=True)
     source_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -157,7 +173,12 @@ async def _retry_async(
     *,
     retries: int = 3,
     delay_seconds: float = 0.5,
-    retry_exceptions: tuple[type[BaseException], ...] = (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError),
+    retry_exceptions: tuple[type[BaseException], ...] = (
+        asyncio.TimeoutError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    ),
 ):
     """Retry only a narrow, explicitly transient set of network and timeout failures."""
     last_error: Exception | None = None
@@ -167,7 +188,13 @@ async def _retry_async(
         except Exception as exc:  # pragma: no cover - exercised via runtime behavior
             message = str(exc).lower()
             is_sqlalchemy_transient = isinstance(exc, sa.exc.OperationalError) and any(
-                marker in message for marker in ("timeout", "could not connect", "connection refused", "connection reset")
+                marker in message
+                for marker in (
+                    "timeout",
+                    "could not connect",
+                    "connection refused",
+                    "connection reset",
+                )
             )
             if not isinstance(exc, retry_exceptions) and not is_sqlalchemy_transient:
                 raise
@@ -245,6 +272,8 @@ async def save_transaction(
         timestamp=result["timestamp"],
         is_fraud=result["is_fraud"],
         triggered_rules=result["triggered_rules"],
+        rules_version=result["rules_version"],
+        rules_hash=result["rules_hash"],
         correlation_id=resolved_correlation_id,
         created_at=now_utc,
         updated_at=now_utc,
@@ -268,7 +297,9 @@ async def save_transaction(
             await session.execute(upsert_stmt)
             await session.execute(
                 insert(TransactionHistoryRecord).values(
-                    _build_history_values(result, source_metadata, correlation_id=resolved_correlation_id)
+                    _build_history_values(
+                        result, source_metadata, correlation_id=resolved_correlation_id
+                    )
                 )
             )
             await session.commit()
@@ -306,6 +337,8 @@ def _build_history_values(
         "timestamp": result["timestamp"],
         "is_fraud": result["is_fraud"],
         "triggered_rules": result["triggered_rules"],
+        "rules_version": result["rules_version"],
+        "rules_hash": result["rules_hash"],
         "source_topic": source_metadata.get("source_topic"),
         "source_partition": source_metadata.get("source_partition"),
         "source_offset": source_metadata.get("source_offset"),
@@ -393,6 +426,8 @@ def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
         "timestamp": row.timestamp,
         "is_fraud": row.is_fraud,
         "triggered_rules": row.triggered_rules,
+        "rules_version": row.rules_version,
+        "rules_hash": row.rules_hash,
         "correlation_id": row.correlation_id,
         "created_at": normalize_utc_datetime(row.created_at),
         "updated_at": normalize_utc_datetime(row.updated_at),
@@ -408,7 +443,7 @@ async def get_recent_user_activity(
     """Return a user's transaction count and amount total in an event-time window.
 
     Used by the worker to feed the stateful velocity fraud rule. Only transacyions
-    with a business ``timestamp`` between ```window_start_epoch`` and 
+    with a business ``timestamp`` between ```window_start_epoch`` and
     ``window_end_epoch``(inclusive) are considered.
 
     Args:
@@ -424,13 +459,15 @@ async def get_recent_user_activity(
         count = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(TransactionRecord.user_id == user_id, 
-                   TransactionRecord.timestamp >= window_start_epoch,
-                   TransactionRecord.timestamp >= window_end_epoch,
+            .where(
+                TransactionRecord.user_id == user_id,
+                TransactionRecord.timestamp >= window_start_epoch,
+                TransactionRecord.timestamp >= window_end_epoch,
             )
         )
         total = await session.scalar(
-            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(TransactionRecord.user_id == user_id, 
+            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
+                TransactionRecord.user_id == user_id,
                 TransactionRecord.timestamp >= window_start_epoch,
                 TransactionRecord.timestamp <= window_end_epoch,
             )
@@ -439,8 +476,7 @@ async def get_recent_user_activity(
 
 
 async def summarize_transactions(
-    session_factory: async_sessionmaker[AsyncSession], 
-    since: datetime
+    session_factory: async_sessionmaker[AsyncSession], since: datetime
 ) -> dict[str, Any]:
     """Summarize transaction activity since a cutoff time, for the deffered batch job.
 
@@ -453,12 +489,17 @@ async def summarize_transactions(
     """
     async with session_factory() as session:
         total = await session.scalar(
-            select(func.count()).select_from(TransactionRecord).where(TransactionRecord.created_at >= since)
+            select(func.count())
+            .select_from(TransactionRecord)
+            .where(TransactionRecord.created_at >= since)
         )
         fraud_total = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(TransactionRecord.created_at >= since, TransactionRecord.is_fraud.is_(True))
+            .where(
+                TransactionRecord.created_at >= since,
+                TransactionRecord.is_fraud.is_(True),
+            )
         )
         category_rows = await session.execute(
             select(TransactionRecord.category, func.count())
