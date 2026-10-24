@@ -1,29 +1,29 @@
 global:
   environment: production
-
 api:
   replicaCount: 2
   image:
     pullPolicy: IfNotPresent
-
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: 4fe8ecc232b11b98e6d848c2ae10efcbd922ba1d
 worker:
   replicaCount: 2
   image:
     pullPolicy: IfNotPresent
-
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: 4fe8ecc232b11b98e6d848c2ae10efcbd922ba1d
 batch:
   enabled: true
   suspend: false
-
 security:
   authTokenEndpointEnabled: false
   keycloakServiceClientId: fraud-service-cli
-  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
-  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
-
+  keycloakServiceClientSecret: '{{ vault:secret/data/keycloak/clients#service-client-secret
+    }}'
+  keycloakServiceTokenScope: '{{ vault:secret/data/keycloak/clients#service-token-scope
+    }}'
 kafkaSecurity:
   protocol: PLAINTEXT
-
 resilience:
   enablePreferredAntiAffinity: true
   topologyKey: kubernetes.io/hostname
@@ -47,33 +47,30 @@ resilience:
       maxReplicas: 6
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
-
 certManager:
   enabled: true
   issuerKind: ClusterIssuer
   issuerName: letsencrypt-prod
   ingressHost: fraud-api.example.com
   secretName: fraud-api-tls
-
 kong:
   service:
     type: ClusterIP
     port: 80
     targetPort: 8000
-
 ingress:
   enabled: true
   className: nginx
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: 1m
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '30'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '30'
   hosts:
-    - host: fraud-api.example.com
-      paths:
-        - path: /
-          pathType: Prefix
+  - host: fraud-api.example.com
+    paths:
+    - path: /
+      pathType: Prefix
   tls:
-    - hosts:
-        - fraud-api.example.com
-      secretName: fraud-api-tls
+  - hosts:
+    - fraud-api.example.com
+    secretName: fraud-api-tls
