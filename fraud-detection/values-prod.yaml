@@ -5,13 +5,13 @@ api:
   image:
     pullPolicy: IfNotPresent
     repository: ghcr.io/siyablela/fraud_detection
-    tag: 4fe8ecc232b11b98e6d848c2ae10efcbd922ba1d
+    tag: 09a82e4749765607fc1f0b64e79bcd915fe5fe18
 worker:
   replicaCount: 2
   image:
     pullPolicy: IfNotPresent
     repository: ghcr.io/siyablela/fraud_detection
-    tag: 4fe8ecc232b11b98e6d848c2ae10efcbd922ba1d
+    tag: 09a82e4749765607fc1f0b64e79bcd915fe5fe18
 batch:
   enabled: true
   suspend: false
