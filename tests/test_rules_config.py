@@ -34,6 +34,7 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
+                    "rules_version": "2026.10.24-test",
                     "high_value_threshold": 1000,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
@@ -43,6 +44,8 @@ class RulesConfigTests(unittest.TestCase):
 
         try:
             config = load_rules_config(temp_path)
+            self.assertEqual(config.rules_version, "2026.10.24-test")
+            self.assertTrue(config.rules_hash)
             self.assertEqual(config.high_value_threshold, 1000)
             self.assertEqual(config.restricted_categories["GAMBLING"], 1000)
         finally:
@@ -52,6 +55,7 @@ class RulesConfigTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(
                 {
+                    "rules_version": "2026.10.24-eval",
                     "high_value_threshold": 1000,
                     "restricted_categories": {"GAMBLING": 1000, "CRYPTO": 500},
                 },
@@ -71,6 +75,8 @@ class RulesConfigTests(unittest.TestCase):
             self.assertTrue(result["is_fraud"])
             self.assertIn("HIGH_VALUE_THRESHOLD", result["triggered_rules"])
             self.assertIn("RISKY_CATEGORY_LIMIT", result["triggered_rules"])
+            self.assertEqual(result["rules_version"], "2026.10.24-eval")
+            self.assertTrue(result["rules_hash"])
         finally:
             os.environ.pop("FRAUD_RULES_CONFIG_PATH", None)
             os.remove(temp_path)

@@ -1,4 +1,5 @@
 from decimal import Decimal
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from app.settings import get_settings
 
 @dataclass(frozen=True)
 class RulesConfig:
+    rules_version: str | None = None
+    rules_hash: str | None = None
     high_value_threshold: Decimal | None = None
     restricted_categories: dict[str, float] | None = None
     velocity_window_seconds: int | None = None
@@ -22,6 +25,8 @@ class RulesConfig:
             None: The dataclass fields are updated in place with the default runtime values.
         """
         settings = get_settings()
+        if self.rules_version is None:
+            object.__setattr__(self, "rule_version", "defaults")
         if self.high_value_threshold is None:
             object.__setattr__(
                 self, "high_value_threshold", settings.default_high_value_threshold
@@ -45,6 +50,27 @@ class RulesConfig:
         if self.velocity_max_amount is None:
             object.__setattr__(
                 self, "velocity_max_amount", settings.default_velocity_max_amount
+            )
+        if self.rules_hash is None:
+            canonical = {
+                "rules_version": self.rules_version,
+                "high_value_threshold": str(self.high_value_threshold),
+                "restricted_categories": {
+                    str(key).upper(): float(limit)
+                    for key, limit in (self.restricted_categories or {}).items()
+                },
+                "velocity_window_seconds": int(self.velocity_window_seconds or 0),
+                "velocity_max_count": int(self.velocity_max_count or 0),
+                "velocity_max_amount": str(self.velocity_max_amount),
+            }
+            object.__setattr__(
+                self,
+                "rules_hash",
+                hashlib.sha256(
+                    json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest(),
             )
 
     @property
@@ -75,6 +101,7 @@ def load_rules_config(path: str | None = None) -> RulesConfig:
         values = json.load(config_file)
 
     return RulesConfig(
+        rules_version=str(values.get("rules_version", "defaults")),
         high_value_threshold=float(
             values.get("high_value_threshold", settings.default_high_value_threshold)
         ),

@@ -11,15 +11,16 @@ Fraud Detection is an event-driven service that evaluates transaction events and
 
 ## Logging Boundary
 
-- The service emits structured logs to stdout.
-- Centralized collection, indexing, retension, and log lifecycle are handled by the enterprise logging platform.
-- This repository does not manage a log collector.
+- The service emits structured JSON logs to stdout.
+- Centralized collection, indexing, retention, and log lifecycle are handled by the enterprise logging platform.
+- This repository does not run or manage a log collector.
 
 Local verification:
 
 ```bash
 docker compose --env-file .demo.env logs -f api worker
 ```
+
 ## Repository Contents
 
 - Query API built with FastAPI.

@@ -171,14 +171,14 @@ class Settings(BaseModel):
         default=2048, ge=1, alias="OTEL_LOGS_MAX_QUEUE_SIZE"
     )
     otel_logs_max_exporter_batch_size: int = Field(
-            default=512, ge=1, alias="OTEL_LOGS_MAX_EXPORTER_BATCH_SIZE"
-        )
+        default=512, ge=1, alias="OTEL_LOGS_MAX_EXPORTER_BATCH_SIZE"
+    )
     otel_logs_schedule_delay_millis: int = Field(
         default=5000, ge=1, alias="OTEL_LOGS_SCHEDULE_DELAY_MILLIS"
     )
     otel_logs_export_timeout_millis: int = Field(
-            default=5000, ge=1, alias="OTEL_LOGS_EXPORT_TIMEOUT_MILLIS"
-        )
+        default=5000, ge=1, alias="OTEL_LOGS_EXPORT_TIMEOUT_MILLIS"
+    )
     otel_logs_export_timeout_seconds: int = Field(
         default=10, ge=1, alias="OTEL_LOGS_EXPORT_TIMEOUT_SECONDS"
     )
@@ -304,7 +304,9 @@ class Settings(BaseModel):
 
             if value in (None, ""):
                 if field_info.is_required():
-                    raise RuntimeError(f"missing required environment variable: {env_name}")
+                    raise RuntimeError(
+                        f"missing required environment variable: {env_name}"
+                    )
                 # Let default/default_factory apply default optional settings.
                 continue
 

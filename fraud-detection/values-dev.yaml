@@ -21,7 +21,7 @@ security:
   jwtJwksUrl: http://localhost:8081/realms/fraud/protocol/openid-connect/certs
   authTokenEndpointEnabled: true
 
-ksfkaSecurity:
+kafkaSecurity:
   protocol: PLAINTEXT
 
 kong:
