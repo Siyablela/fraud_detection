@@ -75,7 +75,7 @@ class KafkaSecurityTests(unittest.TestCase):
         self.assertEqual(config["ssl.ca.location"], "/certs/ca.pem")
         self.assertEqual(config["ssl.certificate.location"], "/certs/client.pem")
         self.assertEqual(config["ssl.key.location"], "/certs/client.key")
-        
+
     def test_build_kafka_client_config_supports_mutual_tls_without_sasl(self):
         os.environ["KAFKA_SECURITY_PROTOCOL"] = "SSL"
         os.environ["JWT_ISSUER"] = "http://localhost:8081/realms/fraud"
@@ -85,15 +85,14 @@ class KafkaSecurityTests(unittest.TestCase):
         os.environ["KAFKA_SSL_CERTIFICATE_LOCATION"] = "/certs/client.pem"
         os.environ["KAFKA_SSL_KEY_LOCATION"] = "/certs/client.key"
         clear_settings_cache()
-    
+
         config = build_kafka_client_config()
-    
+
         self.assertEqual(config["security.protocol"], "SSL")
         self.assertNotIn("sasl.mechanisms", config)
         self.assertEqual(config["ssl.ca.location"], "/certs/ca.pem")
         self.assertEqual(config["ssl.certificate.location"], "/certs/client.pem")
         self.assertEqual(config["ssl.key.location"], "/certs/client.key")
-
 
 
 if __name__ == "_main_":

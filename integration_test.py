@@ -51,9 +51,13 @@ def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict
     return {
         "transaction_id": str(uuid.uuid4()),
         "user_id": str(user_id),
-        "amount": amount if amount is not None else round(random.uniform(5.0, 2000.0), 2),
+        "amount": (
+            amount if amount is not None else round(random.uniform(5.0, 2000.0), 2)
+        ),
         "timestamp": int(utc_now_unix_epoch()),
-        "category": random.choice(["GROCERIES", "ELECTRONICS", "ENTERTAINMENT", "GAMING"]),
+        "category": random.choice(
+            ["GROCERIES", "ELECTRONICS", "ENTERTAINMENT", "GAMING"]
+        ),
     }
 
 
@@ -83,7 +87,9 @@ async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -
             )
             return
         if response.status_code == 401:
-            raise RuntimeError("Integration token is missing or invalid for the protected query API.")
+            raise RuntimeError(
+                "Integration token is missing or invalid for the protected query API."
+            )
         if response.status_code != 404:
             raise RuntimeError(
                 f"Unexpected response while polling transaction {transaction_id}: {response.status_code} {response.text}"
@@ -96,7 +102,9 @@ async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -
         )
         await asyncio.sleep(1.0)
 
-    raise RuntimeError(f"Transaction {transaction_id} was not visible through the API before timeout.")
+    raise RuntimeError(
+        f"Transaction {transaction_id} was not visible through the API before timeout."
+    )
 
 
 async def main():

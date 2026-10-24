@@ -31,7 +31,9 @@ class PaginationTests(unittest.TestCase):
             original = api.find_by_category
             api.find_by_category = fake_find_by_category
             try:
-                request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(database=object())))
+                request = SimpleNamespace(
+                    app=SimpleNamespace(state=SimpleNamespace(database=object()))
+                )
                 result = await api.get_transactions_by_category(
                     "travel", request=request, page=2, page_size=10, _principal=None
                 )

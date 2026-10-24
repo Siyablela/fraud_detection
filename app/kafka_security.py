@@ -37,7 +37,8 @@ def _build_oauthbearer_config(security_protocol: str) -> dict[str, Any]:
                 "grant_type": "client_credentials",
                 "client_id": settings.keycloak_service_client_id,
                 "client_secret": settings.keycloak_service_client_secret,
-                "scope": settings.keycloak_service_token_scope or "fraud:transactions:read",
+                "scope": settings.keycloak_service_token_scope
+                or "fraud:transactions:read",
             },
             timeout=10.0,
         )
@@ -55,7 +56,8 @@ def _build_oauthbearer_config(security_protocol: str) -> dict[str, Any]:
         "sasl.oauthbearer.token.endpoint.url": f"{issuer}/protocol/openid-connect/token",
         "sasl.oauthbearer.client.id": settings.keycloak_service_client_id,
         "sasl.oauthbearer.client.secret": settings.keycloak_service_client_secret,
-        "sasl.oauthbearer.scope": settings.keycloak_service_token_scope or "fraud:transactions:read",
+        "sasl.oauthbearer.scope": settings.keycloak_service_token_scope
+        or "fraud:transactions:read",
         "sasl.oauthbearer.extensions": "protocol=oauth2",
         "oauth_cb": oauth_cb,
     }
@@ -87,7 +89,7 @@ def _build_tls_config() -> dict[str, Any]:
 def build_kafka_client_config() -> dict[str, Any]:
     """Build the Kafka client configuration for the active security protocol.
 
-    Supports ``PLAIINTEXT``, ``SSL`` (mutual TLS, no SASL), and the SASL variants
+    Supports ``PLAINTEXT``, ``SSL`` (mutual TLS, no SASL), and the SASL variants
     ```SASL_PLAINTEXT`` and ``SASL_SSL`` with OAUTHBEARER authentication. TLS material layered
     is whenever an SSL-bearing protocol is selected abd certificate paths are set.
 

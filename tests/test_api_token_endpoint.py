@@ -138,6 +138,7 @@ class ApiTokenEndpointTests(unittest.TestCase):
 
             original_factory = api.KeycloakTokenService
             try:
+
                 class _UnavailableFactory:
                     def __call__(self):
                         return _UnavailableService()
@@ -178,7 +179,9 @@ class ApiTokenEndpointTests(unittest.TestCase):
             clear_settings_cache()
 
             class _FakeService:
-                async def exchange_service_token(self, *, client_id, client_secret, scope):
+                async def exchange_service_token(
+                    self, *, client_id, client_secret, scope
+                ):
                     self.captured = {
                         "client_id": client_id,
                         "client_secret": client_secret,
@@ -200,7 +203,9 @@ class ApiTokenEndpointTests(unittest.TestCase):
             api.KeycloakTokenService = _ServiceFactory()
             try:
                 result = await api.exchange_service_token_for_testing(
-                    api.ServiceTokenRequest(client_id="svc-client", client_secret="svc-secret")
+                    api.ServiceTokenRequest(
+                        client_id="svc-client", client_secret="svc-secret"
+                    )
                 )
             finally:
                 api.KeycloakTokenService = original_factory
@@ -217,7 +222,9 @@ class ApiTokenEndpointTests(unittest.TestCase):
             clear_settings_cache()
 
             class _FakeService:
-                async def exchange_service_token(self, *, client_id, client_secret, scope):
+                async def exchange_service_token(
+                    self, *, client_id, client_secret, scope
+                ):
                     raise InvalidClientCredentialsError()
 
             class _ServiceFactory:
@@ -229,7 +236,9 @@ class ApiTokenEndpointTests(unittest.TestCase):
             try:
                 with self.assertRaises(HTTPException) as context:
                     await api.exchange_service_token_for_testing(
-                        api.ServiceTokenRequest(client_id="svc-client", client_secret="bad")
+                        api.ServiceTokenRequest(
+                            client_id="svc-client", client_secret="bad"
+                        )
                     )
             finally:
                 api.KeycloakTokenService = original_factory

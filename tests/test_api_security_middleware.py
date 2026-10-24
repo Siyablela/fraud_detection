@@ -28,16 +28,18 @@ def _bearer(subject: str) -> dict[str, str]:
 
 def _rate_limited_app(max_requests: int = 2) -> FastAPI:
     app = FastAPI()
-    app.add_middleware(RateLimitMiddleware, max_requests=max_requests, window_seconds=60)
-    
+    app.add_middleware(
+        RateLimitMiddleware, max_requests=max_requests, window_seconds=60
+    )
+
     @app.get("/x")
     def protected():
         return {"ok": True}
-        
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
-        
+
     return app
 
 
@@ -53,8 +55,9 @@ def _cors_app() -> FastAPI:
     @app.get("/x")
     def protected():
         return {"ok": True}
-    
+
     return app
+
 
 import unittest
 from fastapi.testclient import TestClient
@@ -100,9 +103,7 @@ class CorsMiddlewareTests(unittest.TestCase):
 
     def test_allowed_origin_is_echoed(self):
         with TestClient(_cors_app()) as client:
-            response = client.get(
-                "/x", headers={"Origin": "https://allowed.example"}
-            )
+            response = client.get("/x", headers={"Origin": "https://allowed.example"})
             self.assertEqual(
                 response.headers.get("access-control-allow-origin"),
                 "https://allowed.example",

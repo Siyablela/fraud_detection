@@ -44,7 +44,9 @@ class ObservabilityTests(unittest.TestCase):
         self.assertNotEqual(response.headers["x-correlation-id"], "caller-request")
         uuid.UUID(response.headers["x-correlation-id"])
         self.assertEqual(response.json()["request_id"], "caller-request")
-        self.assertEqual(response.json()["correlation_id"], response.headers["x-correlation-id"])
+        self.assertEqual(
+            response.json()["correlation_id"], response.headers["x-correlation-id"]
+        )
 
     def test_incoming_correlation_id_header_is_ignored_and_new_uuid_is_generated(self):
         app = FastAPI()
@@ -69,8 +71,12 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(response.headers["x-request-id"], "caller-request")
         self.assertTrue(response.headers["x-correlation-id"])
         uuid.UUID(response.headers["x-correlation-id"])
-        self.assertNotEqual(response.headers["x-correlation-id"], "123e4567-e89b-12d3-a456-426614174000")
-        self.assertEqual(response.json()["correlation_id"], response.headers["x-correlation-id"])
+        self.assertNotEqual(
+            response.headers["x-correlation-id"], "123e4567-e89b-12d3-a456-426614174000"
+        )
+        self.assertEqual(
+            response.json()["correlation_id"], response.headers["x-correlation-id"]
+        )
 
 
 if __name__ == "__main__":

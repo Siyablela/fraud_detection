@@ -13,7 +13,6 @@ from jwt import PyJWKClient
 
 from app.settings import get_settings
 
-
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -49,8 +48,8 @@ class _JwksTokenVerifier(_TokenVerifier):
             used without restart.
         """
         self._jwks_client = PyJWKClient(
-            jwks_url, 
-            cache_keys=True, 
+            jwks_url,
+            cache_keys=True,
             lifespan=cache_lifespan_seconds,
         )
 
@@ -117,7 +116,7 @@ def _get_token_verifier() -> _TokenVerifier:
     settings = get_settings()
     if settings.jwt_jwks_url:
         return _JwksTokenVerifier(
-            settings.jwt_jwks_url, 
+            settings.jwt_jwks_url,
             cache_lifespan_seconds=settings.jwt_jwks_refresh_interval_seconds,
         )
     if settings.jwt_public_key_path:

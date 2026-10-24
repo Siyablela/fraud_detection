@@ -12,7 +12,9 @@ logger = get_logger(__name__)
 def _seconds_until_next_run(run_hour: int, run_minute: int) -> int:
     """Return the number of seconds until the next configured batch run time."""
     current_time = datetime.now(timezone.utc)
-    target = current_time.replace(hour=run_hour % 24, minute=run_minute % 60, second=0, microsecond=0)
+    target = current_time.replace(
+        hour=run_hour % 24, minute=run_minute % 60, second=0, microsecond=0
+    )
     if target <= current_time:
         target += timedelta(days=1)
     return int((target - current_time).total_seconds())
@@ -48,7 +50,7 @@ async def process_batch_job() -> None:
         total_fraudulent=summary["fraud"],
         category_breakdown=summary["by_category"],
     )
-    
+
 
 async def main() -> None:
     """Run the scheduled batch worker at a configured time of day."""
@@ -71,7 +73,9 @@ async def main() -> None:
     )
 
     while True:
-        delay_seconds = _seconds_until_next_run(settings.batch_run_hour, settings.batch_run_minute)
+        delay_seconds = _seconds_until_next_run(
+            settings.batch_run_hour, settings.batch_run_minute
+        )
         logger.info("batch_worker_waiting_until_next_run", delay_seconds=delay_seconds)
         await asyncio.sleep(delay_seconds)
         await process_batch_job()

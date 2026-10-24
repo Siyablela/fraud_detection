@@ -7,6 +7,7 @@ from app.time_utils import utc_now_unix_epoch
 
 _rules = RulesConfigProvider()
 
+
 def get_active_rules_config():
     """Return the current live rules configuration (reloaded if the file changed)"""
     return _rules.get()
@@ -30,11 +31,12 @@ class Transaction(BaseModel):
     category: str
     timestamp: float = Field(default_factory=utc_now_unix_epoch)
 
+
 # Rules engine executing synchronous, high-speed checks
 def evaluate_transaction(
-        transaction: Transaction,
-        recent_count: int | None = None,
-        recent_amount_sum: Decimal | None = None,
+    transaction: Transaction,
+    recent_count: int | None = None,
+    recent_amount_sum: Decimal | None = None,
 ) -> dict:
     """Evaluate a transaction against the configured fraud thresholds and risky categories.
 
@@ -74,12 +76,13 @@ def evaluate_transaction(
         if (
             config.velocity_max_amount is not None
             and recent_amount_sum is not None
-            and recent_amount_sum + transaction.amount > Decimal(str(config.velocity_max_amount))
+            and recent_amount_sum + transaction.amount
+            > Decimal(str(config.velocity_max_amount))
         ):
             flags.append("VELOCITY_AMOUNT")
-            
+
     is_fraud = len(flags) > 0
-    
+
     return {
         "transaction_id": transaction.transaction_id,
         "user_id": transaction.user_id,
@@ -87,5 +90,5 @@ def evaluate_transaction(
         "category": transaction.category,
         "timestamp": transaction.timestamp,
         "is_fraud": is_fraud,
-        "triggered_rules": flags
+        "triggered_rules": flags,
     }

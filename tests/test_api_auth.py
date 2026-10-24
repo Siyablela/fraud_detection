@@ -60,7 +60,9 @@ class ApiAuthTests(unittest.TestCase):
             original = security._get_token_verifier
             security._get_token_verifier = lambda: ExpiredVerifier()
             try:
-                credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="expired-token")
+                credentials = HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials="expired-token"
+                )
                 with self.assertRaises(HTTPException) as context:
                     await security.get_current_principal(credentials)
 
@@ -80,12 +82,17 @@ class ApiAuthTests(unittest.TestCase):
             original = security._get_token_verifier
             security._get_token_verifier = lambda: MissingSubjectVerifier()
             try:
-                credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid-but-missing-sub")
+                credentials = HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials="valid-but-missing-sub"
+                )
                 with self.assertRaises(HTTPException) as context:
                     await security.get_current_principal(credentials)
 
                 self.assertEqual(context.exception.status_code, 401)
-                self.assertEqual(context.exception.detail, "Access token is missing the subject claim.")
+                self.assertEqual(
+                    context.exception.detail,
+                    "Access token is missing the subject claim.",
+                )
             finally:
                 security._get_token_verifier = original
 

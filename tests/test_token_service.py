@@ -13,7 +13,6 @@ from app.token_service import (
     KeycloakTokenService,
 )
 
-
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/db")
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 os.environ.setdefault("KAFKA_TOPIC_NAME", "transactions")
@@ -109,8 +108,12 @@ class TokenServiceTests(unittest.TestCase):
                 fake_client.captured_data["url"],
                 "http://localhost:8081/realms/fraud/protocol/openid-connect/token",
             )
-            self.assertEqual(fake_client.captured_data["data"]["client_id"], "fraud-cli")
-            self.assertEqual(fake_client.captured_data["data"]["scope"], "fraud:transactions:read")
+            self.assertEqual(
+                fake_client.captured_data["data"]["client_id"], "fraud-cli"
+            )
+            self.assertEqual(
+                fake_client.captured_data["data"]["scope"], "fraud:transactions:read"
+            )
 
         asyncio.run(run_test())
 
@@ -139,8 +142,12 @@ class TokenServiceTests(unittest.TestCase):
             finally:
                 httpx.AsyncClient = original_client
 
-            self.assertEqual(fake_client.captured_data["data"]["client_id"], "custom-client")
-            self.assertEqual(fake_client.captured_data["data"]["client_secret"], "secret-value")
+            self.assertEqual(
+                fake_client.captured_data["data"]["client_id"], "custom-client"
+            )
+            self.assertEqual(
+                fake_client.captured_data["data"]["client_secret"], "secret-value"
+            )
 
         asyncio.run(run_test())
 
@@ -169,7 +176,9 @@ class TokenServiceTests(unittest.TestCase):
                 httpx.AsyncClient = original_client
 
             self.assertEqual(result.access_token, "svc-abc")
-            self.assertEqual(fake_client.captured_data["data"]["grant_type"], "client_credentials")
+            self.assertEqual(
+                fake_client.captured_data["data"]["grant_type"], "client_credentials"
+            )
             self.assertEqual(
                 fake_client.captured_data["data"]["client_id"],
                 "fraud-service-cli",

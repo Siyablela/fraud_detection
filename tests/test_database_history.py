@@ -17,7 +17,12 @@ os.environ.setdefault("DEFAULT_RESTRICTED_CATEGORIES", '{"GAMBLING": 100.0}')
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from app.database import TransactionRecord, _build_history_values, _row_to_result, save_transaction
+from app.database import (
+    TransactionRecord,
+    _build_history_values,
+    _row_to_result,
+    save_transaction,
+)
 
 
 class TransactionHistoryTests(unittest.TestCase):
@@ -89,7 +94,9 @@ class TransactionHistoryTests(unittest.TestCase):
 
         self.assertEqual(values["correlation_id"], "corr-456")
 
-    def test_save_transaction_uses_single_generated_correlation_id_for_transaction_and_history(self):
+    def test_save_transaction_uses_single_generated_correlation_id_for_transaction_and_history(
+        self,
+    ):
         result = {
             "transaction_id": "tx-3",
             "user_id": "user-3",
@@ -119,8 +126,14 @@ class TransactionHistoryTests(unittest.TestCase):
                 return FakeSession()
 
         async def run_test() -> None:
-            with patch("app.database.uuid4", side_effect=["generated-correlation-id", "fallback-correlation-id"]):
-                with patch("app.database._retry_async", new=lambda operation, **kwargs: operation()):
+            with patch(
+                "app.database.uuid4",
+                side_effect=["generated-correlation-id", "fallback-correlation-id"],
+            ):
+                with patch(
+                    "app.database._retry_async",
+                    new=lambda operation, **kwargs: operation(),
+                ):
                     await save_transaction(FakeSessionFactory(), result)
 
             upsert_stmt = executed[0]
@@ -128,9 +141,15 @@ class TransactionHistoryTests(unittest.TestCase):
             upsert_values = upsert_stmt.compile().params
             history_values = history_stmt.compile().params
 
-            self.assertEqual(upsert_values["correlation_id"], "generated-correlation-id")
-            self.assertEqual(history_values["correlation_id"], "generated-correlation-id")
-            self.assertNotEqual(history_values["correlation_id"], "fallback-correlation-id")
+            self.assertEqual(
+                upsert_values["correlation_id"], "generated-correlation-id"
+            )
+            self.assertEqual(
+                history_values["correlation_id"], "generated-correlation-id"
+            )
+            self.assertNotEqual(
+                history_values["correlation_id"], "fallback-correlation-id"
+            )
 
         import asyncio
 

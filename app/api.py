@@ -112,29 +112,36 @@ async def require_transaction_read_scope(
         )
     return principal
 
-@asynccontextmanager 
+
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initiates app state and optional tracing on startup, and cleans up resources on shutdown.
 
-    Args: 
-        app: The FastAPI application instance being started. 
+    Args:
+        app: The FastAPI application instance being started.
 
-    Yields: 
-        None: The application remains running while its startup resources are available. 
-    """ 
-    settings = get_settings() 
-    configure_logging( SERVICE_NAME, settings.observability_log_level, ) 
-    if settings.observability_enable_tracing: 
+    Yields:
+        None: The application remains running while its startup resources are available.
+    """
+    settings = get_settings()
+    configure_logging(
+        SERVICE_NAME,
+        settings.observability_log_level,
+    )
+    if settings.observability_enable_tracing:
         setup_tracing(SERVICE_NAME)
         apply_tracing(app)
-    async with database_pool() as pool:  
+    async with database_pool() as pool:
         app.state.database = pool
-        try:  
-            await _validate_database_ready(pool) 
-            logger.info("startup_dependency_check_passed") 
+        try:
+            await _validate_database_ready(pool)
+            logger.info("startup_dependency_check_passed")
         except Exception:
-            logger.exception( "startup_dependency_check_failed", detail="database is unavailable", ) 
-            raise 
+            logger.exception(
+                "startup_dependency_check_failed",
+                detail="database is unavailable",
+            )
+            raise
         yield
 
 
@@ -157,7 +164,7 @@ def create_app() -> FastAPI:
         )
     # CORS middleware (outer). Added after rate limiting to ensure that CORS headers are applied to all responses, including those that may be rate-limited.
     # Credentials (cookies/basic-auth/client-certs) are intentionally not enabled.
-    # This is a stateless Bearer-token API, amd a Bearer header set by js is a 
+    # This is a stateless Bearer-token API, amd a Bearer header set by js is a
     # normal header (allowed via allow_headers), not a CORS "credential".
     app.add_middleware(
         CORSMiddleware,
@@ -168,6 +175,7 @@ def create_app() -> FastAPI:
 
     app.include_router(router)
     return app
+
 
 def _database_from_request(request: Request | SimpleNamespace):
     """Return the shared database pool from a FastAPI request or test double.
@@ -227,6 +235,7 @@ async def health(request: Request):
         logger.exception("health_check_failed", detail="database is unavailable")
         raise HTTPException(status_code=503, detail="Database is unavailable")
 
+
 @router.get("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
 async def get_transaction(
     transaction_id: str,
@@ -248,7 +257,9 @@ async def get_transaction(
     """
     # The scope dependency enforces read access before any lookup runs.
     logger.info("fetch_transaction", transaction_id=transaction_id)
-    transaction = await find_transaction(_database_from_request(request), transaction_id)
+    transaction = await find_transaction(
+        _database_from_request(request), transaction_id
+    )
     if not transaction:
         logger.warning("transaction_not_found", transaction_id=transaction_id)
         raise HTTPException(status_code=404, detail="Transaction records not located.")
@@ -256,12 +267,15 @@ async def get_transaction(
     response_payload["correlation_id"] = get_correlation_id()
     return response_payload
 
+
 @router.get("/api/v1/categories/{category_name}", response_model=CategoryPageResponse)
 async def get_transactions_by_category(
     category_name: str,
     request: Request,
     page: int = Query(1, ge=1, description="1-based page number to fetch."),
-    page_size: int = Query(100, ge=1, le=1000, description="Number of records to fetch per page."),
+    page_size: int = Query(
+        100, ge=1, le=1000, description="Number of records to fetch per page."
+    ),
     _principal=Depends(require_transaction_read_scope),
 ):
     """Return a paginated category view with metadata and correlation details.
@@ -308,7 +322,9 @@ async def get_transactions_by_category(
 
 
 @router.post("/api/v1/auth/token", response_model=TokenExchangeResponse)
-async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExchangeResponse:
+async def exchange_token_for_testing(
+    payload: TokenExchangeRequest,
+) -> TokenExchangeResponse:
     """Exchange a username/password pair for a Keycloak access token when enabled.
 
     Args:
@@ -340,7 +356,9 @@ async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExch
             detail="Unable to reach identity provider token endpoint.",
         )
     except IdentityProviderRejectedError:
-        raise HTTPException(status_code=502, detail="Identity provider rejected token request.")
+        raise HTTPException(
+            status_code=502, detail="Identity provider rejected token request."
+        )
 
     return TokenExchangeResponse(
         access_token=token_result.access_token,
@@ -353,7 +371,9 @@ async def exchange_token_for_testing(payload: TokenExchangeRequest) -> TokenExch
 
 
 @router.post("/api/v1/auth/service-token", response_model=TokenExchangeResponse)
-async def exchange_service_token_for_testing(payload: ServiceTokenRequest) -> TokenExchangeResponse:
+async def exchange_service_token_for_testing(
+    payload: ServiceTokenRequest,
+) -> TokenExchangeResponse:
     """Exchange client credentials for a service token when the testing endpoint is enabled.
 
     Args:
@@ -384,7 +404,9 @@ async def exchange_service_token_for_testing(payload: ServiceTokenRequest) -> To
             detail="Unable to reach identity provider token endpoint.",
         )
     except IdentityProviderRejectedError:
-        raise HTTPException(status_code=502, detail="Identity provider rejected token request.")
+        raise HTTPException(
+            status_code=502, detail="Identity provider rejected token request."
+        )
 
     return TokenExchangeResponse(
         access_token=token_result.access_token,

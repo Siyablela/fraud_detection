@@ -1,7 +1,7 @@
 """create transactions table
 
 Revision ID: 20260731_0001
-Revises: 
+Revises:
 Create Date: 2026-07-31 00:00:00
 """
 
@@ -32,7 +32,11 @@ def upgrade() -> None:
             sa.Column("category", sa.String(), nullable=False),
             sa.Column("timestamp", sa.Float(), nullable=False),
             sa.Column("is_fraud", sa.Boolean(), nullable=False),
-            sa.Column("triggered_rules", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+            sa.Column(
+                "triggered_rules",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+            ),
             sa.Column(
                 "created_at",
                 sa.DateTime(timezone=True),
@@ -58,4 +62,6 @@ def downgrade() -> None:
     if inspector.has_table("transactions"):
         index_names = {index["name"] for index in inspector.get_indexes("transactions")}
         if "ix_transactions_category_created_at" in index_names:
-            op.drop_index("ix_transactions_category_created_at", table_name="transactions")
+            op.drop_index(
+                "ix_transactions_category_created_at", table_name="transactions"
+            )

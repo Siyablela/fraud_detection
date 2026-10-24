@@ -8,7 +8,12 @@ import structlog
 from confluent_kafka import Consumer, Producer
 from prometheus_client import start_http_server
 
-from app.database import create_pool, get_recent_user_activity, ping_database, save_transaction
+from app.database import (
+    create_pool,
+    get_recent_user_activity,
+    ping_database,
+    save_transaction,
+)
 from app.dlq import build_dlq_payload, encode_dlq_payload
 from app.kafka_security import build_kafka_client_config
 from app.observability import (
@@ -30,6 +35,23 @@ from app.settings import get_settings
 SERVICE_NAME = "fraud-worker"
 
 logger = get_logger(__name__)
+
+
+def _vlocity_window_bounds(
+    transaction_timestamp: float, window_seconds: int
+) -> tuple[float, float]:
+    """Build an event-time velocity windo for a transaction
+
+    Args:
+        transaction_timestamp: The transactions's business timestamp as epoch seconds.
+        window_seconds: Velocity loopback window size in seconds.
+
+    Returns:
+        tuple[float, float]: Inclusive window bounds as ``(start_epoch, end_epoch)``.
+    """
+    window_end_epoch = float(transaction_timestamp)
+    window_start_epoch = window_end_epoch - float(window_seconds)
+    return window_start_epoch, window_end_epoch
 
 
 def _message_value(msg: Any, attribute: str) -> Any:
@@ -253,24 +275,34 @@ async def main() -> None:
                     recent_count = None
                     recent_amount_sum = None
                     if rules_config.velocity_enabled:
-                        since = datetime.now(timezone.utc) - timedelta(
-                            seconds=rules_config.velocity_window_seconds
+                        window_start_epoch, window_end_epoch = _vlocity_window_bounds(
+                            transaction.timestamp,
+                            rules_config.velocity_window_seconds,
                         )
-                        recent_count, recent_amount_sum = await get_recent_user_activity(
-                            database, transaction.user_id, since
+                        recent_count, recent_amount_sum = (
+                            await get_recent_user_activity(
+                                database,
+                                transaction.user_id,
+                                window_start_epoch,
+                                window_end_epoch,
+                            )
                         )
 
                     result = evaluate_transaction(
                         transaction,
                         recent_count=recent_count,
-                        recent_amount_sum=recent_amount_sum
+                        recent_amount_sum=recent_amount_sum,
                     )
-                    correlation_id = extract_correlation_id(event_data) or ensure_correlation_id()
+                    correlation_id = (
+                        extract_correlation_id(event_data) or ensure_correlation_id()
+                    )
                     event_data = attach_correlation_id(event_data)
                     if correlation_id != event_data.get("correlation_id"):
                         correlation_id = event_data["correlation_id"]
                     if correlation_id not in (None, "", "-"):
-                        structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+                        structlog.contextvars.bind_contextvars(
+                            correlation_id=correlation_id
+                        )
                     await save_transaction(
                         database,
                         result,

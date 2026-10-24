@@ -1,297 +1,223 @@
 ﻿# Fraud Detection
 
-A Python-based fraud-detection platform that ingests transaction events through Kafka, evaluates them against configurable fraud rules, stores the results in PostgreSQL, and exposes a secured query API through FastAPI.
+Fraud Detection is an event-driven service that evaluates transaction events and stores fraud decisions for retrieval through a protected query API.
 
-This repository is structured as an application plus supporting infrastructure assets. The application code lives under `app/`, while the Helm chart and operational docs live under `fraud-detection/` and `infra/`.
+## Executive Summary
 
-## What this project does
+- Ingests transaction events from Kafka and evaluates deterministic fraud rules.
+- Persists both latest decision state and immutable history in PostgreSQL.
+- Exposes JWT-protected read APIs for transaction and category queries.
+- Includes production-facing controls: rate limiting, structured logs, metrics, health probes, and DLQ routing.
 
-- Accepts transaction events from Kafka and applies fraud rules.
-- Persists transaction records and fraud decisions in PostgreSQL.
-- Provides a read-only API for authorized callers.
-- Protects the API with JWT validation and scope checks.
-- Supports local Docker Compose development, including Kafka, PostgreSQL, Keycloak, and the worker/API services.
-- Supports Kubernetes deployment via the Helm chart in `fraud-detection/`.
+## Repository Contents
+
+- Query API built with FastAPI.
+- Kafka worker that consumes transaction events and applies fraud rules.
+- Scheduled batch worker for deferred jobs.
+- PostgreSQL persistence and transaction history.
+- Keycloak bootstrap helper for local auth setup.
+- Helm chart for Kubernetes deployment.
 
 ## Architecture
 
-```text
-External producer / client
-          |
-          v
-      Kafka topic
-          |
-          v
-  Fraud worker (app.worker)
-          |
-          +--> evaluates rules
-          +--> stores results in PostgreSQL
-          |
-          v
-    Query API (FastAPI)
-          |
-          +--> GET /api/v1/transactions/{transaction_id}
-          +--> GET /api/v1/categories/{category_name}
-          |
-          v
-  Authorized client with JWT
+### One-Page Diagram
+
+```mermaid
+flowchart LR
+    P[Event Producer] -->|transaction event| K[(Kafka Topic)]
+    K --> W[Fraud Worker]
+    W -->|evaluate rules| R[Rule Engine]
+    W -->|upsert latest decision| DB[(PostgreSQL)]
+    W -->|append immutable history| DB
+    W -->|failed payload| D[(DLQ Topic)]
+
+    C[Client] -->|JWT + scope| A[Query API]
+    A -->|read decision data| DB
+    A --> M[/Metrics and Health/]
 ```
 
-The repo does not ship a standalone HTTP producer service. In practice, you either publish messages to Kafka from another app, use the provided integration smoke script, or write a small producer around the same topic contract.
+### Processing model
 
-## Project structure
+1. Producers publish transaction events to Kafka.
+2. Worker validates payloads, applies fraud rules, and stores outcomes.
+3. Query API serves protected read endpoints from PostgreSQL.
+4. Failed worker processing paths are routed to the DLQ.
 
-```text
-fraud_detection/
-├── app/
-│   ├── api.py                 # FastAPI query API + auth endpoints
-│   ├── batch_worker.py       # Scheduled batch summary worker
-│   ├── config.py             # Rules configuration loader
-│   ├── database.py           # SQLAlchemy/PostgreSQL persistence
-│   ├── kafka_security.py     # Kafka TLS/SASL client configuration
-│   ├── keycloak_bootstrap.py # Keycloak bootstrap helpers
-│   ├── main.py               # ASGI entry point
-│   ├── observability.py      # Logging, tracing, metrics
-│   ├── rate_limit.py         # API rate limiting middleware
-│   ├── rule.py               # Transaction model and fraud evaluation logic
-│   ├── security.py           # JWT validation + scopes
-│   ├── settings.py           # Environment-backed runtime settings
-│   ├── token_service.py      # Keycloak token exchange helpers
-│   ├── worker.py             # Kafka consumer and fraud processor
-│   └── ...
-├── fraud-detection/          # Helm chart for Kubernetes deployment
-├── infra/
-│   └── README.md             # Infrastructure runbook and split guidance
-├── tests/                   # Automated unit tests
-├── .env.example             # Example runtime environment variables
-├── Dockerfile               # Application image
-├── docker-compose.yml       # Local multi-container stack
-├── integration_test.py      # Kafka + API smoke test
-├── rules.json               # Default local rules file
-├── requirements.txt         # Python dependencies
-├── SECURITY.md              # Security controls and auth scope layout
-├── alembic.ini              # Database migration configuration
-├── README.md                # Project docs
-├── .gitignore
-└── .github/workflows/       # CI/CD workflow definitions
+## API Endpoints
+
+Health and readiness:
+
+- GET /live
+- GET /ready
+- GET /health
+
+Protected data endpoints (require fraud:transactions:read scope):
+
+- GET /api/v1/transactions/{transaction_id}
+- GET /api/v1/categories/{category_name}?page=1&page_size=100
+
+Optional token helper endpoints (enabled via AUTH_TOKEN_ENDPOINT_ENABLED):
+
+- POST /api/v1/auth/token
+- POST /api/v1/auth/service-token
+
+## Fraud Rules
+
+Default rules are defined in [rules.json](rules.json) and support:
+
+- HIGH_VALUE_THRESHOLD
+- RISKY_CATEGORY_LIMIT
+- VELOCITY_COUNT_EXCEEDED
+- VELOCITY_AMOUNT
+
+The worker reloads rule configuration when the file changes.
+
+## Design Decisions And Tradeoffs
+
+1. Asynchronous fraud evaluation via Kafka
+
+Benefit: Decouples ingest pressure from query latency.
+Tradeoff: Introduces eventual consistency between ingestion and read visibility.
+
+2. Deterministic rules first
+
+Benefit: Preserves explainability through stable trigger labels.
+Tradeoff: Is less adaptive than model-based approaches for unknown fraud patterns.
+
+3. Shared transactional store for latest and history
+
+Benefit: Keeps the operational model simple with a clear audit path.
+Tradeoff: Read and write workloads share the same backing datastore.
+
+4. Built-in operational safety controls
+
+Benefit: Improves production diagnostics and failure handling.
+Tradeoff: Increases setup complexity for local and environment configuration.
+
+## Local Development
+
+For the most reproducible first run on a fresh machine, start from a clean compose state:
+
+```bash
+docker compose --env-file .demo.env down -v --remove-orphans || true
 ```
 
-## Transaction format
+1. Create and activate a virtual environment.
+2. Install dependencies from [requirements.txt](requirements.txt).
+3. Create a local compose environment file.
+4. Start local infrastructure and app containers.
 
-Transactions are represented as JSON payloads that the fraud worker evaluates. The current transaction model is:
-
-```json
-{
-  "transaction_id": "tx-1001",
-  "user_id": "user-42",
-  "amount": 12500,
-  "category": "RETAIL",
-  "timestamp": 1720000000
-}
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+cp .env.example .demo.env
+docker compose --env-file .demo.env up --build
 ```
 
-The `timestamp` field is optional at the application boundary and is auto-populated when omitted.
+After startup, verify the stack:
 
-## Fraud rules
-
-The default configuration is in [rules.json](rules.json):
-
-```json
-{
-  "high_value_threshold": 10000,
-  "restricted_categories": {
-    "GAMBLING": 5000,
-    "CRYPTO": 5000
-  },
-  "velocity_window_seconds": 60,
-  "velocity_max_count": 5,
-  "velocity_max_amount": 5000
-}
+```bash
+docker compose --env-file .demo.env ps
+curl -s http://localhost:8000/health
 ```
 
-The current engine flags transactions when:
+Local services from [docker-compose.yml](docker-compose.yml):
 
-- `HIGH_VALUE_THRESHOLD` is triggered by an amount greater than or equal to `high_value_threshold`.
-- `RISKY_CATEGORY_LIMIT` is triggered when a restricted category exceeds its configured amount threshold.
-- `VELOCITY_COUNT_EXCEEDED` and `VELOCITY_AMOUNT` are triggered when the caller supplies recent user activity inside the configured velocity window.
+- API on http://localhost:8000
+- Kafka UI on http://localhost:8080
+- Keycloak on http://localhost:8081
+- Kafka broker on localhost:9092
 
-The rules are reloaded when the configured file changes, which makes runtime updates possible through a mounted file or ConfigMap.
+### Docker Compose Troubleshooting
 
-## Local development with Docker Compose
+If `docker compose up` fails with missing environment variable warnings, use an explicit env file:
 
-### Prerequisites
-
-- Docker Desktop or a compatible Docker engine
-- Docker Compose v2
-- A local `.env` file based on `.env.example`
-
-### 1) Configure environment
-
-Copy the example environment file:
-
-```powershell
-Copy-Item .env.example .env
+```bash
+docker compose --env-file .demo.env up --build
 ```
 
-Then review the values in `.env` and adjust any required secrets or ports.
+This repository may contain a `.env` directory on some machines, which prevents Compose from auto-loading dotenv values from a `.env` file path.
 
-### 2) Start the stack
+If token exchange returns invalid_client or 502 from `/api/v1/auth/token`, reset stale Keycloak/Postgres state and rerun:
 
-From the repository root:
-
-```powershell
-docker compose up --build
+```bash
+docker compose --env-file .demo.env down -v --remove-orphans
+docker compose --env-file .demo.env up --build
 ```
 
-This starts the following services:
+## Local Smoke Test Flow
 
-| Service | Address | Purpose |
-|---|---|---|
-| `postgres` | internal only | Durable transaction storage |
-| `kafka` | internal only | Transaction event bus |
-| `kafka-ui` | `http://127.0.0.1:8080` | Kafka inspection and topic management |
-| `keycloak` | `http://127.0.0.1:8081` | Identity provider for JWT-based auth |
-| `worker` | internal only | Consumes Kafka messages and evaluates fraud rules |
-| `api` | `http://127.0.0.1:8000` | Query API and auth endpoints |
-| `batch-worker` | internal only | Periodic summary job |
+1. Publish a transaction event to Kafka.
+2. Pull the API for the transaction decision.
 
-### 3) Check service health
+Quick publish helper:
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-Invoke-RestMethod http://127.0.0.1:8000/ready
-Invoke-RestMethod http://127.0.0.1:8000/live
+```bash
+chmod +x scripts/publish-transaction.sh
+./scripts/publish-transaction.sh --transaction-id demo-123
 ```
 
-The worker exposes Prometheus metrics at:
+Rule-trigger scenario publishers:
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:9100/metrics
+```bash
+chmod +x scripts/publish-rule-*.sh
+
+# Rule: HIGH_VALUE_THRESHOLD
+./scripts/publish-rule-high-value.sh
+
+# Rule: RISKY_CATEGORY_LIMIT
+./scripts/publish-rule-risky-category.sh
+
+# Rule: VELOCITY_COUNT_EXCEEDED
+./scripts/publish-rule-velocity-count.sh
+
+# Rule: VELOCITY_AMOUNT
+./scripts/publish-rule-velocity-amount.sh
 ```
 
-### 4) Query transactions
+Verify a published transaction through the query API:
 
-Use a valid JWT access token that includes the required scope (`fraud:transactions:read`) and call:
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
+    -H "Content-Type: application/json" \
+    -d '{"username":"demo","password":"demo"}' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-```powershell
-$headers = @{ Authorization = "Bearer <token>" }
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/transactions/tx-1001" `
-  -Headers $headers
+curl -s -H "Authorization: Bearer $TOKEN" \
+    "http://localhost:8000/api/v1/transactions/<TRANSACTION_ID>"
 ```
 
-You can also query category pages:
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8000/api/v1/categories/RETAIL?page=1&page_size=20" `
-  -Headers $headers
-```
-
-### 5) Stop the stack
-
-```powershell
-docker compose down
-```
-
-Use `docker compose down -v` only if you also want to remove the PostgreSQL volume.
-
-## Authentication and authorization
-
-The API validates bearer tokens against the configured Keycloak/OIDC issuer and checks the required scope before allowing reads.
-
-Key settings in `.env.example` include:
-
-```env
-JWT_ISSUER=http://localhost:8081/realms/fraud
-JWT_AUDIENCE=fraud-api
-JWT_JWKS_URL=http://localhost:8081/realms/fraud/protocol/openid-connect/certs
-JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ=fraud:transactions:read
-AUTH_TOKEN_ENDPOINT_ENABLED=true
-```
-
-When `AUTH_TOKEN_ENDPOINT_ENABLED=true`, the API will expose test helpers:
-
-- `POST /api/v1/auth/token`
-- `POST /api/v1/auth/service-token`
-
-These endpoints are intended for local testing and bootstrap workflows, not as production authentication surfaces.
-
-## Configuration
-
-The runtime configuration is environment-driven via `.env` and `.env.example`. Important values include:
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@postgres:5432/fraud_detection` |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka brokers | `kafka:9092` |
-| `KAFKA_TOPIC_NAME` | Source topic for transactions | `transactions_topic` |
-| `KAFKA_DLQ_TOPIC_NAME` | Dead-letter topic | `transactions_topic.dlq` |
-| `FRAUD_RULES_CONFIG_PATH` | Rules JSON path | `/config/rules.json` |
-| `DEFAULT_HIGH_VALUE_THRESHOLD` | Default high-value threshold | `10000` |
-| `DEFAULT_RESTRICTED_CATEGORIES` | Default risky-category thresholds | `{"GAMBLING": 5000, "CRYPTO": 5000}` |
-| `OBSERVABILITY_LOG_LEVEL` | Structured logging verbosity | `INFO` |
-| `WORKER_METRICS_PORT` | Worker metrics port | `9100` |
-
-Do not commit real secrets. Prefer environment injection, Docker secrets, Kubernetes Secrets, or an external secret manager in non-local environments.
+Use [integration_test.py](integration_test.py) to run this flow end-to-end. It publishes to Kafka and verifies retrieval via the API.
 
 ## Testing
 
-Run the repository test suite with:
+Run tests:
 
-```powershell
-.venv\Scripts\python.exe -m pytest -q
+```bash
+/ usr/local/bin/python3 -m pytest tests -q --disable-warnings
 ```
 
-The tests cover:
+Run tests with coverage:
 
-- rules loading and reload behavior
-- API auth and authorization
-- pagination and query endpoints
-- security middleware and observability
-- Kafka security helpers
-- worker + DLQ processing
-
-## Running a smoke test
-
-The repo includes an end-to-end smoke test script at [integration_test.py](integration_test.py). It publishes a record to Kafka and waits for it to appear via the secured query API.
-
-Before running it, set the required integration variables in `.env`:
-
-```env
-INTEGRATION_API_URL=http://localhost:8000
-INTEGRATION_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-INTEGRATION_KAFKA_TOPIC_NAME=transactions_topic
-INTEGRATION_ACCESS_TOKEN=<JWT access token>
+```bash
+/ usr/local/bin/python3 -m pytest tests -q --disable-warnings --cov=app --cov-report=term-missing
 ```
 
-Then run:
+## Configuration
 
-```powershell
-.venv\Scripts\python.exe integration_test.py
-```
+Use [.env.example](.env.example) as the baseline for local settings.
 
-## Kubernetes and deployment
+Important runtime variables include:
 
-The deployment manifests live in the Helm chart under [fraud-detection](fraud-detection). Operational guidance is documented in [infra/README.md](infra/README.md).
+- DATABASE_URL
+- KAFKA_BOOTSTRAP_SERVERS
+- KAFKA_TOPIC_NAME
+- KAFKA_DLQ_TOPIC_NAME
+- KAFKA_CONSUMER_GROUP_ID
+- JWT_ISSUER
+- JWT_AUDIENCE
+- FRAUD_RULES_CONFIG_PATH
 
-The project is intended to keep application logic and infrastructure concerns separated, with the Helm chart treated as infrastructure and the Python app as the primary source of business logic.
-
-## Production considerations
-
-Before using this in production, confirm or add:
-
-- CI pipeline with tests, image builds, and vulnerability scanning
-- Immutable tags or digests for image releases
-- Managed PostgreSQL and backups
-- Managed Kafka or a Kafka broker with proper HA and partition planning
-- Secret management for Keycloak, database, and broker credentials
-- Ingress/API gateway auth, TLS, and rate limiting
-- Structured logging, tracing, and alerting
-- Dead-letter handling and retry policy for malformed or failed messages
-- User and service identity policies for least privilege
-- Horizontal scaling and load testing for the worker and API
-
-## Repository workflow
-
-Use feature branches for app changes and merge them through the standard GitHub workflow. The Helm chart and cluster-specific operational guidance are kept alongside the repo, but they should be treated as infrastructure concerns rather than as part of the application runtime itself.
+Security and Kafka TLS settings are coveredter runbook details are in infra/README.md.

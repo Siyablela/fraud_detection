@@ -5,11 +5,18 @@ from contextvars import ContextVar
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from starlette.routing import Route, Match
 import structlog
+
 
 def _resolved_route_template(request: Request) -> str:
     """Return the matched route template for a request, never the raw path.
@@ -20,7 +27,7 @@ def _resolved_route_template(request: Request) -> str:
     to a single bounded ``"<unmatched>"`` bucket so no identifier-bearing raw path is
     ever used as a metric label.
 
-    Only ``starlette.routing.Route`` instances are considered (FastAPI's ``APIRoute`` 
+    Only ``starlette.routing.Route`` instances are considered (FastAPI's ``APIRoute``
     is one); they guarantee both ``matches`` and ``path``, so no attribute probing is
     needed and non-path routes (mounts, hosts) are skipped.
     """
@@ -34,6 +41,7 @@ def _resolved_route_template(request: Request) -> str:
                 return route.path
 
     return "<unmatched>"
+
 
 _request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
 _correlation_id_context: ContextVar[str] = ContextVar("correlation_id", default="-")
@@ -218,7 +226,9 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
 
         request_token = _request_id_context.set(request_id)
         correlation_token = _correlation_id_context.set(correlation_id)
-        structlog.contextvars.bind_contextvars(request_id=request_id, correlation_id=correlation_id)
+        structlog.contextvars.bind_contextvars(
+            request_id=request_id, correlation_id=correlation_id
+        )
         start_time = time.perf_counter()
         status_code = 500
         try:
@@ -232,7 +242,7 @@ class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
             # Label with the matched route **template** (e.g. /api/v1/transactions/{transaction_id}).
             # Never fall back to the raw path. That would embed identifiers such as
             # transaction IDs in the metric labels, wleaking them via /metric and exploding
-            # label cardinality (a memory exhaustion vector). Unmatched paths collapse to a 
+            # label cardinality (a memory exhaustion vector). Unmatched paths collapse to a
             # single bounded bucket.
             route = _resolved_route_template(request)
 
@@ -354,17 +364,22 @@ def setup_tracing(service_name: str) -> None:
 
     Args:
         service_name: The logical service name used in tracing metadata.
-    
+
     Returns:
         None: If a tracer endpoint is configured, the global tracer provider is set.
     """
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT","",).strip()
+    endpoint = os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "",
+    ).strip()
     if not endpoint:
         return
 
     try:
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
@@ -402,8 +417,8 @@ def apply_tracing(app: FastAPI) -> None:
     Returns:
         None: The app instrumented only if the tracing helper is available.
     """
-    from opentelemetry.instrumentation.fastapi import (FastAPIInstrumentor )
-    
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
     FastAPIInstrumentor.instrument_app(app)
 
 
@@ -417,7 +432,9 @@ def worker_message_timer(service_name: str, topic: str):
     Returns:
         contextlib._GeneratorContextManager: A timer context manager for the latency metric.
     """
-    return _worker_message_latency_seconds.labels(service=service_name, topic=topic).time()
+    return _worker_message_latency_seconds.labels(
+        service=service_name, topic=topic
+    ).time()
 
 
 def worker_message_outcome(service_name: str, topic: str, status: str) -> None:
@@ -431,7 +448,9 @@ def worker_message_outcome(service_name: str, topic: str, status: str) -> None:
     Returns:
         None: The worker outcome counter is incremented in place.
     """
-    _worker_messages_total.labels(service=service_name, topic=topic, status=status).inc()
+    _worker_messages_total.labels(
+        service=service_name, topic=topic, status=status
+    ).inc()
 
 
 def worker_fraud_decision(service_name: str, is_fraud: bool) -> None:
@@ -444,7 +463,9 @@ def worker_fraud_decision(service_name: str, is_fraud: bool) -> None:
     Returns:
         None: The fraud decision counter is incremented in place.
     """
-    _worker_decisions_total.labels(service=service_name, is_fraud=str(is_fraud).lower()).inc()
+    _worker_decisions_total.labels(
+        service=service_name, is_fraud=str(is_fraud).lower()
+    ).inc()
 
 
 def set_database_health(service_name: str, is_healthy: bool) -> None:
@@ -454,4 +475,6 @@ def set_database_health(service_name: str, is_healthy: bool) -> None:
 
 def set_kafka_health(service_name: str, component: str, is_healthy: bool) -> None:
     """Publish the Kafka health signal used in Prometheus alert rules."""
-    _kafka_up.labels(service=service_name, component=component).set(1 if is_healthy else 0)
+    _kafka_up.labels(service=service_name, component=component).set(
+        1 if is_healthy else 0
+    )

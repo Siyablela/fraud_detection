@@ -402,32 +402,38 @@ def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
 async def get_recent_user_activity(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
-    since: datetime,
+    window_start_epoch: float,
+    window_end_epoch: float,
 ) -> list[dict[str, Any]]:
-    """Return a user's transaction count and amount total since a cutoff time.
+    """Return a user's transaction count and amount total in an event-time window.
 
     Used by the worker to feed the stateful velocity fraud rule. Only transacyions
-    with a business ``timestamp`` at or after ``since`` are considered.
+    with a business ``timestamp`` between ```window_start_epoch`` and 
+    ``window_end_epoch``(inclusive) are considered.
 
     Args:
         session_factory: Async session favtory for the database.
         user_id: The user whose recent activity is being summed.
-        since: The inclusion lower bound for the transaction ``timestamp``.
+        window_start_epoch: Inclusive lower bound for event-time lookup.
+        window_end_epoch: Inclusive upper bound for event-time lookup.
 
     Returns:
         tuple[int, Decimal]: the number of matching transactions and sum of their amounts.
     """
-    since_epoch = since.timestamp()
     async with session_factory() as session:
         count = await session.scalar(
             select(func.count())
             .select_from(TransactionRecord)
-            .where(TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch)
+            .where(TransactionRecord.user_id == user_id, 
+                   TransactionRecord.timestamp >= window_start_epoch,
+                   TransactionRecord.timestamp >= window_end_epoch,
+            )
         )
         total = await session.scalar(
-            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
-                TransactionRecord.user_id == user_id, TransactionRecord.timestamp >= since_epoch
-                )
+            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(TransactionRecord.user_id == user_id, 
+                TransactionRecord.timestamp >= window_start_epoch,
+                TransactionRecord.timestamp <= window_end_epoch,
+            )
         )
     return int(count or 0), Decimal(str(total or 0))
 
