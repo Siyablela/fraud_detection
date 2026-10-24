@@ -4,12 +4,12 @@ global:
 api:
   replicaCount: 2
   image:
-    pullPolicy: ifNotPresent
+    pullPolicy: IfNotPresent
 
 worker:
   replicaCount: 2
   image:
-    pullPolicy: ifNotPresent
+    pullPolicy: IfNotPresent
 
 batch:
   enabled: true

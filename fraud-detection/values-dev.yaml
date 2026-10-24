@@ -19,12 +19,12 @@ security:
   jwtIssuer: http://localhost:8081/realms/fraud
   jwtAudience: fraud-api
   jwtJwksUrl: http://localhost:8081/realms/fraud/protocol/openid-connect/certs
-  authTokenEndpointEnabled: true 
+  authTokenEndpointEnabled: true
 
 ksfkaSecurity:
   protocol: PLAINTEXT
 
-kong: 
+kong:
   service:
     type: NodePort
     port: 80
@@ -35,4 +35,4 @@ kong:
 
 resilience:
   autoscaling:
-    enabled: true
+    enabled: false
