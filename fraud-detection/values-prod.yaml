@@ -1,6 +1,25 @@
+global:
+  environment: production
+
+api:
+  replicaCount: 2
+  image:
+    pullPolicy: IfNotPresent
+
+worker:
+  replicaCount: 2
+  image:
+    pullPolicy: IfNotPresent
+
+batch:
+  enabled: true
+  suspend: false
+
+security:
+  authTokenEndpointEnabled: false
   keycloakServiceClientId: fraud-service-cli
-  keycloakServiceClientSecret: '{{ vault:secret/data/keycloak/clients#service-client-secret }}'
-  keycloakServiceTokenScope: '{{ vault:secret/data/keycloak/clients#service-token-scope }}'
+  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
+  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
 
 kafkaSecurity:
   protocol: PLAINTEXT
@@ -47,8 +66,8 @@ ingress:
   className: nginx
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: 1m
-    nginx.ingress.kubernetes.io/proxy-read-timeout: '30'
-    nginx.ingress.kubernetes.io/proxy-send-timeout: '30'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
   hosts:
     - host: fraud-api.example.com
       paths:

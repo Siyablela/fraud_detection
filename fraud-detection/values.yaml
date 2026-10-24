@@ -77,7 +77,7 @@ networkPolicy:
   gatewayPodLabels:
     app: kong
   prometheus:
-    namespaceLabes: {}
+    namespaceLabels: {}
     podLabels:
       app.kubernetes.io/name: prometheus
 

@@ -246,7 +246,7 @@ async def bootstrap_keycloak() -> None:
                         item
                         for item in refreshed_clients
                         if item.get("clientId")
-                        == settings.keycloak_token_service_client_id
+                        == settings.keycloak_service_client_id
                     ),
                     None,
                 )

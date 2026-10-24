@@ -2,29 +2,37 @@ global:
   environment: dev
 
 worker:
-  replicaCount: 1 
-  image:
-    repository: fraud-detection tag: dev pullPolicy: Never
-
-api:
-  replicaCount: 1 
+  replicaCount: 1
   image:
     repository: fraud-detection
-    tag: dev 
+    tag: dev
+    pullPolicy: Never
+
+api:
+  replicaCount: 1
+  image:
+    repository: fraud-detection
+    tag: dev
     pullPolicy: Never
 
 security:
-jwtIssuer: http://localhost:8081/realms/fraud
+  jwtIssuer: http://localhost:8081/realms/fraud
+  jwtAudience: fraud-api
   jwtJwksUrl: http://localhost:8081/realms/fraud/protocol/openid-connect/certs
-  authTokenEndpointEnabled: true keycloakAdminUrl: http://keycloak: 8081
-  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }} keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password}} keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username}}"
-  keycloakDemoPassword: "{{vault: secret/data/keycloak/demo#password}}" keycloakTokenClientId: fraud-cli
-  keycloakTokenClientSecret: "{f vault:secret/data/keycloak/clients#token-client-secret }} keycloakServiceClientId: fraud-service-cli keycloakServiceClientSecret: "{{vault: secret/data/keycloak/clients#service-client-secret keycloakServiceTokenScope: "{f vault:secret/data/keycloak/clients#service-token-scope }}
+  authTokenEndpointEnabled: true
 
-kong: 
+ksfkaSecurity:
+  protocol: PLAINTEXT
+
+kong:
   service:
-  type: NodePort
-  port: 80
-  targetPort: 8000 nodePort: null
+    type: NodePort
+    port: 80
+    targetPort: 8000
+    nodePort: null
   ingress:
+    enabled: false
+
+resilience:
+  autoscaling:
     enabled: false

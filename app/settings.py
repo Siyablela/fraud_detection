@@ -68,40 +68,6 @@ def _read_env(name: str, default: str = "") -> str:
     return default
 
 
-def _required_env(name: str) -> str:
-    """Return a required environment value or raise if it is missing.
-
-    Args:
-        name: The environment variable name to read.
-
-    Returns:
-        str: The resolved value.
-
-    Raises:
-        RuntimeError: If the required environment variable is unset or empty.
-    """
-    value = _read_env(name)
-    if value is None or value == "":
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-def _optional_env(name: str, default: str) -> str:
-    """Return an optional environment value with a default if it is not set.
-
-    Args:
-        name: The environment variable name to read.
-        default: The fallback value used when the variable is empty or absent.
-
-    Returns:
-        str: The resolved environment value or the supplied default.
-    """
-    value = _read_env(name)
-    if value is None or value == "":
-        return default
-    return value
-
-
 class Settings(BaseModel):
     database_url: str = Field(..., alias="DATABASE_URL")
     kafka_bootstrap_servers: str = Field(..., alias="KAFKA_BOOTSTRAP_SERVERS")
@@ -192,6 +158,40 @@ class Settings(BaseModel):
     observability_enable_tracing: bool = Field(
         default=False, alias="OBSERVABILITY_ENABLE_TRACING"
     )
+    observability_enable_otel_logs: bool = Field(
+        default=False, alias="OBSERVABILITY_ENABLE_OTEL_LOGS"
+    )
+    otel_exporter_otlp_endpoint: str = Field(
+        default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    otel_exporter_otlp_logs_endpoint: str = Field(
+        default="", alias="OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"
+    )
+    otel_logs_max_queue_size: int = Field(
+        default=2048, ge=1, alias="OTEL_LOGS_MAX_QUEUE_SIZE"
+    )
+    otel_logs_max_exporter_batch_size: int = Field(
+            default=512, ge=1, alias="OTEL_LOGS_MAX_EXPORTER_BATCH_SIZE"
+        )
+    otel_logs_schedule_delay_millis: int = Field(
+        default=5000, ge=1, alias="OTEL_LOGS_SCHEDULE_DELAY_MILLIS"
+    )
+    otel_logs_export_timeout_millis: int = Field(
+            default=5000, ge=1, alias="OTEL_LOGS_EXPORT_TIMEOUT_MILLIS"
+        )
+    otel_logs_export_timeout_seconds: int = Field(
+        default=10, ge=1, alias="OTEL_LOGS_EXPORT_TIMEOUT_SECONDS"
+    )
+    logs_redact_fields: list[str] = Field(
+        default_factory=lambda: [
+            "authorization",
+            "password",
+            "client_secret",
+            "access_token",
+            "refresh_token",
+        ],
+        alias="LOGS_REDACT_FIELDS",
+    )
     worker_metrics_port: int = Field(default=9100, alias="WORKER_METRICS_PORT")
 
     # CORS empty list means no cross-origin access is permitted (most restrictive)
@@ -251,6 +251,18 @@ class Settings(BaseModel):
             ]
         return value
 
+    @field_validator("logs_redact_fields", mode="before")
+    @classmethod
+    def parse_log_redact_fields(cls, value: object) -> object:
+        """Normalize configured log redaction fields into a list of strings."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [field.strip() for field in value.split(",") if field.strip()]
+        return value
+
     @field_validator("default_restricted_categories", mode="before")
     @classmethod
     def parse_restricted_categories(cls, value: object) -> object:
@@ -285,91 +297,19 @@ class Settings(BaseModel):
         Raises:
             RuntimeError: If required settings are missing or invalid.
         """
-        data = {
-            "database_url": _required_env("DATABASE_URL"),
-            "kafka_bootstrap_servers": _required_env("KAFKA_BOOTSTRAP_SERVERS"),
-            "kafka_topic_name": _required_env("KAFKA_TOPIC_NAME"),
-            "kafka_dlq_topic_name": _optional_env("KAFKA_DLQ_TOPIC_NAME", ""),
-            "kafka_consumer_group_id": _required_env("KAFKA_CONSUMER_GROUP_ID"),
-            "batch_job_enabled": _optional_env("BATCH_JOB_ENABLED", "False"),
-            "batch_run_hour": _optional_env("BATCH_RUN_HOUR", "0"),
-            "batch_run_minute": _optional_env("BATCH_RUN_MINUTE", "0"),
-            "fraud_rules_config_path": _required_env("FRAUD_RULES_CONFIG_PATH"),
-            "jwt_issuer": _required_env("JWT_ISSUER"),
-            "jwt_audience": _required_env("JWT_AUDIENCE"),
-            "jwt_jwks_url": _optional_env("JWT_JWKS_URL", ""),
-            "jwt_jwks_refresh_interval_seconds": _optional_env(
-                "JWT_JWKS_REFRESH_INTERVAL_SECONDS", "300"
-            ),
-            "jwt_public_key_path": _optional_env("JWT_PUBLIC_KEY_PATH", ""),
-            "jwt_algorithms": _optional_env("JWT_ALGORITHMS", "RS256"),
-            "jwt_required_scope_for_transaction_read": _optional_env(
-                "JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ", "fraud:transactions:read"
-            ),
-            "auth_token_endpoint_enabled": _optional_env(
-                "AUTH_TOKEN_ENDPOINT_ENABLED", "False"
-            ),
-            "keycloak_token_client_id": _optional_env(
-                "KEYCLOAK_TOKEN_CLIENT_ID", "fraud-cli"
-            ),
-            "keycloak_token_client_secret": _optional_env(
-                "KEYCLOAK_TOKEN_CLIENT_SECRET", ""
-            ),
-            "keycloak_service_client_id": _optional_env(
-                "KEYCLOAK_SERVICE_CLIENT_ID", "fraud-service-cli"
-            ),
-            "keycloak_service_client_secret": _optional_env(
-                "KEYCLOAK_SERVICE_CLIENT_SECRET", ""
-            ),
-            "keycloak_service_token_scope": _optional_env(
-                "KEYCLOAK_SERVICE_TOKEN_SCOPE", ""
-            ),
-            "kafka_security_protocol": _optional_env(
-                "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"
-            ),
-            "kafka_producer_acks": _optional_env("KAFKA_PRODUCER_ACKS", "all"),
-            "kafka_ssl_ca_location": _optional_env("KAFKA_SSL_CA_LOCATION", ""),
-            "kafka_ssl_certificate_location": _optional_env(
-                "KAFKA_SSL_CERTIFICATE_LOCATION", ""
-            ),
-            "kafka_ssl_key_location": _optional_env("KAFKA_SSL_KEY_LOCATION", ""),
-            "kafka_ssl_key_password": _optional_env("KAFKA_SSL_KEY_PASSWORD", ""),
-            "kafka_producer_enable_idempotence": _optional_env(
-                "KAFKA_PRODUCER_ENABLE_IDEMPOTENCE", "True"
-            ),
-            "db_pool_min_size": _required_env("DB_POOL_MIN_SIZE"),
-            "db_pool_max_size": _required_env("DB_POOL_MAX_SIZE"),
-            "default_high_value_threshold": _required_env(
-                "DEFAULT_HIGH_VALUE_THRESHOLD"
-            ),
-            "default_restricted_categories": _required_env(
-                "DEFAULT_RESTRICTED_CATEGORIES"
-            ),
-            "observability_log_level": _optional_env("OBSERVABILITY_LOG_LEVEL", "INFO"),
-            "default_velocity_window_seconds": _optional_env(
-                "DEFAULT_VELOCITY_WINDOW_SECONDS", "60"
-            ),
-            "default_velocity_max_count": _optional_env(
-                "DEFAULT_VELOCITY_MAX_COUNT", "5"
-            ),
-            "default_velocity_max_amount": _optional_env(
-                "DEFAULT_VELOCITY_MAX_AMOUNT", "5000"
-            ),
-            "batch_summary_window_hours": _optional_env(
-                "BATCH_SUMMARY_WINDOW_HOURS", "24"
-            ),
-            "observability_enable_tracing": _optional_env(
-                "OBSERVABILITY_ENABLE_TRACING", "False"
-            ),
-            "worker_metrics_port": _optional_env("WORKER_METRICS_PORT", "9100"),
-            "cors_allowed_origins": _optional_env("CORS_ALLOWED_ORIGINS", "*"),
-            "rate_limit_enabled": _optional_env("RATE_LIMIT_ENABLED", "True"),
-            "rate_limit_requests": _optional_env("RATE_LIMIT_REQUESTS", "100"),
-            "rate_limit_window_seconds": _optional_env(
-                "RATE_LIMIT_WINDOW_SECONDS", "60"
-            ),
-            "rate_limit_burst": _optional_env("RATE_LIMIT_BURST", "0"),
-        }
+        data: dict[str, object] = {}
+        for field_name, field_info in cls.model_fields.items():
+            env_name = field_info.alias or field_name
+            value = _read_env(env_name)
+
+            if value in (None, ""):
+                if field_info.is_required():
+                    raise RuntimeError(f"missing required environment variable: {env_name}")
+                # Let default/default_factory apply default optional settings.
+                continue
+
+            data[field_name] = value
+
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
