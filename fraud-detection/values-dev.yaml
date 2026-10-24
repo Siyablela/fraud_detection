@@ -4,8 +4,8 @@ global:
 worker:
   replicaCount: 1
   image:
-    repository: fraud-detection 
-    tag: dev 
+    repository: fraud-detection
+    tag: dev
     pullPolicy: Never
 
 api:
