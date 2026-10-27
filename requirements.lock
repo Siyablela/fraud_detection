@@ -58,3 +58,5 @@ tzdata==2026.3
 urllib3==2.7.0
 uvicorn==0.51.0
 wrapt==2.2.2
+redis==5.0.3
+json-logic-py==0.13.0

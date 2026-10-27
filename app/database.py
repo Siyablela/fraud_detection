@@ -2,11 +2,12 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
-from uuid import uuid4
+from typing import Any, Dict, Optional
+from uuid import uuid7 as uuid
 
 import sqlalchemy as sa
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -18,28 +19,9 @@ from sqlalchemy import (
     text,
 )
 
+from app.observability import get_logger
 
-def _epoch_to_utc_datetime(value: float) -> datetime:
-    """Convert a Unix epoch timestamp to a timezone-aware UTC datetime.
-
-    Already-datetime values are returned unchanged (assume UTC is naive). None-numeric
-    Values are returned as-is so callers/tests passing other shapes are not broken.
-    """
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=datetime.timezone.utc)
-    return value
-
-
-def _datetime_to_epoch(value: datetime) -> float:
-    """Convert a stored datetime back to epoch seconds for the external contracts."""
-    if isinstance(value, datetime):
-        return value.timestamp()
-    if isinstance(value, (int, float)):
-        return float(value)
-    return value
-
+logger = get_logger(__name__)
 
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -66,8 +48,8 @@ class Base(DeclarativeBase):
 class TransactionRecord(Base):
     __tablename__ = "transactions"
 
-    transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    transaction_id: Mapped[uuid] = mapped_column(uuid, primary_key=True)
+    user_id: Mapped[uuid] = mapped_column(uuid, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
@@ -75,7 +57,7 @@ class TransactionRecord(Base):
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     rules_version: Mapped[str] = mapped_column(String, nullable=False)
     rules_hash: Mapped[str] = mapped_column(String, nullable=False)
-    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    correlation_id: Mapped[uuid | None] = mapped_column(uuid, nullable=True)
     created_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -89,12 +71,24 @@ class TransactionRecord(Base):
     )
 
 
+class RuleModel(Base):
+    """SQLAlchemy model for storing versioned rules."""
+
+    __tablename__ = "application_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_key: Mapped[str] = mapped_column(String(255), index=True)
+    version: Mapped[int] = mapped_column(Integer, index=True)
+    rules_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class TransactionHistoryRecord(Base):
     __tablename__ = "transaction_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    transaction_id: Mapped[str] = mapped_column(String, nullable=False)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    transaction_id: Mapped[uuid] = mapped_column(uuid, nullable=False)
+    user_id: Mapped[uuid] = mapped_column(uuid, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
@@ -106,7 +100,7 @@ class TransactionHistoryRecord(Base):
     source_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    correlation_id: Mapped[uuid | None] = mapped_column(uuid, nullable=True)
     processed_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -262,7 +256,7 @@ async def save_transaction(
         sqlalchemy.exc.SQLAlchemyError: If the database operation or commit
             fails.
     """
-    resolved_correlation_id = correlation_id or str(uuid4())
+    resolved_correlation_id = correlation_id or str(uuid())
     now_utc = utc_now()
     stmt = insert(TransactionRecord).values(
         transaction_id=result["transaction_id"],
@@ -310,7 +304,7 @@ async def save_transaction(
 def _build_history_values(
     result: dict[str, Any],
     source_metadata: dict[str, Any] | None = None,
-    correlation_id: str | None = None,
+    correlation_id: uuid | None = None,
 ) -> dict[str, Any]:
     """Build the immutable transaction history row payload, including Kafka source data.
 
@@ -327,7 +321,7 @@ def _build_history_values(
             ``transaction_history`` table.
     """
     source_metadata = source_metadata or {}
-    resolved_correlation_id = correlation_id or str(uuid4())
+    resolved_correlation_id = correlation_id or str(uuid())
     processed_at = utc_now()
     return {
         "transaction_id": result["transaction_id"],
@@ -436,7 +430,7 @@ def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
 
 async def get_recent_user_activity(
     session_factory: async_sessionmaker[AsyncSession],
-    user_id: str,
+    user_id: uuid,
     window_start_epoch: float,
     window_end_epoch: float,
 ) -> list[dict[str, Any]]:
@@ -512,3 +506,48 @@ async def summarize_transactions(
         "fraud": int(fraud_total or 0),
         "by_category": by_category,
     }
+
+# Match this helper function with the database module layer inside app.rule or app.database
+async def get_active_rules_config(db_pool: Any, rule_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetches the latest version of a JSON-Logic ruleset from PostgreSQL using SQLAlchemy 2.0.
+    
+    Args:
+        db_pool: The async session maker factory (AsyncSessionLocal).
+        rule_key: The string identifier mapping the rule context target (e.g. 'fraud_default_ruleset').
+        
+    Returns:
+        Optional[Dict[str, Any]]: Rehydrated application rules dictionary, or None if no entry exists.
+    """
+    # Safeguard initialization if db_pool behaves as a callable factory session
+    async_session_factory = db_pool
+    
+    async with async_session_factory() as session:
+        try:
+            # Construct the declarative selection AST representation
+            query = (
+                select(RuleModel)
+                .where(RuleModel.rule_key == rule_key)
+                .order_by(desc(RuleModel.version))
+                .limit(1)
+            )
+            
+            result = await session.execute(query)
+            db_rule = result.scalar_one_or_none()
+            
+            if not db_rule:
+                logger.warning("ruleset_not_found_in_database", rule_key=rule_key)
+                return None
+            
+            # Reconstruct the structured payload tracking formatting expectations
+            # Extraction matches values parsed by our RuleValidationSchema model validation constraints
+            return {
+                "version": db_rule.version,
+                "rule_name": db_rule.rules_json["rule_name"],
+                "root_condition": db_rule.rules_json["root_condition"],
+                "actions": db_rule.rules_json["actions"]
+            }
+            
+        except Exception:
+            logger.exception("database_fetch_active_rules_failed", rule_key=rule_key)
+            raise

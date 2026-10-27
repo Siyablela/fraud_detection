@@ -93,6 +93,10 @@ class Settings(BaseModel):
         default="fraud:transactions:read",
         alias="JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ",
     )
+    jwt_required_scope_for_rules_write: str = Field(
+            default="fraud:transactions:read",
+            alias="JWT_REQUIRED_SCOPE_FOR_RULES_WRITE",
+        )
     auth_token_endpoint_enabled: bool = Field(
         default=False, alias="AUTH_TOKEN_ENDPOINT_ENABLED"
     )

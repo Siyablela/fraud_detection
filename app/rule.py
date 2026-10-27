@@ -1,6 +1,8 @@
 from decimal import Decimal
-
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Set
+from uuid import uuid7 as uuid
+import json_logic
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import RulesConfigProvider
 from app.time_utils import utc_now_unix_epoch
@@ -14,7 +16,7 @@ def get_active_rules_config():
 
 
 # Define the expected structure of incoming transaction events
-class Transaction(BaseModel):
+class TransactionIngestSchema(BaseModel):
     """Represents an incoming transaction event evaluated by the fraud rules engine.
 
     Attributes:
@@ -25,16 +27,63 @@ class Transaction(BaseModel):
         timestamp: Event timestamp in seconds since the Unix epoch.
     """
 
-    transaction_id: str
-    user_id: str
+    transaction_id: uuid
+    user_id: uuid
     amount: Decimal
     category: str
     timestamp: float = Field(default_factory=utc_now_unix_epoch)
 
+# Reflect property names into an unmodifiable lookup set
+ALLOWED_TRANSACTION_FIELDS: Set[str] = set(TransactionIngestSchema.__annotations__.keys())
+
+class RuleValidationSchema(BaseModel):
+    """Validates metadata and ensures JsonLogic syntax complies with our runtime domain object."""
+    rule_name: str = Field(..., min_length=3, max_length=100)
+    description: str | None = None
+    root_condition: Dict[str, Any] = Field(
+        ..., 
+        description="A valid JsonLogic statement mapping exclusively to Transaction attributes."
+    )
+    actions: list[Dict[str, Any]] = Field(..., min_length=1)
+
+    @field_validator('root_condition')
+    @classmethod
+    def validate_json_logic_syntax_and_attributes(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        # 1. Check for basic dictionary structural requirements
+        if not isinstance(v, dict) or not v:
+            raise ValueError("Root condition must be a non-empty JSON object mapping.")
+
+        # 2. Structural Compile-Time Validation Check via json_logic package
+        try:
+            json_logic.jsonLogic(v, {})
+        except Exception as e:
+            raise ValueError(f"Malformed JsonLogic AST structure: {str(e)}")
+
+        # 3. Static Attribute Enforcement: Crawl AST dictionary tree to isolate 'var' keywords
+        def inspect_ast_nodes(node: Any):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "var":
+                        # JsonLogic extracts keys natively via {"var": "field_name"} or {"var": ["field_name", default]}
+                        target_field = value[0] if isinstance(value, list) and value else value
+                        if isinstance(target_field, str) and target_field not in ALLOWED_TRANSACTION_FIELDS:
+                            raise ValueError(
+                                f"Unauthorized attribute tracking attempted: '{target_field}'. "
+                                f"Must be one of: {ALLOWED_TRANSACTION_FIELDS}"
+                            )
+                    else:
+                        inspect_ast_nodes(value)
+            elif isinstance(node, list):
+                for item in node:
+                    inspect_ast_nodes(item)
+
+        inspect_ast_nodes(v)
+        return v
+
 
 # Rules engine executing synchronous, high-speed checks
 def evaluate_transaction(
-    transaction: Transaction,
+    transaction: TransactionIngestSchema,
     recent_count: int | None = None,
     recent_amount_sum: Decimal | None = None,
 ) -> dict:

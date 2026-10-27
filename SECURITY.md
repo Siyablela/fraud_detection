@@ -31,7 +31,9 @@ Failures map to precise responses:
 ## Authorization (scope model)
 
 Access is scope-gated per route. The protected query endpoints require scope
-in `JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ` (default **`fraud:transaction:read`**).
+in `JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ` (default **`fraud:transaction:read`**)
+and `JWT_REQUIRED_SCOPE_FOR_RULES_WRITE` (default **`fraud:rules:write`**)
+.
 Both the OAuth2 `scope` (space-delimited string) and `scp` (list) claim shapes are
 accepted.
 

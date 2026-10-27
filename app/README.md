@@ -32,7 +32,6 @@ flowchart LR
 - [database.py](database.py): async SQLAlchemy engine/session and transaction persistence helpers.
 - [rule.py](rule.py): fraud rule evaluation and trigger generation.
 - [security.py](security.py): JWT validation and principal extraction.
-- [token_service.py](token_service.py): token exchange/service token support.
 - [observability.py](observability.py): structured logging, metrics, trace hooks, IDs.
 - [kafka_security.py](kafka_security.py): Kafka security protocol and TLS/OAuth options.
 - [dlq.py](dlq.py): dead-letter payload shaping and encoding.

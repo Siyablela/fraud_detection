@@ -4,6 +4,7 @@ import os
 import random
 import uuid
 from pathlib import Path
+from uuid import uuid7 as uuid
 
 import httpx
 from confluent_kafka import Producer
@@ -46,11 +47,11 @@ KAFKA_TOPIC_NAME = required_env("INTEGRATION_KAFKA_TOPIC_NAME")
 ACCESS_TOKEN = required_env("INTEGRATION_ACCESS_TOKEN")
 
 
-def generate_mock_transaction(user_id: int, amount: float | None = None) -> dict:
+def generate_mock_transaction(user_id: uuid, amount: float | None = None) -> dict:
     """Generates a structured dictionary matching your Pydantic Transaction model."""
     return {
-        "transaction_id": str(uuid.uuid4()),
-        "user_id": str(user_id),
+        "transaction_id": uuid(),
+        "user_id": user_id,
         "amount": (
             amount if amount is not None else round(random.uniform(5.0, 2000.0), 2)
         ),
@@ -69,7 +70,7 @@ async def publish_transaction(producer: Producer, payload: dict) -> None:
     producer.flush(timeout=30)
 
 
-async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: str) -> None:
+async def wait_for_transaction(client: httpx.AsyncClient, transaction_id: uuid) -> None:
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
     for attempt in range(1, 21):
