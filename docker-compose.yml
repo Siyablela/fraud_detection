@@ -65,8 +65,8 @@ services:
           echo "Waiting for Kafka broker..."
           sleep 2
         done
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_TOPIC_NAME}
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic ${KAFKA_DLQ_TOPIC_NAME:-transactions_topic.dlq}
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic $${KAFKA_TOPIC_NAME}
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic $${KAFKA_DLQ_TOPIC_NAME:-transactions_topic.dlq}
 
   worker:
     build: 
@@ -83,7 +83,7 @@ services:
       KAFKA_DLQ_TOPIC_NAME: ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
       KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
       DATABASE_URL: ${DATABASE_URL}
-      # Shared Memory Environment Mapping
+      # Shared Memory Central Cache Engine Configurations
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
@@ -136,8 +136,6 @@ services:
       redis:
         condition: service_healthy
       kafka:
-        condition: service_started
-      keycloak:
         condition: service_started
 
   batch-worker:
@@ -199,11 +197,12 @@ services:
       KAFKA_DLQ_TOPIC_NAME: ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
       KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
       DATABASE_URL: ${DATABASE_URL}
-      # Shared Cache Invalidation Hooks
+      # Shared Cache Configurations
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
       REDIS_PASSWORD: ""
+      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-50}
       FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
       JWT_ISSUER: ${JWT_ISSUER}
       JWT_AUDIENCE: ${JWT_AUDIENCE}
@@ -211,24 +210,14 @@ services:
       JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-}
       JWT_ALGORITHMS: ${JWT_ALGORITHMS:-RS256}
       JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ: ${JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ:-fraud:transactions:read}
-      JWT_REQUIRED_SCOPE_FOR_RULES_WRITE: ${JWT_REQUIRED_SCOPE_FOR_RULES_WRITE:-fraud:rules:write}      
-      AUTH_TOKEN_ENDPOINT_ENABLED: ${AUTH_TOKEN_ENDPOINT_ENABLED:-true}
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
-      KEYCLOAK_ADMIN_URL: http://keycloak:8080
-      KEYCLOAK_DEMO_USERNAME: ${KEYCLOAK_DEMO_USERNAME:-demo}
-      KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD:-demo}
-      KEYCLOAK_TOKEN_CLIENT_ID: ${KEYCLOAK_TOKEN_CLIENT_ID:-fraud-cli}
-      KEYCLOAK_TOKEN_CLIENT_SECRET: ${KEYCLOAK_TOKEN_CLIENT_SECRET:-}
-      KEYCLOAK_SERVICE_CLIENT_ID: ${KEYCLOAK_SERVICE_CLIENT_ID:-fraud-service-cli}
-      KEYCLOAK_SERVICE_CLIENT_SECRET: ${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
-      KEYCLOAK_SERVICE_TOKEN_SCOPE: ${KEYCLOAK_SERVICE_TOKEN_SCOPE:-}
-      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      JWT_REQUIRED_SCOPE_FOR_RULES_WRITE: ${JWT_REQUIRED_SCOPE_FOR_RULES_WRITE:-fraud:rules:write}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_started
 
 volumes:
   postgres_data:

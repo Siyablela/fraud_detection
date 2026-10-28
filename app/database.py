@@ -14,6 +14,7 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
+    desc,
     func,
     select,
     text,
@@ -551,3 +552,28 @@ async def get_active_rules_config(db_pool: Any, rule_key: str) -> Optional[Dict[
         except Exception:
             logger.exception("database_fetch_active_rules_failed", rule_key=rule_key)
             raise
+        
+    async def find_latest_rule_in_db(
+        session_factory: async_sessionmaker[AsyncSession], 
+        rule_key: str
+    ) -> Optional[RuleModel]:
+        """Retrieve the latest version of a rule by its rule_key.
+
+        Args:
+            session_factory: A SQLAlchemy async_sessionmaker instance.
+            rule_key: The string key identifying the rule.
+
+        Returns:
+            Optional[RuleModel]: The RuleModel instance with the highest version, 
+                                or None if no rule matches the key.
+        """
+        stmt = (
+            select(RuleModel)
+            .where(RuleModel.rule_key == rule_key)
+            .order_by(RuleModel.version.desc())
+            .limit(1)
+        )
+
+        async with session_factory() as session:
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()

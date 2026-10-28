@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.rate_limit import RateLimitMiddleware
 from app.database import database_pool, get_transaction as find_transaction
-from app.database import get_transactions_by_category as find_by_category
+from app.database import get_transactions_by_category as find_by_category, find_latest_rule_in_db
 from app.database import ping_database
 from app.observability import (
     apply_tracing,
