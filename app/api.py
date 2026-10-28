@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.rate_limit import RateLimitMiddleware
 from app.database import database_pool, get_transaction as find_transaction
-from app.database import get_transactions_by_category as find_by_category, find_latest_rule_in_db
+from app.database import find_latest_rule_in_db, get_transactions_by_category as find_by_category
 from app.database import ping_database
 from app.observability import (
     apply_tracing,
@@ -393,6 +393,49 @@ async def get_transactions_by_category(
         "data": results,
         "correlation_id": get_correlation_id(),
     }
+
+@router.get("/api/v1/user/{user_id}", status_code=status.HTTP_200_OK)
+async def get_transactions_by_user(
+    user_id: uuid,
+    request: Request,
+    page: int = Query(1, ge=1, description="1-based page number to fetch."),
+    page_size: int = Query(
+        100, ge=1, le=1000, description="Number of records to fetch per page."
+    ),
+    _principal=Depends(require_transaction_read_scope)
+):
+    """Get transaction results filtered by user"""
+    offset = (page - 1) * page_size
+    logger.info(
+        "fetch_category_transactions",
+        user_id=user_id,
+        page=page,
+        page_size=page_size,
+    )
+    results, total_count = await find_by_category(
+        _database_from_request(request),
+        user_id,
+        offset,
+        page_size,
+    )
+    total_pages = ceil(total_count / page_size) if total_count else 0
+    has_more = offset + len(results) < total_count
+    return {
+        "user_id": user_id,
+        "page": page,
+        "page_size": page_size,
+        "count": len(results),
+        "total_count": total_count,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_more": has_more,
+        "previous_page": page - 1 if page > 1 else None,
+        "next_page": page + 1 if has_more else None,
+        "data": results,
+        "correlation_id": get_correlation_id(),
+    }
+    
+
 
 @router.post("/api/v1/rules/{rule_key}/evaluate", status_code=status.HTTP_200_OK)
 async def evaluate_transaction_rules(

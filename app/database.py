@@ -403,6 +403,42 @@ async def get_transactions_by_category(
     return [_row_to_result(row) for row in records], int(total_count or 0)
 
 
+async def get_transactions_by_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: uuid,
+    offset: int,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Retrieve a paginated list of transaction records filtered by user_id.
+
+    Args:
+        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
+            an ``AsyncSession``.
+        user_id: The user identifier.
+        offset: The number of rows to skip.
+        limit: The maximum number of records to retrieve.
+
+    Returns:
+        tuple[list[dict[str, Any]], int]: A tuple containing the page of
+        transaction details and the total number of matching rows.
+    """
+    async with session_factory() as session:
+        base_query = select(TransactionRecord).where(
+            func.lower(TransactionRecord.user_id) == user_id
+        )
+        total_count = await session.scalar(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        rows = await session.scalars(
+            base_query.order_by(TransactionRecord.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        records = rows.all()
+    return [_row_to_result(row) for row in records], int(total_count or 0)
+
+
 def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
     """Map a SQLAlchemy transaction row to a serializable dictionary payload.
 
@@ -553,27 +589,24 @@ async def get_active_rules_config(db_pool: Any, rule_key: str) -> Optional[Dict[
             logger.exception("database_fetch_active_rules_failed", rule_key=rule_key)
             raise
         
-    async def find_latest_rule_in_db(
-        session_factory: async_sessionmaker[AsyncSession], 
-        rule_key: str
-    ) -> Optional[RuleModel]:
-        """Retrieve the latest version of a rule by its rule_key.
-
-        Args:
-            session_factory: A SQLAlchemy async_sessionmaker instance.
-            rule_key: The string key identifying the rule.
-
-        Returns:
-            Optional[RuleModel]: The RuleModel instance with the highest version, 
-                                or None if no rule matches the key.
-        """
-        stmt = (
-            select(RuleModel)
-            .where(RuleModel.rule_key == rule_key)
-            .order_by(RuleModel.version.desc())
-            .limit(1)
-        )
-
-        async with session_factory() as session:
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
+async def find_latest_rule_in_db(
+    session_factory: async_sessionmaker[AsyncSession], 
+    rule_key: str
+) -> Optional[RuleModel]:
+    """Retrieve the latest version of a rule by its rule_key.
+    Args:
+        session_factory: A SQLAlchemy async_sessionmaker instance.
+        rule_key: The string key identifying the rule.
+    Returns:
+        Optional[RuleModel]: The RuleModel instance with the highest version, 
+                            or None if no rule matches the key.
+    """
+    stmt = (
+        select(RuleModel)
+        .where(RuleModel.rule_key == rule_key)
+        .order_by(RuleModel.version.desc())
+        .limit(1)
+    )
+    async with session_factory() as session:
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
