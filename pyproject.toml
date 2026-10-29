@@ -7,6 +7,9 @@ requires-python = ">=3.14"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider --strict-markers"
+# Fail a hung test (e.g. a stalled Docker call) instead of hanging CI forever.
+timeout = 600
+timeout_method = "thread"
 markers = ["integration: needs Docker; starts PostgreSQL, Redis and Kafka containers"]
 filterwarnings = [
     "ignore:testcontainers.(postgres|redis) is deprecated:DeprecationWarning",
