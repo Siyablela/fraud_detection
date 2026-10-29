@@ -1,3 +1,1 @@
-from app.api import create_app
-
-__all__ = ["create_app"]
+"""Fraud detection service: Kafka worker, query API, and batch summary job."""

@@ -1,84 +1,69 @@
-import asyncio
-from datetime import datetime, timedelta, timezone
+"""Daily fraud-activity summary, run off the live path at a configured UTC time."""
 
-from app.database import database_pool, ping_database, summarize_transactions
+import asyncio
+import signal
+from datetime import UTC, datetime, timedelta
+
+from app.database import database_session_factory, ping_database, summarize_transactions
 from app.observability import configure_logging, get_logger
-from app.settings import get_settings
+from app.settings import Settings, get_settings
 
 SERVICE_NAME = "fraud-batch-worker"
 logger = get_logger(__name__)
 
 
-def _seconds_until_next_run(run_hour: int, run_minute: int) -> int:
-    """Return the number of seconds until the next configured batch run time."""
-    current_time = datetime.now(timezone.utc)
-    target = current_time.replace(
-        hour=run_hour % 24, minute=run_minute % 60, second=0, microsecond=0
-    )
-    if target <= current_time:
+def seconds_until_next_run(now: datetime, run_hour: int, run_minute: int) -> float:
+    """Seconds from ``now`` until the next ``run_hour:run_minute`` UTC (always > 0)."""
+    target = now.replace(hour=run_hour, minute=run_minute, second=0, microsecond=0)
+    if target <= now:
         target += timedelta(days=1)
-    return int((target - current_time).total_seconds())
+    return (target - now).total_seconds()
 
 
-async def process_batch_job() -> None:
-    """Run the scheduled deferred-processing job.
-
-    This is intentionally separate from the live transaction path. The batch worker
-    is time-bound and designed for heavier deferred maintenance tasks such as
-    recalculation, historical review, or summarization rather than low-latency
-    request handling.
-
-    The current job produces a daily fraud-activity summary over configured
-    window (processed-transaction totals, fraud counts, and category
-    breakdowns) and emits a structured log line for operation review.
-    """
-    settings = get_settings()
-    window_hours = settings.batch_summary_window_hours
-    since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    logger.info("batch_job_started", service=SERVICE_NAME, window_hours=window_hours)
-
-    async with database_pool() as pool:
-        await ping_database(pool)
-        summary = await summarize_transactions(pool, since)
-
+async def run_summary(settings: Settings) -> dict:
+    since = datetime.now(UTC) - timedelta(hours=settings.batch_summary_window_hours)
+    async with database_session_factory(settings) as session_factory:
+        await ping_database(session_factory, SERVICE_NAME)
+        summary = await summarize_transactions(session_factory, since)
     logger.info(
-        "batch_job_summary",
-        service=SERVICE_NAME,
-        window_hours=window_hours,
+        "batch_summary",
+        window_hours=settings.batch_summary_window_hours,
         since=since.isoformat(),
         total_transactions=summary["total"],
         total_fraudulent=summary["fraud"],
         category_breakdown=summary["by_category"],
     )
+    return summary
 
 
 async def main() -> None:
-    """Run the scheduled batch worker at a configured time of day."""
     settings = get_settings()
+    configure_logging(SERVICE_NAME, settings.observability_log_level, settings.logs_redact_fields)
     if not settings.batch_job_enabled:
-        logger.info(
-            "batch_worker_disabled",
-            enabled=False,
-            run_hour=settings.batch_run_hour,
-            run_minute=settings.batch_run_minute,
-        )
+        logger.info("batch_worker_disabled")
         return
 
-    configure_logging(SERVICE_NAME, settings.observability_log_level)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
 
-    logger.info(
-        "batch_worker_started",
-        run_hour=settings.batch_run_hour,
-        run_minute=settings.batch_run_minute,
-    )
-
-    while True:
-        delay_seconds = _seconds_until_next_run(
-            settings.batch_run_hour, settings.batch_run_minute
-        )
-        logger.info("batch_worker_waiting_until_next_run", delay_seconds=delay_seconds)
-        await asyncio.sleep(delay_seconds)
-        await process_batch_job()
+    logger.info("batch_worker_started", run_hour=settings.batch_run_hour, run_minute=settings.batch_run_minute)
+    while not stop.is_set():
+        delay = seconds_until_next_run(datetime.now(UTC), settings.batch_run_hour, settings.batch_run_minute)
+        logger.info("batch_worker_waiting", delay_seconds=round(delay))
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+            break
+        except TimeoutError:
+            pass
+        try:
+            await run_summary(settings)
+        except Exception:
+            # Keep the schedule alive; tomorrow's run may succeed. The failure is
+            # visible in logs and in the fraud_database_up gauge.
+            logger.exception("batch_summary_failed")
+    logger.info("batch_worker_stopped")
 
 
 if __name__ == "__main__":

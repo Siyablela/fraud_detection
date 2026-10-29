@@ -1,492 +1,406 @@
+"""HTTP API (v1): read fraud decisions and manage versioned rule sets."""
+
 from contextlib import asynccontextmanager
-from math import ceil
-from types import SimpleNamespace
-from datetime import datetime
-from decimal import Decimal
-from uuid import uuid7 as uuid
+from datetime import UTC, datetime
+from http import HTTPStatus
+from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.rate_limit import RateLimitMiddleware
-from app.database import database_pool, get_transaction as find_transaction
-from app.database import find_latest_rule_in_db, get_transactions_by_category as find_by_category
-from app.database import ping_database
+from app.cache import create_redis_client, ping_redis, write_rule_set_cache
+from app.database import (
+    PageCursor,
+    TransactionFilters,
+    create_engine,
+    create_rule_set_version,
+    create_session_factory,
+    get_latest_rule_set,
+    get_rule_set_version,
+    get_transaction,
+    list_rule_set_versions,
+    list_transactions,
+    ping_database,
+)
+from app.errors import (
+    FailureClass,
+    InvalidRuleSetError,
+    RuleSetNotFoundError,
+    RuleSetVersionConflictError,
+    TransactionNotFoundError,
+    classify_failure,
+)
+from app.events import Category
 from app.observability import (
-    apply_tracing,
     configure_logging,
     get_correlation_id,
     get_logger,
     install_fastapi_observability,
     setup_tracing,
 )
-from app.security import AuthenticatedPrincipal, get_current_principal
+from app.processing import score_transaction
+from app.rate_limit import RateLimiter
+from app.rules import content_hash, parse_rule_set_definition
+from app.schemas import (
+    CreateRuleSetVersionRequest,
+    ErrorResponse,
+    EvaluateRequest,
+    EvaluateResponse,
+    RuleSetVersionPage,
+    RuleSetVersionResponse,
+    TransactionPage,
+    TransactionResponse,
+    VelocityContext,
+)
+from app.security import AuthenticatedPrincipal, get_token_verifier, require_scope
 from app.settings import get_settings
 
-
-
-import json
-from contextlib import asynccontextmanager
-from typing import Any, Dict
-from fastapi import FastAPI, HTTPException, Depends, status
-import redis.asyncio as aioredis
-import json_logic
-from sqlalchemy import select, desc
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from config import settings
-from database import engine, Base, get_db, RuleModel, RuleValidationSchema, TransactionIngestSchema
-
-redis_client: aioredis.Redis | None = None
-
-
-
-
-
 SERVICE_NAME = "fraud-query-api"
-router = APIRouter()
-
 logger = get_logger(__name__)
 
+RuleSetKey = Annotated[str, Path(pattern=r"^[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]$", description="Rule-set key")]
 
-class TransactionResponse(BaseModel):
-    transaction_id: uuid
-    user_id: uuid
-    amount: Decimal
-    category: str
-    timestamp: float
-    is_fraud: bool
-    triggered_rules: list[str]
-    correlation_id: uuid | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+_ERROR_CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    415: "unsupported_media_type",
+    422: "validation_error",
+    429: "rate_limited",
+    503: "service_unavailable",
+}
+_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    code: {"model": ErrorResponse, "description": HTTPStatus(code).phrase} for code in (401, 403, 422, 429, 503)
+}
 
 
-class CategoryPageResponse(BaseModel):
-    category: str
-    page: int
-    page_size: int
-    count: int
-    total_count: int
-    total_pages: int
-    has_previous: bool
-    has_more: bool
-    previous_page: int | None = None
-    next_page: int | None = None
-    data: list[TransactionResponse]
-    correlation_id: uuid | None = None
+def error_response(
+    status_code: int,
+    message: str,
+    details: list[dict[str, str]] | None = None,
+    headers: dict[str, str] | None = None,
+    code: str | None = None,
+) -> JSONResponse:
+    body = {
+        "error": {
+            "code": code or _ERROR_CODES.get(status_code, "error"),
+            "message": message,
+            "details": details or [],
+            "correlation_id": get_correlation_id(),
+        }
+    }
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
-async def require_transaction_scope(
-    principal: AuthenticatedPrincipal, required_scope
-) -> AuthenticatedPrincipal:
-    """Ensure the caller has the transaction read scope required by the API.
 
-    Args:
-        principal: The authenticated caller principal extracted from the bearer token.
+class UnhandledErrorMiddleware(BaseHTTPMiddleware):
+    """Turn anything unhandled into the standard error body. Stack traces are logged, never returned."""
 
-    Returns:
-        AuthenticatedPrincipal: The validated principal after confirming the required
-            scope is present.
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception as exc:
+            if classify_failure(exc) is FailureClass.TRANSIENT:
+                logger.warning("dependency_unavailable", error_type=type(exc).__name__, path=request.url.path)
+                return error_response(
+                    503, "A dependency is temporarily unavailable. Retry shortly.", headers={"Retry-After": "5"}
+                )
+            logger.exception("unhandled_exception", path=request.url.path)
+            return error_response(500, "An internal error occurred.", code="internal_error")
 
-    Raises:
-        HTTPException: If the token is missing the required read scope.
-    """
-    if required_scope not in principal.scopes:
-        raise HTTPException(
-            status_code=403,
-            detail="Access token does not include the required scope.",
-            headers={
-                "WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{required_scope}"'
-            },
-        )
-    return principal
 
-async def require_transaction_read_scope(
-    principal: AuthenticatedPrincipal = Depends(get_current_principal),
-) -> AuthenticatedPrincipal:
-    """Ensure the caller has the transaction read scope required by the API.
+def _install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        return error_response(exc.status_code, str(exc.detail), headers=getattr(exc, "headers", None))
 
-    Args:
-        principal: The authenticated caller principal extracted from the bearer token.
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        details = [
+            {"field": ".".join(str(part) for part in error["loc"]), "message": error["msg"]} for error in exc.errors()
+        ]
+        return error_response(422, "Request validation failed.", details)
 
-    Returns:
-        AuthenticatedPrincipal: The validated principal after confirming the required
-            scope is present.
+    @app.exception_handler(InvalidRuleSetError)
+    async def invalid_rule_set(_request: Request, exc: InvalidRuleSetError) -> JSONResponse:
+        return error_response(422, str(exc), exc.details)
 
-    Raises:
-        HTTPException: If the token is missing the required read scope.
-    """
-    required_scope = get_settings().jwt_required_scope_for_transaction_read
-    return require_transaction_scope(principal, required_scope)
+    @app.exception_handler(TransactionNotFoundError)
+    @app.exception_handler(RuleSetNotFoundError)
+    async def not_found(_request: Request, exc: Exception) -> JSONResponse:
+        return error_response(404, str(exc))
 
-async def require_transaction_write_scope(
-    principal: AuthenticatedPrincipal = Depends(get_current_principal),
-) -> AuthenticatedPrincipal:
-    """Ensure the caller has the transaction read scope required by the API.
-
-    Args:
-        principal: The authenticated caller principal extracted from the bearer token.
-
-    Returns:
-        AuthenticatedPrincipal: The validated principal after confirming the required
-            scope is present.
-
-    Raises:
-        HTTPException: If the token is missing the required read scope.
-    """
-    required_scope = get_settings().jwt_required_scope_for_transaction_write
-    return require_transaction_scope(principal, required_scope)
+    @app.exception_handler(RuleSetVersionConflictError)
+    async def conflict(_request: Request, exc: RuleSetVersionConflictError) -> JSONResponse:
+        return error_response(409, str(exc))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Unified application lifespan for high-concurrency environments.
-    Manages logging, tracing, database connectivity pools, and Redis caching blocks.
-    """
-    # 1. Bootstrapping Observability & Configuration Core
     settings = get_settings()
-    configure_logging(
-        SERVICE_NAME,
-        settings.observability_log_level,
-    )
+    configure_logging(SERVICE_NAME, settings.observability_log_level, settings.logs_redact_fields)
     if settings.observability_enable_tracing:
-        setup_tracing(SERVICE_NAME)
-        apply_tracing(app)
+        setup_tracing(SERVICE_NAME, settings.otel_exporter_otlp_endpoint, app)
+    get_token_verifier()  # fail at startup, not on the first request, if auth is misconfigured
 
-    # 2. Build Independent High-Concurrency Connection Pools
-    # Initialize SQLAlchemy connection pool
-    db_pool = database_pool()
-    app.state.database = db_pool
-
-    # Initialize Async Redis Connection Pool
-    redis_pool = aioredis.ConnectionPool(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=settings.REDIS_DB,
-        password=settings.REDIS_PASSWORD,
-        decode_responses=True,
-        max_connections=settings.db_pool_max_size  # Prevent a single pod from starving the Redis engine clusters
-    )
-    redis_client = aioredis.Redis(connection_pool=redis_pool)
+    engine = create_engine(settings)
+    redis_client = create_redis_client(settings)
+    app.state.session_factory = create_session_factory(engine)
     app.state.redis = redis_client
-
-    # 3. Execute Readiness Probe Checks (Startup Gating)
+    app.state.rate_limiter = (
+        RateLimiter(redis_client, settings.rate_limit_requests, settings.rate_limit_window_seconds)
+        if settings.rate_limit_enabled
+        else None
+    )
+    logger.info("api_started")
     try:
-        # Validate Database
-        await _validate_database_ready(db_pool)
-        
-        # Validate Redis Cluster
-        await redis_client.ping()
-        
-        logger.info("startup_dependency_check_passed", detail="Database and Redis structures online.")
-    except Exception as e:
-        logger.exception(
-            "startup_dependency_check_failed",
-            detail=f"Infrastructure downstream mismatch: {str(e)}",
-        )
-        # Ensure partial initialization states clean up if structural boots fail
-        await redis_pool.disconnect()
-        await db_pool.dispose()
-        raise
-
-    # ----------------------------------------------------
-    # Application runs while sitting on this yield handle
-    # ----------------------------------------------------
-    yield
-
-    # 4. Graceful Shutdown Track (Executes when pods spin down)
-    logger.info("shutdown_sequence_initiated", detail="Safely disconnecting downstream pool targets.")
-    
-    # Clean up Redis Client connections
-    await redis_pool.disconnect()
-    
-    # Clean up SQLAlchemy database resources
-    await db_pool.dispose()
-    
-    logger.info("shutdown_sequence_completed")
+        yield
+    finally:
+        await redis_client.aclose()
+        await engine.dispose()
+        logger.info("api_stopped")
 
 
 def create_app() -> FastAPI:
-    """Build and configure the FastAPI application instance.
-
-    Returns:
-        FastAPI: A configured application with middleware, tracing, and route registration.
-    """
     settings = get_settings()
-    app = FastAPI(title="Fraud Detection Query Engine API", lifespan=lifespan)
-    install_fastapi_observability(app, SERVICE_NAME)
-    # Rate limiting middleware (inner). Added before CORS to ensure that rate limits are applied before any CORS headers are added to the response.
-    if settings.rate_limit_enabled:
-        app.add_middleware(
-            RateLimitMiddleware,
-            max_requests=settings.rate_limit_requests,
-            window_seconds=settings.rate_limit_window_seconds,
-            burst=settings.rate_limit_burst,
-        )
-    # CORS middleware (outer). Added after rate limiting to ensure that CORS headers are applied to all responses, including those that may be rate-limited.
-    # Credentials (cookies/basic-auth/client-certs) are intentionally not enabled.
-    # This is a stateless Bearer-token API, amd a Bearer header set by js is a
-    # normal header (allowed via allow_headers), not a CORS "credential".
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allowed_origins,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+    app = FastAPI(
+        title="Fraud Detection API",
+        version="1.0.0",
+        description="Read fraud decisions for processed transactions and manage the rule sets that produce them.",
+        lifespan=lifespan,
     )
-
-    app.include_router(router)
+    _install_error_handlers(app)
+    app.add_middleware(UnhandledErrorMiddleware)
+    install_fastapi_observability(app, SERVICE_NAME)
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allowed_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+            expose_headers=["X-Correlation-ID", "X-Request-ID", "Retry-After"],
+        )
+    app.include_router(health_routes())
+    app.include_router(v1_routes())
     return app
 
 
-def _database_from_request(request: Request | SimpleNamespace):
-    """Return the shared database pool from a FastAPI request or test double.
-
-    Args:
-        request: A FastAPI request object or a lightweight test double exposing an app
-            state.
-
-    Returns:
-        Any: The application's database session factory attached to request state.
-    """
-    return request.app.state.database
-
-def _redis_from_request(request: Request | SimpleNamespace):
-    """Return the shared Redis pool client from a FastAPI request or test double.
-
-    Args:
-        request: A FastAPI request object or a lightweight test double exposing an app state.
-
-    Returns:
-        redis.asyncio.Redis: The microservice's async Redis client instance.
-    """
-    return request.app.state.redis
+# --- Health -------------------------------------------------------------------
 
 
-async def _validate_database_ready(database) -> None:
-    """Check that the database is reachable before the app is considered ready for traffic."""
-    await ping_database(database)
+def health_routes():
+    router = APIRouter(tags=["health"])
 
-
-@router.get("/live")
-async def live() -> dict[str, str]:
-    """Return a lightweight liveness signal indicating the process is running."""
-    logger.info("liveness_check_passed")
-    return {"status": "ok"}
-
-
-@router.get("/ready")
-async def ready(request: Request):
-    """Return the service readiness state only when the database is reachable."""
-    try:
-        await _validate_database_ready(_database_from_request(request))
-        logger.info("readiness_check_passed")
-        return {"status": "ready"}
-    except Exception:
-        logger.exception("readiness_check_failed", detail="database is unavailable")
-        raise HTTPException(status_code=503, detail="Database is unavailable")
-
-
-@router.get("/health")
-async def health(request: Request):
-    """Return the application health status after confirming the database is reachable.
-
-    Args:
-        request: The incoming HTTP request.
-
-    Returns:
-        dict[str, str]: A health payload with the service status.
-
-    Raises:
-        HTTPException: If the database cannot be reached and the service is unhealthy.
-    """
-    try:
-        await _validate_database_ready(_database_from_request(request))
-        logger.info("health_check_passed")
+    @router.get("/live", summary="Liveness: the process is serving requests")
+    async def live() -> dict[str, str]:
         return {"status": "ok"}
-    except Exception:
-        logger.exception("health_check_failed", detail="database is unavailable")
-        raise HTTPException(status_code=503, detail="Database is unavailable")
 
-
-@router.get("/api/v1/transactions/{transaction_id}", response_model=TransactionResponse)
-async def get_transaction(
-    transaction_id: uuid,
-    request: Request,
-    _principal=Depends(require_transaction_read_scope),
-):
-    """Return a single transaction by identifier for authorized callers.
-
-    Args:
-        transaction_id: The unique ID of the transaction to fetch.
-        request: The incoming HTTP request.
-        _principal: The caller principal validated by the read-scope dependency.
-
-    Returns:
-        TransactionResponse: The transaction payload with the active correlation ID attached.
-
-    Raises:
-        HTTPException: If no matching transaction is found.
-    """
-    # The scope dependency enforces read access before any lookup runs.
-    logger.info("fetch_transaction", transaction_id=transaction_id)
-    transaction = await find_transaction(
-        _database_from_request(request), transaction_id
+    @router.get(
+        "/ready",
+        summary="Readiness: PostgreSQL and Redis are reachable",
+        responses={503: {"model": ErrorResponse}},
     )
-    if not transaction:
-        logger.warning("transaction_not_found", transaction_id=transaction_id)
-        raise HTTPException(status_code=404, detail="Transaction records not located.")
-    response_payload = dict(transaction)
-    response_payload["correlation_id"] = get_correlation_id()
-    return response_payload
-
-
-@router.get("/api/v1/categories/{category_name}", response_model=CategoryPageResponse)
-async def get_transactions_by_category(
-    category_name: str,
-    request: Request,
-    page: int = Query(1, ge=1, description="1-based page number to fetch."),
-    page_size: int = Query(
-        100, ge=1, le=1000, description="Number of records to fetch per page."
-    ),
-    _principal=Depends(require_transaction_read_scope),
-):
-    """Return a paginated category view with metadata and correlation details.
-
-    Args:
-        category_name: The category to filter transactions by.
-        request: The incoming HTTP request.
-        page: The 1-based page number to fetch.
-        page_size: Max number of records requested per page.
-        _principal: The caller principal validated by the read-scope dependency.
-
-    Returns:
-        CategoryPageResponse: Paginated category result metadata and the matching transaction rows.
-    """
-    offset = (page - 1) * page_size
-    logger.info(
-        "fetch_category_transactions",
-        category_name=category_name,
-        page=page,
-        page_size=page_size,
-    )
-    results, total_count = await find_by_category(
-        _database_from_request(request),
-        category_name,
-        offset,
-        page_size,
-    )
-    total_pages = ceil(total_count / page_size) if total_count else 0
-    has_more = offset + len(results) < total_count
-    return {
-        "category": category_name,
-        "page": page,
-        "page_size": page_size,
-        "count": len(results),
-        "total_count": total_count,
-        "total_pages": total_pages,
-        "has_previous": page > 1,
-        "has_more": has_more,
-        "previous_page": page - 1 if page > 1 else None,
-        "next_page": page + 1 if has_more else None,
-        "data": results,
-        "correlation_id": get_correlation_id(),
-    }
-
-@router.get("/api/v1/user/{user_id}", status_code=status.HTTP_200_OK)
-async def get_transactions_by_user(
-    user_id: uuid,
-    request: Request,
-    page: int = Query(1, ge=1, description="1-based page number to fetch."),
-    page_size: int = Query(
-        100, ge=1, le=1000, description="Number of records to fetch per page."
-    ),
-    _principal=Depends(require_transaction_read_scope)
-):
-    """Get transaction results filtered by user"""
-    offset = (page - 1) * page_size
-    logger.info(
-        "fetch_category_transactions",
-        user_id=user_id,
-        page=page,
-        page_size=page_size,
-    )
-    results, total_count = await find_by_category(
-        _database_from_request(request),
-        user_id,
-        offset,
-        page_size,
-    )
-    total_pages = ceil(total_count / page_size) if total_count else 0
-    has_more = offset + len(results) < total_count
-    return {
-        "user_id": user_id,
-        "page": page,
-        "page_size": page_size,
-        "count": len(results),
-        "total_count": total_count,
-        "total_pages": total_pages,
-        "has_previous": page > 1,
-        "has_more": has_more,
-        "previous_page": page - 1 if page > 1 else None,
-        "next_page": page + 1 if has_more else None,
-        "data": results,
-        "correlation_id": get_correlation_id(),
-    }
-    
-
-
-@router.post("/api/v1/rules/{rule_key}/evaluate", status_code=status.HTTP_200_OK)
-async def evaluate_transaction_rules(
-    rule_key: str,
-    transaction_data: TransactionIngestSchema,
-    request: Request,
-    _principal=Depends(require_transaction_write_scope),
-):
-    """Evaluate a transaction against cached versioned logic rules."""
-    logger.info("evaluate_transaction_rules", rule_key=rule_key)
-    
-    # 1. Fetch cache and DB handles from the active request context state
-    redis_client = _redis_from_request(request)
-    db_pool = _database_from_request(request)
-    
-    # 2. Fast Path Cache Read Namespace
-    redis_key = f"rules:{rule_key}:latest"
-    rule_config = None
-    
-    try:
-        cached_payload = await redis_client.get(redis_key)
-        if cached_payload:
-            rule_config = json.loads(cached_payload)
-    except Exception:
-        logger.exception("redis_cache_read_failed", rule_key=rule_key)
-
-    # 3. Cache Miss Fallback Track
-    if not rule_config:
-        logger.info("cache_miss_falling_back_to_db", rule_key=rule_key)
-        rule_config = await find_latest_rule_in_db(db_pool, rule_key)
-        if not rule_config:
-            raise HTTPException(status_code=404, detail="Requested engine ruleset not found.")
-            
-        # Rehydrate cache block to shield neighboring pods from hitting the database
+    async def ready(request: Request) -> dict[str, Any]:
+        checks: dict[str, str] = {}
         try:
-            await redis_client.set(redis_key, json.dumps(rule_config), ex=86400)
-        except Exception:
-            logger.exception("redis_cache_write_failed", rule_key=rule_key)
+            await ping_database(request.app.state.session_factory, SERVICE_NAME)
+            checks["database"] = "ok"
+        except Exception as exc:
+            logger.warning("readiness_database_failed", error_type=type(exc).__name__)
+            checks["database"] = "unavailable"
+        try:
+            await ping_redis(request.app.state.redis)
+            checks["redis"] = "ok"
+        except Exception as exc:
+            logger.warning("readiness_redis_failed", error_type=type(exc).__name__)
+            checks["redis"] = "unavailable"
+        failing = [name for name, state in checks.items() if state != "ok"]
+        if failing:
+            raise HTTPException(status_code=503, detail=f"Not ready: {', '.join(failing)} unavailable.")
+        return {"status": "ready", "checks": checks}
 
-    # 4. In-Memory AST Engine Execution
-    try:
-        runtime_context = transaction_data.model_dump()
-        is_triggered = json_logic.jsonLogic(rule_config["root_condition"], runtime_context)
-    except Exception as e:
-        logger.exception("engine_runtime_evaluation_error", rule_key=rule_key)
-        raise HTTPException(status_code=500, detail="Internal rule evaluation engine failure.")
+    return router
 
-    return {
-        "rule_key": rule_key,
-        "version_used": rule_config["version"],
-        "triggered": bool(is_triggered),
-        "executed_actions": rule_config["actions"] if is_triggered else [],
-        "correlation_id": get_correlation_id()
-    }
+
+# --- API v1 -------------------------------------------------------------------
+
+
+def v1_routes():
+    # Prefix on the router itself (not include_router) so each route's own path is
+    # the full template used for metric labels.
+    router = APIRouter(prefix="/api/v1", responses=_ERROR_RESPONSES)
+    read_transactions = Depends(require_scope("scope_transactions_read"))
+    read_rules = Depends(require_scope("scope_rules_read"))
+    write_rules = Depends(require_scope("scope_rules_write"))
+
+    @router.get(
+        "/transactions/{transaction_id}",
+        response_model=TransactionResponse,
+        tags=["transactions"],
+        summary="Get the fraud decision for one transaction",
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_transaction_by_id(
+        request: Request, transaction_id: UUID, _principal: AuthenticatedPrincipal = read_transactions
+    ) -> Any:
+        record = await get_transaction(request.app.state.session_factory, transaction_id)
+        if record is None:
+            raise TransactionNotFoundError(f"Transaction {transaction_id} was not found")
+        return record
+
+    @router.get(
+        "/transactions",
+        response_model=TransactionPage,
+        tags=["transactions"],
+        summary="List fraud decisions, newest first, with optional filters",
+        responses={400: {"model": ErrorResponse}},
+    )
+    async def list_transaction_decisions(
+        request: Request,
+        user_id: UUID | None = None,
+        category: Annotated[Category | None, Query(description="Case-insensitive category")] = None,
+        is_fraud: bool | None = None,
+        occurred_from: Annotated[AwareDatetime | None, Query(description="Inclusive lower bound (ISO-8601)")] = None,
+        occurred_to: Annotated[AwareDatetime | None, Query(description="Exclusive upper bound (ISO-8601)")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query(max_length=256, description="`next_cursor` from the previous page")] = None,
+        _principal: AuthenticatedPrincipal = read_transactions,
+    ) -> Any:
+        try:
+            page_cursor = PageCursor.decode(cursor) if cursor else None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="cursor is malformed or from a different query.") from None
+        filters = TransactionFilters(
+            user_id=user_id, category=category, is_fraud=is_fraud, occurred_from=occurred_from, occurred_to=occurred_to
+        )
+        rows, next_cursor = await list_transactions(request.app.state.session_factory, filters, limit, page_cursor)
+        return {"data": rows, "limit": limit, "next_cursor": next_cursor.encode() if next_cursor else None}
+
+    @router.get(
+        "/rule-sets/{key}/versions",
+        response_model=RuleSetVersionPage,
+        tags=["rule sets"],
+        summary="List versions of a rule set, newest first",
+    )
+    async def list_versions(
+        request: Request,
+        key: RuleSetKey,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        before_version: Annotated[int | None, Query(ge=2)] = None,
+        _principal: AuthenticatedPrincipal = read_rules,
+    ) -> Any:
+        versions = await list_rule_set_versions(request.app.state.session_factory, key, limit, before_version)
+        if not versions and before_version is None:
+            raise RuleSetNotFoundError(f"No rule set exists for key '{key}'")
+        next_before = versions[-1].version if len(versions) == limit and versions[-1].version > 1 else None
+        return {
+            "data": [RuleSetVersionResponse.from_rule_set(version) for version in versions],
+            "limit": limit,
+            "next_before_version": next_before,
+        }
+
+    @router.get(
+        "/rule-sets/{key}/active",
+        response_model=RuleSetVersionResponse,
+        tags=["rule sets"],
+        summary="Get the active (latest) version of a rule set",
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_active_version(
+        request: Request, key: RuleSetKey, _principal: AuthenticatedPrincipal = read_rules
+    ) -> Any:
+        return RuleSetVersionResponse.from_rule_set(await get_latest_rule_set(request.app.state.session_factory, key))
+
+    @router.get(
+        "/rule-sets/{key}/versions/{version}",
+        response_model=RuleSetVersionResponse,
+        tags=["rule sets"],
+        summary="Get one version of a rule set",
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def get_version(
+        request: Request,
+        key: RuleSetKey,
+        version: Annotated[int, Path(ge=1)],
+        _principal: AuthenticatedPrincipal = read_rules,
+    ) -> Any:
+        rule_set = await get_rule_set_version(request.app.state.session_factory, key, version)
+        return RuleSetVersionResponse.from_rule_set(rule_set)
+
+    @router.post(
+        "/rule-sets/{key}/versions",
+        response_model=RuleSetVersionResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["rule sets"],
+        summary="Publish a new version; it becomes active immediately",
+        responses={409: {"model": ErrorResponse}},
+    )
+    async def create_version(
+        request: Request,
+        response: Response,
+        key: RuleSetKey,
+        body: CreateRuleSetVersionRequest,
+        principal: AuthenticatedPrincipal = write_rules,
+    ) -> Any:
+        definition = parse_rule_set_definition(body.definition)
+        rule_set = await create_rule_set_version(
+            request.app.state.session_factory,
+            key=key,
+            definition=definition,
+            definition_hash=content_hash(definition),
+            description=body.description,
+            created_by=principal.subject,
+            expected_current_version=body.expected_current_version,
+        )
+        settings = get_settings()
+        await write_rule_set_cache(request.app.state.redis, rule_set, settings.rule_redis_cache_ttl_seconds)
+        logger.info(
+            "rule_set_version_created",
+            rule_set=rule_set.label,
+            content_hash=rule_set.content_hash,
+            created_by=principal.subject,
+        )
+        response.headers["Location"] = f"/api/v1/rule-sets/{key}/versions/{rule_set.version}"
+        return RuleSetVersionResponse.from_rule_set(rule_set)
+
+    @router.post(
+        "/rule-sets/{key}/evaluate",
+        response_model=EvaluateResponse,
+        tags=["rule sets"],
+        summary="Dry-run: score a hypothetical transaction against the active version without storing it",
+        responses={404: {"model": ErrorResponse}},
+    )
+    async def evaluate(
+        request: Request, key: RuleSetKey, body: EvaluateRequest, _principal: AuthenticatedPrincipal = read_rules
+    ) -> Any:
+        session_factory = request.app.state.session_factory
+        rule_set = await get_latest_rule_set(session_factory, key)
+        score = await score_transaction(
+            session_factory,
+            rule_set,
+            transaction_id=body.transaction_id,
+            user_id=body.user_id,
+            amount=body.amount,
+            category=body.category,
+            occurred_at=body.occurred_at or datetime.now(UTC),
+        )
+        return EvaluateResponse(
+            rule_set=rule_set.label,
+            is_fraud=score.is_fraud,
+            triggered_rules=score.triggered_rules,
+            velocity=VelocityContext(
+                window_seconds=rule_set.definition.velocity_window_seconds,
+                prior_count=score.prior_count,
+                prior_amount=score.prior_amount,
+            ),
+        )
+
+    return router

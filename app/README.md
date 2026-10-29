@@ -1,42 +1,45 @@
-# Application package
+﻿# Application package
 
-## Executive Summary
-
-The app package implements the runtime behavior of Fraud Detection: a JWT-protected query API, a Kafka-driven fraud worker, and a scheduled batch worker, backed by PostgreSQL and shared observability/security utilities.
+This package contains the runtime implementation for the Fraud Detection service: the FastAPI query layer, Kafka consumer worker, batch worker, and the supporting configuration, security, rule, and observability modules.
 
 ## Runtime architecture
 
 ```mermaid
 flowchart LR
-    K[(Kafka)] --> W[worker.py]
-    W --> R[rule.py]
-    W --> D[database.py]
-    W --> Q[(DLQ)]
-    C[Client] --> A[api.py]
-    A --> S[security.py]
-    A --> D
-    A --> O[observability.py]
-    W --> O
+    Kafka[(Kafka)] --> Worker[worker.py]
+    Worker --> Rule[rule.py]
+    Worker --> Database[database.py]
+    Worker --> DLQ[DLQ handling]
+
+    Client[Client / dashboard] --> API[api.py]
+    API --> Security[security.py]
+    API --> Database
+    API --> Observability[observability.py]
+    Worker --> Observability
 ```
 
-## Runtime Entrypoints
+## Runtime entrypoints
 
-- [main.py](main.py): application entrypoint exporting app.
-- [api.py](api.py): FastAPI creation, middleware wiring, endpoint definitions.
-- [worker.py](worker.py): Kafka consume loop, fraud decisioning, persistence, DLQ routing.
-- [batch_worker.py](batch_worker.py): scheduled workload for deferred processing.
+- [main.py](main.py) — application entrypoint that exports the FastAPI app.
+- [api.py](api.py) — API creation, dependency wiring, middleware, and route registration.
+- [worker.py](worker.py) — Kafka consumer loop and fraud decision processing.
+- [batch_worker.py](batch_worker.py) — scheduled batch processing.
 
-## Module Map
+## Key modules
 
-- [settings.py](settings.py): env loading and runtime configuration validation.
-- [database.py](database.py): async SQLAlchemy engine/session and transaction persistence helpers.
-- [rule.py](rule.py): fraud rule evaluation and trigger generation.
-- [security.py](security.py): JWT validation and principal extraction.
-- [observability.py](observability.py): structured logging, metrics, trace hooks, IDs.
-- [kafka_security.py](kafka_security.py): Kafka security protocol and TLS/OAuth options.
-- [dlq.py](dlq.py): dead-letter payload shaping and encoding.
+- [config.py](config.py) — configuration helpers for the app runtime.
+- [settings.py](settings.py) — environment-driven settings and validation.
+- [database.py](database.py) — PostgreSQL session management and persistence helpers.
+- [rule.py](rule.py) — rule evaluation and trigger generation.
+- [security.py](security.py) — JWT validation and principal extraction.
+- [observability.py](observability.py) — structured logging, metrics, tracing, and correlation IDs.
+- [rate_limit.py](rate_limit.py) — request throttling middleware.
+- [kafka_security.py](kafka_security.py) — Kafka security/TLS-related helpers.
+- [dlq.py](dlq.py) — dead-letter payload shaping and recovery support.
+- [token_service.py](token_service.py) — token helper logic for local auth workflows.
+- [keycloak_bootstrap.py](keycloak_bootstrap.py) — bootstrap script for local Keycloak realm and demo user setup.
 
-## API Surface
+## API surface
 
 Health endpoints:
 
@@ -48,28 +51,29 @@ Protected query endpoints:
 
 - GET /api/v1/transactions/{transaction_id}
 - GET /api/v1/categories/{category_name}
+- GET /api/v1/user/{user_id}
 
-Optional token helper endpoints:
+Rule evaluation endpoint:
 
-- POST /api/v1/auth/token
-- POST /api/v1/auth/service-token
+- POST /api/v1/rules/{rule_key}/evaluate
 
-## Design Decisions And Tradeoffs
+## Design notes
 
-### 1. Shared persistence for worker and API
-Benefit: Keeps the data model simpler and more auditable.
-Tradeoff: Read and write paths contend on the same database.
+### Shared persistence for API and worker
 
-### 2. At-least-once worker semantics
-Benefit: Improves durability and replay safety.
-Tradeoff: Requires idempotency discipline in persistence logic.
+The API and worker both read and write through the same PostgreSQL-backed model, which simplifies auditing and keeps the latest decision state aligned with the full transaction history.
 
-### 3. Explicit security and observability modules
-Benefit: Keeps cross-cutting concerns centralized and testable.
-Tradeoff: Onboarding requires understanding a few infrastructure-focused helpers.
+### At-least-once processing
 
-## Contributor Guidance
+The worker processes events with at-least-once semantics. That improves durability, but application logic must remain idempotent-safe around writes and any retry behavior.
 
-- Keep trigger labels stable and explainable.
+### Security and observability are first-class modules
+
+Cross-cutting concerns such as JWT validation, rate limiting, tracing, and logging are centralized so they remain consistent across the API and worker.
+
+## Contributor guidance
+
+- Keep trigger labels stable and human-readable.
 - Preserve worker safety around commit ordering and DLQ behavior.
-- Keep metrics labels bounded and avoid sensitive data in labels.
+- Keep metrics labels bounded and avoid leaking sensitive information.
+- Prefer config-driven behavior over hard-coded values for local and production runtime differences.

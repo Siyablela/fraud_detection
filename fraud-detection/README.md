@@ -1,15 +1,14 @@
-# Fraud Detection Helm Chart
+﻿# Fraud Detection Helm chart
 
-## Executive Summary
+## Overview
 
-This chart deploys the application runtime and supporting platform components for Fraud Detection,
-with environment overlays for development and production.
+This chart packages the Fraud Detection service and its supporting platform dependencies into a single Kubernetes deployment model. It is designed for environment overlays that keep the base deployment configuration stable while allowing dev and prod settings to diverge intentionally.
 
 ## Deployment topology
 
 ```mermaid
 flowchart LR
-    U[User traffic] --> K[Kong]
+    U[User traffic] --> K[Kong / ingress]
     K --> A[fraud-api Deployment]
     A --> P[(PostgreSQL)]
 
@@ -22,95 +21,41 @@ flowchart LR
     Y[keycloak] --> A
 ```
 
-## What The Chart Deploys
+## What the chart deploys
 
 Application workloads:
 
-- fraud-api Deployment and api Service
-- fraud-worker Deployment
-- fraud-batch-worker CronJob when batch.enabled is true
+- `fraud-api` deployment and service
+- `fraud-worker` deployment
+- `fraud-batch-worker` CronJob when enabled
 
 Supporting infrastructure:
 
-- postgres Deployment and Service
-- kafka Deployment and Service
-- kong Deployment and Service with optional Ingress
-- keycloak Deployment and Service
-- kafka-ui Deployment and Service
+- PostgreSQL
+- Redis
+- Kafka
+- Keycloak
+- Kafka UI
+- Kong ingress / gateway layer
 
 Operational resources:
 
-- fraud-configs ConfigMap
-- alert rules and optional Alertmanager resources
-- resilience resources such as PDBs and optional HPAs
-- network policies
+- ConfigMap values for runtime configuration
+- Secret-oriented configuration keys for credentials and external dependencies
+- Resilience and networking resources such as PodDisruptionBudgets and optional scaling settings
 
-## Key Files
+## Key files
 
-- Chart.yaml
-- values.yaml
-- values-dev.yaml
-- values-prod.yaml
-- templates/apps.yaml
-- templates/infrastructure.yaml
-- templates/gateways-ui.yaml
-- templates/resilience.yaml
+- `Chart.yaml`
+- `values.yaml`
+- `values-dev.yaml`
+- `values-prod.yaml`
+- `templates/apps.yaml`
+- `templates/infrastructure.yaml`
+- `templates/gateways-ui.yaml`
+- `templates/resilience.yaml`
 
-## Key Values To Tune
-
-Workload images and scale:
-
-- api.image.repository
-- api.image.tag
-- api.replicaCount
-
-- worker.image.repository
-- worker.image.tag
-- worker.replicaCount
-
-Batch scheduling:
-
-- batch.enabled
-- batch.runHour
-- batch.runMinute
-- batch.suspend
-
-Security and auth:
-
-- security.jwtIssuer
-- security.jwtAudience
-- security.jwtJwksUrl
-- security.requiredReadScope
-- security.authTokenEndpointEnabled
-
-Application config:
-
-- appConfig.kafkaTopicName
-- appConfig.kafkaDlqTopicName
-- appConfig.kafkaConsumerGroupId
-- appConfig.defaultHighValueThreshold
-- appConfig.defaultRestrictedCategoriesJson
-
-Observability and persistence:
-
-- observability.logLevel
-- observability.enableTracing
-- observability.workerMetricsPort
-- persistence.postgres.*
-- persistence.kafka.*
-
-## Secrets
-
-The chart expects an existing secret named by secrets.existingSecretName.
-
-Required keys:
-
-- postgres-password
-- keycloak-token-client-secret
-- keycloak-service-client-secret
-- keycloak-demo-password
-
-## Deployment Workflow
+## Deployment workflow
 
 Development overlay:
 
@@ -142,21 +87,21 @@ kubectl -n fraud-detection rollout status deploy/fraud-api
 kubectl -n fraud-detection rollout status deploy/fraud-worker
 ```
 
-## Design Decisions And Tradeoffs
+## Design decisions
 
-### 1. Single chart for app and support components
+### 1. Single chart for app and platform components
 
-Benefit: Improves local parity and simplifies onboarding.
+This keeps local parity high and simplifies onboarding, while making it easier to reason about the full runtime stack in one deployment artifact.
 
-Tradeoff: Platform and app lifecycles are coupled unless split later.
+### 2. Values overlays for environment differences
 
-### 2. Values overlay model for environment differences
+The base chart is shared and environment-specific behavior is injected through `values-dev.yaml` and `values-prod.yaml`.
 
-Benefit: Supports a predictable promotion path from dev to prod.
+### 3. Operational resources embedded in the chart
 
-Tradeoff: Requires careful drift management across overlay files.
+Alerts, resilience, config, and secret wiring are represented as infrastructure as code so deployments are more repeatable and easier to validate.
 
-### 3. Embedded operational resources
+## Related docs
 
-Benefit: Enables repeatable deploys with alerts and resilience as code.
-Tradeoff: Chart complexity is higher than a minimal runtime-only deployment.
+- [../README.md](../README.md) — project overview and local development workflow
+- [../infra/README.md](../infra/README.md) — runbook and deployment guidance

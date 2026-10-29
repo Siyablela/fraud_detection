@@ -1,224 +1,197 @@
-version: "3.8"
+# Local stack: PostgreSQL, Redis, Kafka, Keycloak, migrations, API and worker.
+#   cp .env.example .env && docker compose up --build
+# Every service waits for its dependencies to be *healthy* (or, for one-shot jobs,
+# to have completed successfully), not merely started.
+
+name: fraud-detection
+
+x-app: &app
+  build:
+    context: .
+  image: fraud-detection:local
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+    REDIS_URL: redis://:${REDIS_PASSWORD:?}@redis:6379/0
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME:?}
+    KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:?}
+    JWT_ISSUER: http://localhost:${KEYCLOAK_HOST_PORT:-8080}/realms/fraud
+    JWT_AUDIENCE: fraud-api
+    JWT_JWKS_URL: http://keycloak:8080/realms/fraud/protocol/openid-connect/certs
+    OBSERVABILITY_LOG_LEVEL: ${OBSERVABILITY_LOG_LEVEL:-INFO}
+    RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-100}
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  tmpfs:
+    - /tmp
 
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: fraud_postgres
-    ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    image: postgres:16.4-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
-      timeout: 5s
-      retries: 10
+      timeout: 3s
+      retries: 20
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  # Central High-Speed Messaging Bus & Shared Memory Cache Layer
   redis:
-    image: redis:7.2-alpine
-    container_name: fraud_redis
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
+    image: redis:7.4.1-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?}", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 20
     volumes:
       - redis_data:/data
 
   kafka:
-    image: apache/kafka:latest
-    container_name: fraud_kafka_broker
-    ports:
-      - "9092:9092"
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # INTERNAL for containers (kafka:9092), EXTERNAL for scripts on the host.
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_HOST_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
-      KAFKA_MIN_INSYNC_REPLICAS: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "127.0.0.1:${KAFKA_HOST_PORT:-29092}:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - kafka_data:/var/lib/kafka/data
 
   kafka-init:
-    image: apache/kafka:latest
+    image: apache/kafka:3.9.0
     depends_on:
-      - kafka
-    command:
-      - /bin/sh
-      - -ec
-      - |
-        until /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092 >/dev/null 2>&1; do
-          echo "Waiting for Kafka broker..."
-          sleep 2
-        done
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic $${KAFKA_TOPIC_NAME}
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --topic $${KAFKA_DLQ_TOPIC_NAME:-transactions_topic.dlq}
-
-  worker:
-    build: 
-      context: .
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
-    container_name: fraud_worker
-    command: python -u -m app.worker
-    stop_grace_period: 35s # Crucial: Allows the 30-second asyncio task drain loop to finish gracefully
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME}
-      KAFKA_DLQ_TOPIC_NAME: ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
-      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
-      DATABASE_URL: ${DATABASE_URL}
-      # Shared Memory Central Cache Engine Configurations
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      REDIS_PASSWORD: ""
-      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-50}
-      FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
-      JWT_ISSUER: ${JWT_ISSUER}
-      JWT_AUDIENCE: ${JWT_AUDIENCE}
-      JWT_JWKS_URL: ${JWT_JWKS_URL:-}
-      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-}
-      JWT_ALGORITHMS: ${JWT_ALGORITHMS:-RS256}
-      JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ: ${JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ:-fraud:transactions:read}
-      JWT_REQUIRED_SCOPE_FOR_RULES_WRITE: ${JWT_REQUIRED_SCOPE_FOR_RULES_WRITE:-fraud:rules:write}
-      AUTH_TOKEN_ENDPOINT_ENABLED: ${AUTH_TOKEN_ENDPOINT_ENABLED:-false}
-      KEYCLOAK_TOKEN_CLIENT_ID: ${KEYCLOAK_TOKEN_CLIENT_ID:-fraud-cli}
-      KEYCLOAK_TOKEN_CLIENT_SECRET: ${KEYCLOAK_TOKEN_CLIENT_SECRET:-}
-      KEYCLOAK_SERVICE_CLIENT_ID: ${KEYCLOAK_SERVICE_CLIENT_ID:-fraud-service-cli}
-      KEYCLOAK_SERVICE_CLIENT_SECRET: ${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
-      KEYCLOAK_SERVICE_TOKEN_SCOPE: ${KEYCLOAK_SERVICE_TOKEN_SCOPE:-}
-      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
-      KAFKA_PRODUCER_ACKS: ${KAFKA_PRODUCER_ACKS:-all}
-      KAFKA_PRODUCER_ENABLE_IDEMPOTENCE: ${KAFKA_PRODUCER_ENABLE_IDEMPOTENCE:-true}
-      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
-      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
-      DEFAULT_HIGH_VALUE_THRESHOLD: ${DEFAULT_HIGH_VALUE_THRESHOLD}
-      DEFAULT_RESTRICTED_CATEGORIES: ${DEFAULT_RESTRICTED_CATEGORIES}
-      OBSERVABILITY_LOG_LEVEL: ${OBSERVABILITY_LOG_LEVEL:-INFO}
-      OBSERVABILITY_ENABLE_TRACING: ${OBSERVABILITY_ENABLE_TRACING:-false}
-      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9100}
-    volumes:
-      - type: bind
-        source: ./rules.json
-        target: /config/rules.json
-        read_only: true
-    ports:
-      - "9100:9100"
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/metrics', timeout=2)
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       kafka:
-        condition: service_started
-
-  batch-worker:
-    build: 
-      context: .
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
-    container_name: fraud_batch_worker
-    command: python -u -m app.batch_worker
-    environment:
-      BATCH_JOB_ENABLED: ${BATCH_JOB_ENABLED:-false}
-      BATCH_RUN_HOUR: ${BATCH_RUN_HOUR:-0}
-      BATCH_RUN_MINUTE: ${BATCH_RUN_MINUTE:-0}
-      DATABASE_URL: ${DATABASE_URL}
-      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE}
-      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE}
-      OBSERVABILITY_LOG_LEVEL: ${OBSERVABILITY_LOG_LEVEL:-INFO}
-    depends_on:
-      postgres:
         condition: service_healthy
-
-  keycloak-init:
-    build: 
-      context: .
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
-    container_name: fraud_keycloak_init
-    command: python -u -m app.keycloak_bootstrap
-    environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
-      KEYCLOAK_ADMIN_URL: http://keycloak:8080
-      KEYCLOAK_DEMO_USERNAME: ${KEYCLOAK_DEMO_USERNAME:-demo}
-      KEYCLOAK_DEMO_PASSWORD: ${KEYCLOAK_DEMO_PASSWORD:-demo}
-      JWT_ISSUER: ${JWT_ISSUER}
-      JWT_AUDIENCE: ${JWT_AUDIENCE}
-      KEYCLOAK_TOKEN_CLIENT_ID: ${KEYCLOAK_TOKEN_CLIENT_ID:-fraud-cli}
-      KEYCLOAK_TOKEN_CLIENT_SECRET: ${KEYCLOAK_TOKEN_CLIENT_SECRET:-}
-      KEYCLOAK_SERVICE_CLIENT_ID: ${KEYCLOAK_SERVICE_CLIENT_ID:-fraud-service-cli}
-      KEYCLOAK_SERVICE_CLIENT_SECRET: ${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
-    depends_on:
-      keycloak:
-        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for topic in "${KAFKA_TOPIC_NAME:?}:${KAFKA_TOPIC_PARTITIONS:-6}" "${KAFKA_TOPIC_NAME:?}.dlq:1"; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic "$${topic%%:*}" --partitions "$${topic##*:}" --replication-factor 1
+        done
     restart: "no"
 
-  api:
-    build: 
-      context: .
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        PIP_TRUSTED_HOSTS: ${PIP_TRUSTED_HOSTS:-}
-    container_name: fraud_api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_TOPIC_NAME: ${KAFKA_TOPIC_NAME}
-      KAFKA_DLQ_TOPIC_NAME: ${KAFKA_DLQ_TOPIC_NAME:-${KAFKA_TOPIC_NAME}.dlq}
-      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
-      DATABASE_URL: ${DATABASE_URL}
-      # Shared Cache Configurations
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      REDIS_PASSWORD: ""
-      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-50}
-      FRAUD_RULES_CONFIG_PATH: ${FRAUD_RULES_CONFIG_PATH}
-      JWT_ISSUER: ${JWT_ISSUER}
-      JWT_AUDIENCE: ${JWT_AUDIENCE}
-      JWT_JWKS_URL: ${JWT_JWKS_URL:-}
-      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-}
-      JWT_ALGORITHMS: ${JWT_ALGORITHMS:-RS256}
-      JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ: ${JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ:-fraud:transactions:read}
-      JWT_REQUIRED_SCOPE_FOR_RULES_WRITE: ${JWT_REQUIRED_SCOPE_FOR_RULES_WRITE:-fraud:rules:write}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?}
+      # Tokens carry the browser-facing issuer; containers reach Keycloak by service name.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_HOST_PORT:-8080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      FRAUD_ANALYST_CLIENT_SECRET: ${FRAUD_ANALYST_CLIENT_SECRET:?}
+      FRAUD_RULES_ADMIN_CLIENT_SECRET: ${FRAUD_RULES_ADMIN_CLIENT_SECRET:?}
+    ports:
+      - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8080}:8080"
+    healthcheck:
+      # The image has no curl; probe the management port's readiness endpoint with bash.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    volumes:
+      - ./infra/keycloak/fraud-realm.json:/opt/keycloak/data/import/fraud-realm.json:ro
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_started
+      keycloak:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    # Longer than WORKER_SHUTDOWN_TIMEOUT_SECONDS so in-flight messages can finish.
+    stop_grace_period: 35s
+    ports:
+      - "127.0.0.1:${WORKER_METRICS_HOST_PORT:-9100}:9100"
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "worker"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  batch-worker:
+    <<: *app
+    profiles: ["batch"]
+    command: ["python", "-m", "app.batch_worker"]
+    environment:
+      <<: *app-env
+      BATCH_JOB_ENABLED: "true"
+      BATCH_RUN_HOUR: ${BATCH_RUN_HOUR:-2}
+      BATCH_RUN_MINUTE: ${BATCH_RUN_MINUTE:-0}
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
   redis_data:
+  kafka_data:

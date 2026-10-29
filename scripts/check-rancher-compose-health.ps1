@@ -1,6 +1,6 @@
 param(
     [int]$Tail = 80,
-    [string[]]$Services = @("postgres", "kafka", "api", "worker", "keycloak", "kafka-ui")
+    [string[]]$Services = @("postgres", "redis", "kafka", "keycloak", "api", "worker")
 )
 
 $ErrorActionPreference = "Stop"
