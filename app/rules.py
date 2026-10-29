@@ -14,21 +14,40 @@ import hashlib
 import itertools
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 from app.errors import InvalidRuleSetError, RuleEvaluationError
 
 MAX_EXPRESSION_DEPTH = 24
 MAX_EXPRESSION_NODES = 400
 
-# Variables a rule may read. ``velocity.*`` describe the same user's *other*
-# transactions whose event time falls inside the rule set's velocity window.
-CONTEXT_VARIABLES: frozenset[str] = frozenset({"amount", "category", "velocity.prior_count", "velocity.prior_amount"})
+# Variables every transaction provides. ``velocity.*`` describe the same user's
+# *other* transactions whose event time falls inside the rule set's velocity
+# window; ``velocity.prior_amount`` only sums transactions in the same currency.
+REQUIRED_VARIABLES: frozenset[str] = frozenset(
+    {"amount", "currency", "category", "velocity.prior_count", "velocity.prior_amount"}
+)
+# Variables only present when the producer sends them. A rule that reads one must
+# give a default (``{"var": ["channel", "UNKNOWN"]}``); otherwise every event
+# without the field would fail evaluation.
+OPTIONAL_VARIABLES: frozenset[str] = frozenset(
+    {
+        "channel",
+        "country",
+        "enrichment.distance_from_last_tx_km",
+        "enrichment.minutes_since_last_tx",
+        "enrichment.user_historical_avg_spend",
+        "enrichment.is_new_merchant_for_user",
+        "enrichment.is_travel_itinerary_active",
+    }
+)
+CONTEXT_VARIABLES: frozenset[str] = REQUIRED_VARIABLES | OPTIONAL_VARIABLES
 
 _MISSING = object()
 
@@ -164,6 +183,11 @@ def validate_expression(expression: Any, path: str = "condition") -> None:
                 raise InvalidRuleSetError(
                     f"{location}: unknown variable {name!r}; allowed: {sorted(CONTEXT_VARIABLES)}"
                 )
+            if name in OPTIONAL_VARIABLES and len(args) != 2:
+                raise InvalidRuleSetError(
+                    f"{location}: '{name}' is optional in events, so it needs a default, "
+                    f'e.g. {{"var": ["{name}", 0]}}'
+                )
             if len(args) == 2:
                 visit(args[1], f"{location}.var[1]", depth + 1)
             return
@@ -214,6 +238,7 @@ class RuleDefinition(BaseModel):
 
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", description="Stable code reported when the rule fires.")
     description: str = Field(min_length=1, max_length=500)
+    score: int = Field(ge=0, le=1000, description="Risk points added to the total when the rule fires.")
     condition: dict[str, Any] = Field(description="JsonLogic expression that is truthy when the rule fires.")
 
     @field_validator("condition")
@@ -234,13 +259,28 @@ class RuleSetDefinition(BaseModel):
     velocity_window_seconds: int = Field(
         ge=1, le=86_400, description="Look-back window, in event time, for the velocity.* variables."
     )
+    review_threshold: int = Field(ge=1, description="Total score at or above which the verdict is REVIEW.")
+    reject_threshold: int = Field(ge=1, description="Total score at or above which the verdict is REJECTED.")
     rules: list[RuleDefinition] = Field(min_length=1, max_length=50)
 
-    # (code, condition with Decimal literals), computed once rather than per message.
-    _compiled: list[tuple[str, Any]] = PrivateAttr(default_factory=list)
+    # (code, score, condition with Decimal literals), computed once rather than per message.
+    _compiled: list[tuple[str, int, Any]] = PrivateAttr(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
-        self._compiled = [(rule.code, _normalise_literal(rule.condition)) for rule in self.rules]
+        self._compiled = [(rule.code, rule.score, _normalise_literal(rule.condition)) for rule in self.rules]
+
+    @model_validator(mode="after")
+    def _ordered_thresholds(self) -> RuleSetDefinition:
+        if self.reject_threshold < self.review_threshold:
+            raise ValueError("reject_threshold must be greater than or equal to review_threshold")
+        return self
+
+    def verdict_for(self, risk_score: int) -> Verdict:
+        if risk_score >= self.reject_threshold:
+            return Verdict.REJECTED
+        if risk_score >= self.review_threshold:
+            return Verdict.REVIEW
+        return Verdict.APPROVED
 
     @field_validator("rules")
     @classmethod
@@ -299,55 +339,98 @@ class RuleSet:
         return f"{self.key}@v{self.version}"
 
 
+class Verdict(StrEnum):
+    """Recommended action. Scoring runs after authorisation, so REJECTED means
+    "highest risk: restrict and investigate", not a declined payment."""
+
+    APPROVED = "APPROVED"
+    REVIEW = "REVIEW"
+    REJECTED = "REJECTED"
+
+
 @dataclass(frozen=True)
 class EvaluationContext:
     amount: Decimal
+    currency: str
     category: str
     prior_count: int
     prior_amount: Decimal
+    channel: str | None = None
+    country: str | None = None
+    enrichment: dict[str, Any] = field(default_factory=dict)
 
     def as_variables(self) -> dict[str, Any]:
-        return {
+        variables: dict[str, Any] = {
             "amount": self.amount,
+            "currency": self.currency,
             "category": self.category,
             "velocity": {"prior_count": Decimal(self.prior_count), "prior_amount": self.prior_amount},
+            # Absent optional values are left out so the rule's default applies.
+            "enrichment": {
+                name: _normalise_literal(value) for name, value in self.enrichment.items() if value is not None
+            },
         }
+        if self.channel is not None:
+            variables["channel"] = self.channel
+        if self.country is not None:
+            variables["country"] = self.country
+        return variables
 
 
-def evaluate_rule_set(definition: RuleSetDefinition, context: EvaluationContext) -> list[str]:
-    """Return the codes of every rule that fires, in definition order.
+@dataclass(frozen=True)
+class Assessment:
+    triggered_rules: list[str]
+    risk_score: int
+    verdict: Verdict
+
+    @property
+    def is_fraud(self) -> bool:
+        """Flagged as potential fraud: anything that is not APPROVED."""
+        return self.verdict is not Verdict.APPROVED
+
+
+def evaluate_rule_set(definition: RuleSetDefinition, context: EvaluationContext) -> Assessment:
+    """Fire every rule, sum the scores of those that match, and map the total to a verdict.
 
     Raises:
         RuleEvaluationError: If a rule cannot be evaluated against this context.
     """
     variables = context.as_variables()
     triggered: list[str] = []
-    for code, condition in definition._compiled:
+    risk_score = 0
+    for code, score, condition in definition._compiled:
         try:
             fired = _evaluate(condition, variables)
         except RuleEvaluationError as exc:
             raise RuleEvaluationError(f"rule {code}: {exc}") from exc
         if fired:
             triggered.append(code)
-    return triggered
+            risk_score += score
+    return Assessment(triggered_rules=triggered, risk_score=risk_score, verdict=definition.verdict_for(risk_score))
 
 
 _DRY_RUN_CONTEXT = EvaluationContext(
-    amount=Decimal("100.00"), category="GROCERIES", prior_count=1, prior_amount=Decimal("100.00")
+    amount=Decimal("100.00"), currency="ZAR", category="GROCERIES", prior_count=1, prior_amount=Decimal("100.00")
 )
 
 
+# Amounts are in ZAR. Scores: one strong signal reaches REVIEW (>= 30); two
+# signals together, or one very strong one, reach REJECTED (>= 75).
 DEFAULT_RULE_SET_DEFINITION: dict[str, Any] = {
     "velocity_window_seconds": 60,
+    "review_threshold": 30,
+    "reject_threshold": 75,
     "rules": [
         {
             "code": "HIGH_VALUE_THRESHOLD",
-            "description": "A single transaction of 10,000.00 or more.",
+            "description": "A single transaction of R10,000.00 or more.",
+            "score": 40,
             "condition": {">=": [{"var": "amount"}, 10000]},
         },
         {
             "code": "RISKY_CATEGORY_LIMIT",
-            "description": "More than 5,000.00 in a high-risk category (GAMBLING, CRYPTO).",
+            "description": "More than R5,000.00 in a high-risk category (GAMBLING, CRYPTO).",
+            "score": 50,
             "condition": {
                 "and": [
                     {"in": [{"var": "category"}, ["GAMBLING", "CRYPTO"]]},
@@ -358,12 +441,20 @@ DEFAULT_RULE_SET_DEFINITION: dict[str, Any] = {
         {
             "code": "VELOCITY_COUNT_EXCEEDED",
             "description": "More than 5 transactions by the same user within the velocity window.",
+            "score": 40,
             "condition": {">": [{"+": [{"var": "velocity.prior_count"}, 1]}, 5]},
         },
         {
             "code": "VELOCITY_AMOUNT",
-            "description": "More than 50,000.00 spent by the same user within the velocity window.",
+            "description": "More than R50,000.00 spent by the same user within the velocity window.",
+            "score": 50,
             "condition": {">": [{"+": [{"var": "velocity.prior_amount"}, {"var": "amount"}]}, 50000]},
+        },
+        {
+            "code": "FOREIGN_CURRENCY",
+            "description": "Not in ZAR: the amount thresholds above do not apply, so send it for review.",
+            "score": 30,
+            "condition": {"!=": [{"var": "currency"}, "ZAR"]},
         },
     ],
 }

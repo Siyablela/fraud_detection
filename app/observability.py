@@ -39,7 +39,7 @@ _worker_retries_total = Counter(
     "fraud_worker_retries_total", "Processing attempts that failed and were retried", ["service", "failure_class"]
 )
 _worker_decisions_total = Counter(
-    "fraud_worker_decisions_total", "Fraud decisions made by the worker", ["service", "is_fraud"]
+    "fraud_worker_decisions_total", "Fraud decisions made by the worker, by verdict", ["service", "verdict"]
 )
 _worker_rule_triggers_total = Counter(
     "fraud_worker_rule_triggers_total", "Times each fraud rule fired", ["service", "rule"]
@@ -256,8 +256,8 @@ def worker_retry(service_name: str, failure_class: str) -> None:
     _worker_retries_total.labels(service=service_name, failure_class=failure_class).inc()
 
 
-def worker_fraud_decision(service_name: str, is_fraud: bool, triggered_rules: Iterable[str]) -> None:
-    _worker_decisions_total.labels(service=service_name, is_fraud=str(is_fraud).lower()).inc()
+def worker_fraud_decision(service_name: str, verdict: str, triggered_rules: Iterable[str]) -> None:
+    _worker_decisions_total.labels(service=service_name, verdict=verdict).inc()
     for rule in triggered_rules:
         _worker_rule_triggers_total.labels(service=service_name, rule=rule).inc()
 

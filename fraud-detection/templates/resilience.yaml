@@ -1,111 +1,47 @@
 {{- if .Values.resilience.podDisruptionBudget.enabled }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: fraud-api-pdb
-spec:
-  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
-  selector:
-    matchLabels:
-      app: fraud-api
+{{- range $component := list "fraud-api" "fraud-worker" "kong" }}
 ---
+# maxUnavailable (not minAvailable) so single-replica environments can still drain nodes.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: fraud-worker-pdb
+  name: {{ $component }}-pdb
+  labels: {{- include "fraud-detection.labels" (dict "root" $ "component" $component) | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
+  maxUnavailable: {{ $.Values.resilience.podDisruptionBudget.maxUnavailable }}
   selector:
-    matchLabels:
-      app: fraud-worker
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: kong-pdb
-spec:
-  minAvailable: {{ .Values.resilience.podDisruptionBudget.minAvailable }}
-  selector:
-    matchLabels:
-      app: kong
+    matchLabels: { app: {{ $component }} }
+{{- end }}
 {{- end }}
 
 {{- if .Values.resilience.autoscaling.enabled }}
+{{- range $target := list (dict "name" "fraud-api" "values" .Values.resilience.autoscaling.api) (dict "name" "fraud-worker" "values" .Values.resilience.autoscaling.worker) (dict "name" "kong" "values" .Values.resilience.autoscaling.kong) }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: fraud-api-hpa
+  name: {{ $target.name }}-hpa
+  labels: {{- include "fraud-detection.labels" (dict "root" $ "component" $target.name) | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: fraud-api
-  minReplicas: {{ .Values.resilience.autoscaling.api.minReplicas }}
-  maxReplicas: {{ .Values.resilience.autoscaling.api.maxReplicas }}
+    name: {{ $target.name }}
+  minReplicas: {{ $target.values.minReplicas }}
+  maxReplicas: {{ $target.values.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.api.targetCPUUtilizationPercentage }}
+        target: { type: Utilization, averageUtilization: {{ $target.values.targetCPUUtilizationPercentage }} }
     - type: Resource
       resource:
         name: memory
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.api.targetMemoryUtilizationPercentage }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: fraud-worker-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: fraud-worker
-  minReplicas: {{ .Values.resilience.autoscaling.worker.minReplicas }}
-  maxReplicas: {{ .Values.resilience.autoscaling.worker.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.worker.targetCPUUtilizationPercentage }}
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.worker.targetMemoryUtilizationPercentage }}
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: kong-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: kong
-  minReplicas: {{ .Values.resilience.autoscaling.kong.minReplicas }}
-  maxReplicas: {{ .Values.resilience.autoscaling.kong.maxReplicas }}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.kong.targetCPUUtilizationPercentage }}
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: {{ .Values.resilience.autoscaling.kong.targetMemoryUtilizationPercentage }}
+        target: { type: Utilization, averageUtilization: {{ $target.values.targetMemoryUtilizationPercentage }} }
+{{- end }}
+{{- if gt (int .Values.resilience.autoscaling.worker.maxReplicas) (int .Values.inClusterDependencies.kafka.partitions) }}
+{{- fail "resilience.autoscaling.worker.maxReplicas must not exceed the topic's partition count: extra consumers sit idle" }}
+{{- end }}
 {{- end }}
 
 {{- if and .Values.certManager.enabled (.Capabilities.APIVersions.Has "cert-manager.io/v1/Certificate") }}

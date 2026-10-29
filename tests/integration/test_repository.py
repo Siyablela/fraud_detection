@@ -42,7 +42,13 @@ async def history_rows(session_factory, transaction_id):
 
 class TestRecordDecision:
     async def test_first_write_is_evaluated_with_audit_row(self, session_factory):
-        decision = make_decision(amount=Decimal("10000.00"), is_fraud=True, triggered_rules=["HIGH_VALUE_THRESHOLD"])
+        decision = make_decision(
+            amount=Decimal("10000.00"),
+            risk_score=40,
+            verdict="REVIEW",
+            is_fraud=True,
+            triggered_rules=["HIGH_VALUE_THRESHOLD"],
+        )
         result = await record_decision(session_factory, decision, provenance(1))
         assert result.outcome is RecordOutcome.EVALUATED
         assert await history_rows(session_factory, decision.transaction_id) == [("evaluated", 1)]
@@ -61,6 +67,8 @@ class TestRecordDecision:
         second = make_decision(
             transaction_id=first.transaction_id,
             user_id=first.user_id,
+            risk_score=40,
+            verdict="REVIEW",
             is_fraud=True,
             triggered_rules=["VELOCITY_COUNT_EXCEEDED"],
             rules_version="fraud-default@v2",
@@ -77,6 +85,16 @@ class TestRecordDecision:
         with pytest.raises(ConflictingDuplicateError):
             await record_decision(session_factory, conflicting, provenance(2))
         assert await history_rows(session_factory, first.transaction_id) == [("evaluated", 1)]
+
+    async def test_absent_enrichment_is_sql_null_not_json_null(self, session_factory):
+        decision = make_decision()
+        await record_decision(session_factory, decision, provenance(1))
+        async with session_factory() as session:
+            is_null = await session.scalar(
+                sa.text("SELECT enrichment IS NULL FROM transactions WHERE transaction_id = :t"),
+                {"t": decision.transaction_id},
+            )
+        assert is_null is True
 
     async def test_database_enforces_positive_amount(self, session_factory):
         with pytest.raises(IntegrityError):
@@ -98,12 +116,44 @@ class TestVelocityAggregates:
         await record_decision(session_factory, current, provenance(next(offsets)))
 
         count, total = await get_velocity_aggregates(
-            session_factory, user_id, T0 - timedelta(seconds=60), T0, exclude_transaction_id=current.transaction_id
+            session_factory,
+            user_id,
+            T0 - timedelta(seconds=60),
+            T0,
+            exclude_transaction_id=current.transaction_id,
+            currency="ZAR",
         )
         assert (count, total) == (3, Decimal("9.00"))  # -60, -30 and 0; not -61, +1, other user, or itself
 
     async def test_no_history_returns_zero(self, session_factory):
-        assert await get_velocity_aggregates(session_factory, uuid4(), T0, T0, uuid4()) == (0, Decimal("0"))
+        assert await get_velocity_aggregates(session_factory, uuid4(), T0, T0, uuid4(), currency="ZAR") == (
+            0,
+            Decimal("0"),
+        )
+
+    async def test_amount_sums_only_the_same_currency_but_count_includes_all(self, session_factory):
+        user_id = uuid4()
+        await record_decision(session_factory, make_decision(user_id=user_id, amount=Decimal("100.00")), provenance(1))
+        await record_decision(
+            session_factory,
+            make_decision(
+                user_id=user_id,
+                amount=Decimal("999.00"),
+                currency="USD",
+                risk_score=30,
+                verdict="REVIEW",
+                is_fraud=True,
+                triggered_rules=["FOREIGN_CURRENCY"],
+            ),
+            provenance(2),
+        )
+        assert await get_velocity_aggregates(
+            session_factory, user_id, T0 - timedelta(seconds=60), T0, uuid4(), currency="ZAR"
+        ) == (2, Decimal("100.00"))
+
+    async def test_database_rejects_is_fraud_inconsistent_with_verdict(self, session_factory):
+        with pytest.raises(IntegrityError):
+            await record_decision(session_factory, make_decision(verdict="REJECTED", is_fraud=False), provenance(1))
 
 
 class TestListTransactions:
@@ -129,11 +179,17 @@ class TestListTransactions:
         assert keys == sorted(keys, reverse=True) and len(set(keys)) == 7
 
     async def test_filters_combine(self, session_factory):
-        await record_decision(session_factory, make_decision(category="CRYPTO", is_fraud=True), provenance(1))
+        await record_decision(
+            session_factory,
+            make_decision(category="CRYPTO", verdict="REVIEW", is_fraud=True, risk_score=50),
+            provenance(1),
+        )
         await record_decision(session_factory, make_decision(category="CRYPTO", is_fraud=False), provenance(2))
         await record_decision(
             session_factory,
-            make_decision(category="GROCERIES", is_fraud=True, occurred_at=T0 + timedelta(days=1)),
+            make_decision(
+                category="GROCERIES", verdict="REVIEW", is_fraud=True, risk_score=40, occurred_at=T0 + timedelta(days=1)
+            ),
             provenance(3),
         )
         rows, _ = await list_transactions(

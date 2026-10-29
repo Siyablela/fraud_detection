@@ -296,7 +296,7 @@ class FraudWorker:
                         result = await self._handler.process(message.value(), provenance)
                     worker_message_outcome(SERVICE_NAME, topic, result.outcome.value)
                     if result.outcome is RecordOutcome.EVALUATED:
-                        worker_fraud_decision(SERVICE_NAME, result.decision.is_fraud, result.decision.triggered_rules)
+                        worker_fraud_decision(SERVICE_NAME, result.decision.verdict, result.decision.triggered_rules)
                     return True
                 await self._dead_letters.publish(pending_letter)
                 worker_message_outcome(SERVICE_NAME, topic, "dlq")

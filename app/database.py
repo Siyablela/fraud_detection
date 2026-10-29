@@ -63,8 +63,15 @@ class TransactionRecord(Base):
     transaction_id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
     user_id: Mapped[UUID] = mapped_column(sa.Uuid, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    # none_as_null: store an absent value as SQL NULL, not the JSON literal null.
+    enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     rules_version: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -75,6 +82,10 @@ class TransactionRecord(Base):
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+        CheckConstraint("risk_score >= 0", name="ck_transactions_risk_score_non_negative"),
+        CheckConstraint("verdict IN ('APPROVED', 'REVIEW', 'REJECTED')", name="ck_transactions_verdict"),
+        CheckConstraint("is_fraud = (verdict <> 'APPROVED')", name="ck_transactions_is_fraud_matches_verdict"),
+        Index("ix_transactions_verdict_occurred", "verdict", "occurred_at", "transaction_id"),
         Index("ix_transactions_user_occurred", "user_id", "occurred_at", "transaction_id"),
         Index("ix_transactions_category_occurred", "category", "occurred_at", "transaction_id"),
         Index("ix_transactions_occurred", "occurred_at", "transaction_id"),
@@ -99,8 +110,11 @@ class TransactionHistoryRecord(Base):
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     user_id: Mapped[UUID] = mapped_column(sa.Uuid, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     rules_version: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -199,13 +213,19 @@ class TransactionDecision:
     transaction_id: UUID
     user_id: UUID
     amount: Decimal
+    currency: str
     category: str
     occurred_at: datetime
+    risk_score: int
+    verdict: str
     is_fraud: bool
     triggered_rules: list[str]
     rules_version: str
     rules_hash: str
     correlation_id: str | None
+    channel: str | None = None
+    country: str | None = None
+    enrichment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -227,13 +247,19 @@ def _decision_from_record(record: TransactionRecord) -> TransactionDecision:
         transaction_id=record.transaction_id,
         user_id=record.user_id,
         amount=record.amount,
+        currency=record.currency,
         category=record.category,
         occurred_at=record.occurred_at,
+        risk_score=record.risk_score,
+        verdict=record.verdict,
         is_fraud=record.is_fraud,
         triggered_rules=list(record.triggered_rules),
         rules_version=record.rules_version,
         rules_hash=record.rules_hash,
         correlation_id=record.correlation_id,
+        channel=record.channel,
+        country=record.country,
+        enrichment=record.enrichment,
     )
 
 
@@ -241,6 +267,7 @@ def _same_transaction(left: TransactionDecision, right: TransactionDecision) -> 
     return (
         left.user_id == right.user_id
         and left.amount == right.amount
+        and left.currency == right.currency
         and left.category == right.category
         and left.occurred_at == right.occurred_at
     )
@@ -254,8 +281,11 @@ def _history_values(
         "outcome": outcome.value,
         "user_id": decision.user_id,
         "amount": decision.amount,
+        "currency": decision.currency,
         "category": decision.category,
         "occurred_at": decision.occurred_at,
+        "risk_score": decision.risk_score,
+        "verdict": decision.verdict,
         "is_fraud": decision.is_fraud,
         "triggered_rules": decision.triggered_rules,
         "rules_version": decision.rules_version,
@@ -287,8 +317,14 @@ async def record_decision(
                 transaction_id=decision.transaction_id,
                 user_id=decision.user_id,
                 amount=decision.amount,
+                currency=decision.currency,
                 category=decision.category,
                 occurred_at=decision.occurred_at,
+                channel=decision.channel,
+                country=decision.country,
+                enrichment=decision.enrichment,
+                risk_score=decision.risk_score,
+                verdict=decision.verdict,
                 is_fraud=decision.is_fraud,
                 triggered_rules=decision.triggered_rules,
                 rules_version=decision.rules_version,
@@ -307,7 +343,7 @@ async def record_decision(
             stored = _decision_from_record(existing)
             if not _same_transaction(stored, decision):
                 raise ConflictingDuplicateError(
-                    "transaction_id already recorded with different user, amount, category or occurred_at"
+                    "transaction_id already recorded with different user, amount, currency, category or occurred_at"
                 )
             outcome = RecordOutcome.DUPLICATE
 
@@ -325,16 +361,21 @@ async def get_velocity_aggregates(
     window_start: datetime,
     window_end: datetime,
     exclude_transaction_id: UUID,
+    currency: str,
 ) -> tuple[int, Decimal]:
     """Count and sum a user's other transactions with ``window_start <= occurred_at <= window_end``.
 
-    Excluding the transaction being evaluated keeps a redelivered message from
-    counting itself. Served by ``ix_transactions_user_occurred``.
+    The count covers every currency; the sum only adds ``currency`` amounts, because
+    adding ZAR to USD is meaningless. Excluding the transaction being evaluated
+    keeps a redelivered message from counting itself. Served by ``ix_transactions_user_occurred``.
     """
     async with session_factory() as session:
         row = (
             await session.execute(
-                select(func.count(), func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(TransactionRecord.amount).filter(TransactionRecord.currency == currency), 0),
+                ).where(
                     TransactionRecord.user_id == user_id,
                     TransactionRecord.occurred_at >= window_start,
                     TransactionRecord.occurred_at <= window_end,
@@ -355,6 +396,7 @@ class TransactionFilters:
     user_id: UUID | None = None
     category: str | None = None
     is_fraud: bool | None = None
+    verdict: str | None = None
     occurred_from: datetime | None = None
     occurred_to: datetime | None = None
 
@@ -396,6 +438,8 @@ async def list_transactions(
         query = query.where(TransactionRecord.category == filters.category)
     if filters.is_fraud is not None:
         query = query.where(TransactionRecord.is_fraud.is_(filters.is_fraud))
+    if filters.verdict is not None:
+        query = query.where(TransactionRecord.verdict == filters.verdict)
     if filters.occurred_from is not None:
         query = query.where(TransactionRecord.occurred_at >= filters.occurred_from)
     if filters.occurred_to is not None:

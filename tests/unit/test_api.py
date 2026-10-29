@@ -24,8 +24,14 @@ def stored_transaction(**overrides):
         transaction_id=uuid4(),
         user_id=uuid4(),
         amount=Decimal("15000.00"),
+        currency="ZAR",
         category="CRYPTO",
         occurred_at=datetime(2026, 10, 29, 12, tzinfo=UTC),
+        channel="ONLINE",
+        country="ZA",
+        enrichment={"distance_from_last_tx_km": "5.2"},
+        risk_score=90,
+        verdict="REJECTED",
         is_fraud=True,
         triggered_rules=["HIGH_VALUE_THRESHOLD", "RISKY_CATEGORY_LIMIT"],
         rules_version="fraud-default@v1",
@@ -78,6 +84,8 @@ class TestTransactions:
         assert response.status_code == 200
         body = response.json()
         assert body["amount"] == "15000.00"
+        assert (body["currency"], body["risk_score"], body["verdict"]) == ("ZAR", 90, "REJECTED")
+        assert body["enrichment"] == {"distance_from_last_tx_km": "5.2"}
         assert body["triggered_rules"] == ["HIGH_VALUE_THRESHOLD", "RISKY_CATEGORY_LIMIT"]
         assert body["rules_version"] == "fraud-default@v1"
 
@@ -104,7 +112,13 @@ class TestTransactions:
         user_id = uuid4()
         response = client.get(
             "/api/v1/transactions",
-            params={"user_id": str(user_id), "category": "crypto", "is_fraud": "true", "limit": 2},
+            params={
+                "user_id": str(user_id),
+                "category": "crypto",
+                "is_fraud": "true",
+                "verdict": "REJECTED",
+                "limit": 2,
+            },
             headers=auth(),
         )
         assert response.status_code == 200
@@ -114,6 +128,7 @@ class TestTransactions:
         assert captured["filters"].user_id == user_id
         assert captured["filters"].category == "CRYPTO"
         assert captured["filters"].is_fraud is True
+        assert captured["filters"].verdict == "REJECTED"
 
         cursor = body["next_cursor"]
         client.get("/api/v1/transactions", params={"cursor": cursor}, headers=auth())
@@ -190,8 +205,8 @@ class TestRuleSets:
             json={
                 "description": "bad",
                 "definition": {
-                    "velocity_window_seconds": 60,
-                    "rules": [{"code": "BAD_RULE", "description": "x", "condition": {"log": [1]}}],
+                    **DEFAULT_RULE_SET_DEFINITION,
+                    "rules": [{"code": "BAD_RULE", "description": "x", "score": 10, "condition": {"log": [1]}}],
                 },
             },
             headers=auth(scopes=RULES_WRITE),
@@ -247,13 +262,19 @@ class TestRuleSets:
         monkeypatch.setattr("app.processing.get_velocity_aggregates", fake_velocity)
         response = client.post(
             "/api/v1/rule-sets/fraud-default/evaluate",
-            json={"user_id": str(uuid4()), "amount": "12000.00", "category": "gambling"},
+            json={"user_id": str(uuid4()), "amount": "12000.00", "currency": "ZAR", "category": "gambling"},
             headers=auth(scopes=RULES_READ),
         )
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["triggered_rules"] == ["HIGH_VALUE_THRESHOLD", "RISKY_CATEGORY_LIMIT", "VELOCITY_COUNT_EXCEEDED"]
         assert body["velocity"] == {"window_seconds": 60, "prior_count": 5, "prior_amount": "100.00"}
+        assert (body["risk_score"], body["verdict"], body["is_fraud"]) == (130, "REJECTED", True)
+
+    def test_unknown_verdict_filter_is_422(self, client, auth):
+        assert_error(
+            client.get("/api/v1/transactions", params={"verdict": "MAYBE"}, headers=auth()), 422, "validation_error"
+        )
 
 
 class TestOperationalBehaviour:

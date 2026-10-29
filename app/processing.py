@@ -7,7 +7,7 @@ the API's dry-run endpoint.
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from app.database import (
@@ -20,7 +20,7 @@ from app.database import (
 )
 from app.events import parse_transaction_event
 from app.observability import bind_correlation_id, get_logger
-from app.rules import EvaluationContext, RuleSet, evaluate_rule_set
+from app.rules import Assessment, EvaluationContext, RuleSet, evaluate_rule_set
 
 logger = get_logger(__name__)
 
@@ -31,13 +31,9 @@ class ActiveRuleSetSource(Protocol):
 
 @dataclass(frozen=True)
 class Score:
-    triggered_rules: list[str]
+    assessment: Assessment
     prior_count: int
     prior_amount: Decimal
-
-    @property
-    def is_fraud(self) -> bool:
-        return bool(self.triggered_rules)
 
 
 async def score_transaction(
@@ -46,9 +42,13 @@ async def score_transaction(
     *,
     transaction_id: UUID | None,
     user_id: UUID,
-    amount: Decimal,
-    category: str,
     occurred_at: datetime,
+    amount: Decimal,
+    currency: str,
+    category: str,
+    channel: str | None = None,
+    country: str | None = None,
+    enrichment: dict[str, Any] | None = None,
 ) -> Score:
     """Evaluate ``rule_set`` for one transaction, including its velocity context.
 
@@ -63,10 +63,20 @@ async def score_transaction(
         window_end=occurred_at,
         # A sentinel nil UUID never matches a real row.
         exclude_transaction_id=transaction_id or UUID(int=0),
+        currency=currency,
     )
-    context = EvaluationContext(amount=amount, category=category, prior_count=prior_count, prior_amount=prior_amount)
+    context = EvaluationContext(
+        amount=amount,
+        currency=currency,
+        category=category,
+        prior_count=prior_count,
+        prior_amount=prior_amount,
+        channel=channel,
+        country=country,
+        enrichment=enrichment or {},
+    )
     return Score(
-        triggered_rules=evaluate_rule_set(rule_set.definition, context),
+        assessment=evaluate_rule_set(rule_set.definition, context),
         prior_count=prior_count,
         prior_amount=prior_amount,
     )
@@ -83,6 +93,7 @@ class TransactionProcessor:
         """Raises the typed errors from :mod:`app.errors`; the caller decides retry vs DLQ."""
         event = parse_transaction_event(value)
         bind_correlation_id(event.correlation_id or str(event.transaction_id))
+        enrichment = event.enrichment.model_dump(exclude_none=True) if event.enrichment else None
 
         rule_set = await self._rule_sets.get_active()
         score = await score_transaction(
@@ -90,28 +101,41 @@ class TransactionProcessor:
             rule_set,
             transaction_id=event.transaction_id,
             user_id=event.user_id,
-            amount=event.amount,
-            category=event.category,
             occurred_at=event.occurred_at,
+            amount=event.amount,
+            currency=event.currency,
+            category=event.category,
+            channel=event.channel,
+            country=event.country,
+            enrichment=enrichment,
         )
+        assessment = score.assessment
         decision = TransactionDecision(
             transaction_id=event.transaction_id,
             user_id=event.user_id,
             amount=event.amount,
+            currency=event.currency,
             category=event.category,
             occurred_at=event.occurred_at,
-            is_fraud=score.is_fraud,
-            triggered_rules=score.triggered_rules,
+            risk_score=assessment.risk_score,
+            verdict=assessment.verdict.value,
+            is_fraud=assessment.is_fraud,
+            triggered_rules=assessment.triggered_rules,
             rules_version=rule_set.label,
             rules_hash=rule_set.content_hash,
             correlation_id=event.correlation_id,
+            channel=event.channel,
+            country=event.country,
+            # Stored as JSON: Decimal features become exact strings.
+            enrichment=event.enrichment.model_dump(mode="json", exclude_none=True) if event.enrichment else None,
         )
         result = await record_decision(self._session_factory, decision, provenance)
         logger.info(
             "transaction_processed",
             transaction_id=str(event.transaction_id),
             outcome=result.outcome.value,
-            is_fraud=result.decision.is_fraud,
+            verdict=result.decision.verdict,
+            risk_score=result.decision.risk_score,
             triggered_rules=result.decision.triggered_rules,
             rules_version=result.decision.rules_version,
             velocity_prior_count=score.prior_count,

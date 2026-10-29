@@ -7,8 +7,8 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from app.events import Category, Money
-from app.rules import RuleSet
+from app.events import Category, Channel, CountryCode, CurrencyCode, Enrichment, Money
+from app.rules import RuleSet, Verdict
 
 
 class ErrorDetail(BaseModel):
@@ -35,9 +35,18 @@ class TransactionResponse(BaseModel):
     transaction_id: UUID
     user_id: UUID
     amount: Decimal = Field(description="Exact decimal, serialised as a string.", examples=["125.50"])
+    currency: str = Field(examples=["ZAR"])
     category: str
     occurred_at: datetime
-    is_fraud: bool
+    channel: str | None = Field(default=None, examples=["ONLINE"])
+    country: str | None = Field(default=None, examples=["ZA"])
+    enrichment: dict[str, Any] | None = Field(default=None, description="Upstream features, as received.")
+    risk_score: int = Field(description="Sum of the scores of the rules that fired.", examples=[90])
+    verdict: Verdict = Field(
+        description="APPROVED / REVIEW / REJECTED from the rule set's thresholds. Scored after authorisation, "
+        "so REJECTED means 'restrict and investigate', not a declined payment."
+    )
+    is_fraud: bool = Field(description="True when the verdict is REVIEW or REJECTED.")
     triggered_rules: list[str] = Field(examples=[["HIGH_VALUE_THRESHOLD"]])
     rules_version: str = Field(
         description="Rule set and version that produced the decision.", examples=["fraud-default@v1"]
@@ -102,8 +111,12 @@ class EvaluateRequest(BaseModel):
 
     user_id: UUID
     amount: Money
+    currency: CurrencyCode = Field(examples=["ZAR"])
     category: Category
     occurred_at: AwareDatetime | None = Field(default=None, description="Defaults to now.")
+    channel: Channel | None = None
+    country: CountryCode | None = None
+    enrichment: Enrichment | None = None
     transaction_id: UUID | None = Field(default=None, description="Excluded from the velocity look-back if given.")
 
 
@@ -115,6 +128,8 @@ class VelocityContext(BaseModel):
 
 class EvaluateResponse(BaseModel):
     rule_set: str = Field(examples=["fraud-default@v1"])
+    risk_score: int
+    verdict: Verdict
     is_fraud: bool
     triggered_rules: list[str]
     velocity: VelocityContext

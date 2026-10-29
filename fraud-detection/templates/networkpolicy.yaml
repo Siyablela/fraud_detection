@@ -1,41 +1,69 @@
-{{- if .Values.networkPolicy.enabled}}
-# Default-deny ingress to the API pod, then allow only:
-# - The kong gateway (application traffic) and
-# - Prometheus (metric scraping on the app port).
-# This keeps unauthenticated /metric endpoint reachanble only by the scraper,
-# not by arbitrary in-cluster workloads, and prevents direct bypass of the gateway.
+{{- if .Values.networkPolicy.enabled }}
+# API: reachable only from the gateway (application traffic) and Prometheus
+# (/metrics). Nothing in the cluster can bypass Kong or read /metrics directly.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: fraud-api
-  labels:
-    app: fraud-api
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "fraud-api") | nindent 4 }}
 spec:
   podSelector:
-    matchLabels:
-      app: fraud-api
-    policyTypes:
-      - Ingress
-    ingress:
-    # Application traffic from kong gateway
+    matchLabels: { app: fraud-api }
+  policyTypes: [Ingress]
+  ingress:
     - from:
         - podSelector:
-            matchLabels:
-              {{- toYaml .Values.networkPolicy.gatewayPodLabelsn| nindent 14}}
+            matchLabels: {{- toYaml .Values.networkPolicy.gatewayPodLabels | nindent 14 }}
       ports:
-        - protocol: TCP
-          port: 8000
-    # Metric scraping from Prometheus.
+        - { protocol: TCP, port: 8000 }
     - from:
         - namespaceSelector:
-          matchLabels:
-            {{- toYaml .Values.networkPolicy.prometheus.namespaceLabels | nindent 14}}
+            matchLabels: {{- toYaml .Values.networkPolicy.prometheus.namespaceLabels | nindent 14 }}
           podSelector:
-            matchLabels:
-            {{- toYaml .Values.networkPolicy.prometheus.podLabels | nindent 14}}
+            matchLabels: {{- toYaml .Values.networkPolicy.prometheus.podLabels | nindent 14 }}
       ports:
-        - protocol: TCP
-          port: 8000
-{{- end}}
-
-
+        - { protocol: TCP, port: 8000 }
+---
+# Worker: serves nothing but metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-worker
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "fraud-worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: fraud-worker }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {{- toYaml .Values.networkPolicy.prometheus.namespaceLabels | nindent 14 }}
+          podSelector:
+            matchLabels: {{- toYaml .Values.networkPolicy.prometheus.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9100 }
+{{- if .Values.inClusterDependencies.enabled }}
+{{- range $dependency := list (dict "name" "postgres" "port" 5432) (dict "name" "redis" "port" 6379) (dict "name" "kafka" "port" 9092) }}
+---
+# {{ $dependency.name }}: only this release's application pods (and Kafka's own topic job) may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $dependency.name }}
+  labels: {{- include "fraud-detection.labels" (dict "root" $ "component" $dependency.name) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: {{ $dependency.name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [fraud-api, fraud-worker, fraud-batch-summary, fraud-migrate, kafka-topics]
+      ports:
+        - { protocol: TCP, port: {{ $dependency.port }} }
+{{- end }}
+{{- end }}
+{{- end }}

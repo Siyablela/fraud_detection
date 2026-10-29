@@ -53,7 +53,14 @@ def fake_database(monkeypatch):
 
 
 def test_processor_scores_with_event_time_window_and_records_traceability(fake_database):
-    event = make_event(amount="1500.00", category="crypto", occurred_at="2026-10-29T12:00:00Z", correlation_id="c-9")
+    event = make_event(
+        amount="1500.00",
+        category="crypto",
+        occurred_at="2026-10-29T12:00:00Z",
+        correlation_id="c-9",
+        channel="online",
+        enrichment={"distance_from_last_tx_km": "12.5"},
+    )
     result, correlation_id = process(encode_event(event))
 
     window = fake_database["velocity"]
@@ -63,11 +70,14 @@ def test_processor_scores_with_event_time_window_and_records_traceability(fake_d
 
     decision = result.decision
     assert decision.triggered_rules == ["VELOCITY_COUNT_EXCEEDED", "VELOCITY_AMOUNT"]
-    assert decision.is_fraud is True
+    assert (decision.risk_score, decision.verdict, decision.is_fraud) == (90, "REJECTED", True)
+    assert window["currency"] == "ZAR"
     assert decision.rules_version == "fraud-default@v3"
     assert decision.category == "CRYPTO"
     assert decision.correlation_id == "c-9"
     assert correlation_id == "c-9"
+    assert decision.channel == "ONLINE"
+    assert decision.enrichment == {"distance_from_last_tx_km": "12.5"}
 
 
 def test_processor_uses_transaction_id_as_correlation_fallback(fake_database):
@@ -109,3 +119,25 @@ def test_healthcheck_cli_exit_codes(tmp_path):
     os.environ["WORKER_HEARTBEAT_PATH"] = str(tmp_path / "missing")
     assert healthcheck_main(["healthcheck", "worker"]) == 1
     assert healthcheck_main(["healthcheck", "unknown"]) == 2
+
+
+def test_batch_once_mode_runs_summary_and_reports_failure(monkeypatch):
+    from app import batch_worker
+
+    calls = []
+
+    async def fake_summary(settings):
+        calls.append(settings)
+        if len(calls) == 2:
+            raise ConnectionError("db down")
+        return {"total": 0, "fraud": 0, "by_category": {}}
+
+    monkeypatch.setattr(batch_worker, "run_summary", fake_summary)
+    assert asyncio.run(batch_worker.main(["--once"])) == 0
+    assert asyncio.run(batch_worker.main(["--once"])) == 1
+
+
+def test_batch_resident_mode_exits_cleanly_when_disabled():
+    from app import batch_worker
+
+    assert asyncio.run(batch_worker.main([])) == 0

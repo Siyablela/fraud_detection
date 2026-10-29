@@ -27,31 +27,40 @@ depends_on: str | Sequence[str] | None = None
 # A frozen copy: migrations must not import application code, which keeps changing.
 DEFAULT_RULE_SET = {
     "velocity_window_seconds": 60,
+    "review_threshold": 30,
+    "reject_threshold": 75,
     "rules": [
         {
             "code": "HIGH_VALUE_THRESHOLD",
-            "description": "A single transaction of 10,000.00 or more.",
+            "description": "A single transaction of R10,000.00 or more.",
+            "score": 40,
             "condition": {">=": [{"var": "amount"}, 10000]},
         },
         {
             "code": "RISKY_CATEGORY_LIMIT",
-            "description": "More than 5,000.00 in a high-risk category (GAMBLING, CRYPTO).",
+            "description": "More than R5,000.00 in a high-risk category (GAMBLING, CRYPTO).",
+            "score": 50,
             "condition": {
-                "and": [
-                    {"in": [{"var": "category"}, ["GAMBLING", "CRYPTO"]]},
-                    {">": [{"var": "amount"}, 5000]},
-                ]
+                "and": [{"in": [{"var": "category"}, ["GAMBLING", "CRYPTO"]]}, {">": [{"var": "amount"}, 5000]}]
             },
         },
         {
             "code": "VELOCITY_COUNT_EXCEEDED",
             "description": "More than 5 transactions by the same user within the velocity window.",
+            "score": 40,
             "condition": {">": [{"+": [{"var": "velocity.prior_count"}, 1]}, 5]},
         },
         {
             "code": "VELOCITY_AMOUNT",
-            "description": "More than 50,000.00 spent by the same user within the velocity window.",
+            "description": "More than R50,000.00 spent by the same user within the velocity window.",
+            "score": 50,
             "condition": {">": [{"+": [{"var": "velocity.prior_amount"}, {"var": "amount"}]}, 50000]},
+        },
+        {
+            "code": "FOREIGN_CURRENCY",
+            "description": "Not in ZAR: the amount thresholds above do not apply, so send it for review.",
+            "score": 30,
+            "condition": {"!=": [{"var": "currency"}, "ZAR"]},
         },
     ],
 }
@@ -68,8 +77,11 @@ def _decision_columns() -> list[sa.Column]:
     return [
         sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("amount", sa.Numeric(18, 2), nullable=False),
+        sa.Column("currency", sa.String(3), nullable=False),
         sa.Column("category", sa.String(64), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("risk_score", sa.Integer(), nullable=False),
+        sa.Column("verdict", sa.String(16), nullable=False),
         sa.Column("is_fraud", sa.Boolean(), nullable=False),
         sa.Column("triggered_rules", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("rules_version", sa.String(128), nullable=False),
@@ -83,10 +95,17 @@ def upgrade() -> None:
         "transactions",
         sa.Column("transaction_id", sa.Uuid(), primary_key=True),
         *_decision_columns(),
+        sa.Column("channel", sa.String(32), nullable=True),
+        sa.Column("country", sa.String(2), nullable=True),
+        sa.Column("enrichment", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=_UTC_NOW),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=_UTC_NOW),
         sa.CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+        sa.CheckConstraint("risk_score >= 0", name="ck_transactions_risk_score_non_negative"),
+        sa.CheckConstraint("verdict IN ('APPROVED', 'REVIEW', 'REJECTED')", name="ck_transactions_verdict"),
+        sa.CheckConstraint("is_fraud = (verdict <> 'APPROVED')", name="ck_transactions_is_fraud_matches_verdict"),
     )
+    op.create_index("ix_transactions_verdict_occurred", "transactions", ["verdict", "occurred_at", "transaction_id"])
     op.create_index("ix_transactions_user_occurred", "transactions", ["user_id", "occurred_at", "transaction_id"])
     op.create_index("ix_transactions_category_occurred", "transactions", ["category", "occurred_at", "transaction_id"])
     op.create_index("ix_transactions_occurred", "transactions", ["occurred_at", "transaction_id"])
@@ -141,7 +160,7 @@ def upgrade() -> None:
                 "version": 1,
                 "definition": DEFAULT_RULE_SET,
                 "content_hash": _content_hash(DEFAULT_RULE_SET),
-                "description": "Initial rule set: high value, risky category, velocity count and amount.",
+                "description": "Initial rules: high value, risky category, velocity count/amount, foreign currency.",
                 "created_by": f"migration:{revision}",
             }
         ],

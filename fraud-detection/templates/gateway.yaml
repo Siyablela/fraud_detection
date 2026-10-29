@@ -1,18 +1,30 @@
-# --- KONG ---
+# Kong API gateway in DB-less mode: the single ingress point for the API. It adds
+# a coarse per-IP rate limit in front of the API's own per-caller limit.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kong
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 4 }}
+  annotations:
+    checksum/config: {{ .Values.kongConfig | sha256sum }}
 spec:
+  {{- if not .Values.resilience.autoscaling.enabled }}
   replicas: {{ .Values.kong.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: kong
   template:
     metadata:
-      labels:
-        app: kong
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.kongConfig | sha256sum }}
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000   # "kong" in the official image
+        seccompProfile: { type: RuntimeDefault }
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
@@ -31,6 +43,10 @@ spec:
       containers:
         - name: kong
           image: {{ .Values.kong.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
           ports:
             - containerPort: 8000
               name: proxy
@@ -52,7 +68,9 @@ spec:
             - name: KONG_ADMIN_ERROR_LOG
               value: /dev/stderr
             - name: KONG_ADMIN_LISTEN
-              value: 127.0.0.1:8001
+              value: "off"
+            - name: KONG_PREFIX
+              value: /tmp/kong
           readinessProbe:
             httpGet:
               path: /status
@@ -69,19 +87,23 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
+          resources: {{- toYaml .Values.kong.resources | nindent 12 }}
           volumeMounts:
             - name: kong-volume
               mountPath: /kong/kong.yml.tpl
               subPath: kong.yml.tpl
+            - { name: tmp, mountPath: /tmp }
       volumes:
         - name: kong-volume
           configMap:
             name: fraud-configs
+        - { name: tmp, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: kong
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 4 }}
 spec:
   type: {{ .Values.kong.service.type }}
   ports:
@@ -128,85 +150,3 @@ spec:
     {{- toYaml .Values.kong.ingress.tls | nindent 4 }}
   {{- end }}
 {{- end }}
-
-# --- KEYCLOAK ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: keycloak
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: keycloak
-  template:
-    metadata:
-      labels:
-        app: keycloak
-    spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
-      containers:
-        - name: keycloak
-          image: {{ .Values.keycloak.image }}
-          args: ["start-dev"]
-          env:
-            - name: KC_BOOTSTRAP_ADMIN_USERNAME
-              value: {{ .Values.security.keycloakAdminUsername | quote }}
-            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-              value: {{ .Values.security.keycloakAdminPassword | quote }}
-          ports:
-            - containerPort: 8080
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: keycloak
-spec:
-  ports:
-    - port: 8081
-      targetPort: 8080
-  selector:
-    app: keycloak
-
-# --- KAFKA UI ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kafka-ui
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: kafka-ui
-  template:
-    metadata:
-      labels:
-        app: kafka-ui
-    spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
-      containers:
-        - name: kafka-ui
-          image: {{ .Values.kafkaUi.image }}
-          env:
-            - name: DYNAMIC_CONFIG_ENABLED
-              value: "true"
-            - name: KAFKA_CLUSTERS_0_NAME
-              value: "Local-Fraud-Cluster"
-            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
-              value: "kafka:9092"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kafka-ui
-spec:
-  ports:
-    - port: 8080
-  selector:
-    app: kafka-ui

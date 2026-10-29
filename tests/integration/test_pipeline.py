@@ -186,7 +186,7 @@ async def test_events_are_scored_stored_dead_lettered_and_served(pipeline_settin
             )
     assert response.status_code == 200
     body = response.json()
-    assert body["is_fraud"] is True
+    assert (body["is_fraud"], body["verdict"], body["risk_score"]) == (True, "REJECTED", 90)
     assert body["triggered_rules"] == ["HIGH_VALUE_THRESHOLD", "RISKY_CATEGORY_LIMIT"]
     assert body["amount"] == "15000.00" and body["category"] == "CRYPTO"
     assert len(page.json()["data"]) == 4 and page.json()["next_cursor"]
@@ -236,7 +236,7 @@ async def test_api_rule_publish_updates_shared_cache(integration_env, session_fa
             )
             dry_run = await client.post(
                 "/api/v1/rule-sets/fraud-default/evaluate",
-                json={"user_id": str(uuid4()), "amount": "8000.00", "category": "GROCERIES"},
+                json={"user_id": str(uuid4()), "amount": "8000.00", "currency": "ZAR", "category": "GROCERIES"},
                 headers={"Authorization": f"Bearer {make_token(scopes='fraud:rules:read')}"},
             )
             ready = await client.get("/ready")

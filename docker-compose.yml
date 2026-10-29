@@ -129,7 +129,7 @@ services:
       retries: 30
       start_period: 30s
     volumes:
-      - ./infra/keycloak/fraud-realm.json:/opt/keycloak/data/import/fraud-realm.json:ro
+      - ./fraud-detection/files/fraud-realm.json:/opt/keycloak/data/import/fraud-realm.json:ro
 
   migrate:
     <<: *app

@@ -1,198 +1,324 @@
-# --- POSTGRESQL ---
-{{- if .Values.persistence.postgres.enabled }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-spec:
-  accessModes:
-    - {{ .Values.persistence.postgres.accessMode }}
-  resources:
-    requests:
-      storage: {{ .Values.persistence.postgres.size }}
-  {{- if .Values.persistence.postgres.storageClassName }}
-  storageClassName: {{ .Values.persistence.postgres.storageClassName | quote }}
-  {{- end }}
-{{- end }}
-
----
+{{- /*
+In-cluster dependencies for development and test clusters: single-replica
+PostgreSQL, Redis, Kafka (KRaft) and Keycloak. Production should set
+inClusterDependencies.enabled=false and point config/secrets at managed,
+replicated services; nothing in the application assumes these run in-cluster.
+*/ -}}
+{{- if .Values.inClusterDependencies.enabled }}
+{{- $deps := .Values.inClusterDependencies }}
+{{- $secret := .Values.secrets.existingSecretName }}
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "postgres") | nindent 4 }}
 spec:
+  serviceName: postgres
   replicas: 1
   selector:
-    matchLabels:
-      app: postgres
+    matchLabels: { app: postgres }
   template:
     metadata:
-      labels:
-        app: postgres
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "postgres") | nindent 8 }}
     spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70   # "postgres" in the Alpine image
+        fsGroup: 70
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
-          image: {{ .Values.postgres.image }}
+          image: {{ $deps.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           env:
-            - name: POSTGRES_DB
-              value: "fraud_detection"
-            - name: POSTGRES_USER
-              value: "fraud_user"
+            - { name: POSTGRES_DB, value: {{ $deps.postgres.database | quote }} }
+            - { name: POSTGRES_USER, value: {{ $deps.postgres.user | quote }} }
             - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.existingSecretName }}
-                  key: postgres-password
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: postgres-password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports:
-            - containerPort: 5432
+            - { name: postgres, containerPort: 5432 }
           readinessProbe:
-            tcpSocket:
-              port: 5432
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
+            exec: { command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""] }
+            periodSeconds: 5
           livenessProbe:
-            tcpSocket:
-              port: 5432
-            initialDelaySeconds: 20
+            exec: { command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""] }
             periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 6
+          resources: {{- toYaml $deps.postgres.resources | nindent 12 }}
           volumeMounts:
-            - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
       volumes:
-        - name: postgres-storage
-          {{- if .Values.persistence.postgres.enabled }}
-          persistentVolumeClaim:
-            claimName: postgres-data
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
-
+        - { name: run, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $deps.postgres.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ $deps.postgres.storage }} } }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "postgres") | nindent 4 }}
 spec:
+  selector: { app: postgres }
   ports:
-    - port: 5432
-  selector:
-    app: postgres
-
-# --- KAFKA ---
-{{- if .Values.persistence.kafka.enabled }}
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: kafka-data
-spec:
-  accessModes:
-    - {{ .Values.persistence.kafka.accessMode }}
-  resources:
-    requests:
-      storage: {{ .Values.persistence.kafka.size }}
-  {{- if .Values.persistence.kafka.storageClassName }}
-  storageClassName: {{ .Values.persistence.kafka.storageClassName | quote }}
-  {{- end }}
-{{- end }}
-
+    - { name: postgres, port: 5432, targetPort: postgres }
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-  name: kafka
+  name: redis
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "redis") | nindent 4 }}
 spec:
+  serviceName: redis
   replicas: 1
   selector:
-    matchLabels:
-      app: kafka
+    matchLabels: { app: redis }
   template:
     metadata:
-      labels:
-        app: kafka
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "redis") | nindent 8 }}
     spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999   # "redis" in the official image
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: {{ $deps.redis.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          command: ["sh", "-c", "exec redis-server --requirepass \"$REDIS_PASSWORD\" --appendonly yes --dir /data"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: redis-password } }
+            - name: REDISCLI_AUTH
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: redis-password } }
+          ports:
+            - { name: redis, containerPort: 6379 }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 20
+          resources: {{- toYaml $deps.redis.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $deps.redis.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ $deps.redis.storage }} } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  selector: { app: redis }
+  ports:
+    - { name: redis, port: 6379, targetPort: redis }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kafka") | nindent 4 }}
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels: { app: kafka }
+  template:
+    metadata:
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kafka") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000   # "appuser" in apache/kafka
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: kafka
-          image: {{ .Values.kafka.image }}
+          image: {{ $deps.kafka.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
           env:
-            - name: KAFKA_NODE_ID
-              value: "1"
-            - name: KAFKA_PROCESS_ROLES
-              value: "broker,controller"
-            - name: KAFKA_LISTENERS
-              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
-            - name: KAFKA_ADVERTISED_LISTENERS
-              value: "PLAINTEXT://kafka:9092"
-            - name: KAFKA_CONTROLLER_LISTENER_NAMES
-              value: "CONTROLLER"
-            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-              value: "1@kafka:9093"
-            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
-              value: {{ .Values.kafka.durability.offsetsTopicReplicationFactor | quote }}
-            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
-              value: {{ .Values.kafka.durability.transactionStateLogReplicationFactor | quote }}
-            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
-              value: {{ .Values.kafka.durability.transactionStateLogMinIsr | quote }}
-            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
-              value: {{ .Values.kafka.durability.defaultReplicationFactor | quote }}
-            - name: KAFKA_MIN_INSYNC_REPLICAS
-              value: {{ .Values.kafka.durability.minInSyncReplicas | quote }}
-            - name: KAFKA_LOG_DIRS
-              value: "/var/lib/kafka/data"
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://:9092,CONTROLLER://:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data/logs" }
           ports:
-            - containerPort: 9092
-            - containerPort: 9093
+            - { name: client, containerPort: 9092 }
+            - { name: controller, containerPort: 9093 }
           readinessProbe:
-            tcpSocket:
-              port: 9092
-            initialDelaySeconds: 20
+            exec:
+              command: ["sh", "-c", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null"]
+            initialDelaySeconds: 15
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 6
+            timeoutSeconds: 10
           livenessProbe:
-            tcpSocket:
-              port: 9092
+            tcpSocket: { port: client }
             initialDelaySeconds: 30
             periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 6
+          resources: {{- toYaml $deps.kafka.resources | nindent 12 }}
           volumeMounts:
-            - name: kafka-storage
-              mountPath: /var/lib/kafka/data
-      volumes:
-        - name: kafka-storage
-          {{- if .Values.persistence.kafka.enabled }}
-          persistentVolumeClaim:
-            claimName: kafka-data
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
-
+            - { name: data, mountPath: /var/lib/kafka/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $deps.kafka.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ $deps.kafka.storage }} } }
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: kafka
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kafka") | nindent 4 }}
 spec:
+  selector: { app: kafka }
   ports:
-    - name: client
-      port: 9092
-    - name: controller
-      port: 9093
+    - { name: client, port: 9092, targetPort: client }
+---
+# Topics are created explicitly (auto-creation is off) with the partition count the
+# worker's scaling assumes; re-running is a no-op.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kafka-topics") | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kafka-topics") | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: create-topics
+          image: {{ $deps.kafka.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          command:
+            - sh
+            - -ec
+            - |
+              for spec in "{{ .Values.config.kafkaTopicName }}:{{ $deps.kafka.partitions }}" "{{ .Values.config.kafkaTopicName }}.dlq:1"; do
+                /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+                  --topic "${spec%%:*}" --partitions "${spec##*:}" --replication-factor 1
+              done
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "keycloak") | nindent 4 }}
+data:
+  fraud-realm.json: |
+{{ .Files.Get "files/fraud-realm.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "keycloak") | nindent 4 }}
+spec:
+  replicas: 1
   selector:
-    app: kafka
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "keycloak") | nindent 8 }}
+      annotations:
+        checksum/realm: {{ .Files.Get "files/fraud-realm.json" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: keycloak
+          image: {{ $deps.keycloak.image }}
+          args: ["start-dev", "--import-realm"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: "admin" }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: keycloak-admin-password } }
+            - { name: KC_HOSTNAME, value: {{ $deps.keycloak.hostname | quote }} }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - name: FRAUD_ANALYST_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: fraud-analyst-client-secret } }
+            - name: FRAUD_RULES_ADMIN_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: fraud-rules-admin-client-secret } }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources: {{- toYaml $deps.keycloak.resources | nindent 12 }}
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "keycloak") | nindent 4 }}
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}

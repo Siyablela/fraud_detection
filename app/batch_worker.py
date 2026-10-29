@@ -2,6 +2,7 @@
 
 import asyncio
 import signal
+import sys
 from datetime import UTC, datetime, timedelta
 
 from app.database import database_session_factory, ping_database, summarize_transactions
@@ -36,12 +37,21 @@ async def run_summary(settings: Settings) -> dict:
     return summary
 
 
-async def main() -> None:
+async def main(argv: list[str]) -> int:
+    """``--once``: run the summary now and exit (for a Kubernetes CronJob).
+    Otherwise stay resident and run daily at ``BATCH_RUN_HOUR:BATCH_RUN_MINUTE`` UTC."""
     settings = get_settings()
     configure_logging(SERVICE_NAME, settings.observability_log_level, settings.logs_redact_fields)
+    if "--once" in argv:
+        try:
+            await run_summary(settings)
+        except Exception:
+            logger.exception("batch_summary_failed")
+            return 1
+        return 0
     if not settings.batch_job_enabled:
         logger.info("batch_worker_disabled")
-        return
+        return 0
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -64,7 +74,8 @@ async def main() -> None:
             # visible in logs and in the fraud_database_up gauge.
             logger.exception("batch_summary_failed")
     logger.info("batch_worker_stopped")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main(sys.argv[1:])))

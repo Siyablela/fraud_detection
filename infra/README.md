@@ -1,73 +1,87 @@
-﻿# Infrastructure runbook
+﻿# Kubernetes runbook
 
-This directory documents the deployment and operational model for the Fraud Detection stack. The application runtime is defined by the Python code in [app/](../app), while the infrastructure layer is managed through the Helm chart in [fraud-detection/](../fraud-detection).
+Deploying with the Helm chart in [fraud-detection/](../fraud-detection).
 
-## Current scope
+## Values files
 
-- Local parity checks with Docker Compose and Helm-based development overlays.
-- Kubernetes deployment using the chart under [fraud-detection/](../fraud-detection).
-- Environment-specific values files for development and production.
-- Operational guidance for secrets, storage, and rollout validation.
+| File | For |
+|---|---|
+| [values.yaml](../fraud-detection/values.yaml) | Defaults: a dev/test cluster with in-cluster PostgreSQL, Redis, Kafka and Keycloak |
+| [values-dev.yaml](../fraud-detection/values-dev.yaml) | Local cluster (Rancher Desktop, kind) with a locally built image |
+| [values-prod.yaml](../fraud-detection/values-prod.yaml) | Production: managed data stores, SASL_SSL Kafka, corporate IdP, autoscaling, TLS ingress |
 
-## Chart locations
+The in-cluster dependencies are single replicas for development. Production sets
+`inClusterDependencies.enabled: false` and points the Secret's URLs at managed,
+replicated services.
 
-- Helm chart: [fraud-detection/](../fraud-detection)
-- Values file: [fraud-detection/values.yaml](../fraud-detection/values.yaml)
-- Dev overlay: [fraud-detection/values-dev.yaml](../fraud-detection/values-dev.yaml)
-- Prod overlay: [fraud-detection/values-prod.yaml](../fraud-detection/values-prod.yaml)
+## Secret
 
-## Local deployment
+Create the Secret named by `secrets.existingSecretName` (default `fraud-secrets`)
+before installing, from your secret store (External Secrets, Vault, sealed secrets):
 
-Build the image and install or upgrade the chart in a local cluster:
+| Key | When |
+|---|---|
+| `database-url` | always - e.g. `postgresql://fraud:...@postgres:5432/fraud_detection` |
+| `redis-url` | always - e.g. `redis://:...@redis:6379/0` |
+| `kafka-oauth-client-secret` | `config.kafkaSecurityProtocol` is `SASL_*` |
+| `postgres-password`, `redis-password`, `keycloak-admin-password`, `fraud-analyst-client-secret`, `fraud-rules-admin-client-secret` | `inClusterDependencies.enabled` |
+
+Local example only:
 
 ```bash
-helm upgrade --install fraud-system ./fraud-detection \
-  -f ./fraud-detection/values.yaml \
-  -f ./fraud-detection/values-dev.yaml \
-  --namespace fraud-detection \
-  --create-namespace
+kubectl create namespace fraud-detection
+kubectl -n fraud-detection create secret generic fraud-secrets \
+  --from-literal=postgres-password=change-me --from-literal=redis-password=change-me \
+  --from-literal=database-url='postgresql://fraud:change-me@postgres:5432/fraud_detection' \
+  --from-literal=redis-url='redis://:change-me@redis:6379/0' \
+  --from-literal=keycloak-admin-password=change-me \
+  --from-literal=fraud-analyst-client-secret=change-me \
+  --from-literal=fraud-rules-admin-client-secret=change-me
 ```
 
-Check rollout state:
+## Install or upgrade
+
+```bash
+docker build -t fraud-detection:dev .            # local clusters only
+helm upgrade --install fraud-system ./fraud-detection \
+  -n fraud-detection -f fraud-detection/values.yaml -f fraud-detection/values-dev.yaml --wait
+```
+
+Order of operations:
+
+1. **Migrations**: the `fraud-migrate` Job (`alembic upgrade head`) is a Helm hook.
+   It runs *before* the new pods on every upgrade (post-install on the very first
+   install with in-cluster dependencies). If it fails, the release fails and the
+   old pods keep running.
+2. **Topics**: with in-cluster Kafka, the `kafka-topics` hook creates `transactions`
+   (`inClusterDependencies.kafka.partitions`) and `transactions.dlq`. With external
+   Kafka, the platform team creates them; the worker never auto-creates topics.
+3. **Rollout**: `maxUnavailable: 0` for the API and worker. API pods take traffic only
+   once `/ready` passes; a new worker joins the consumer group before an old one leaves.
+
+## Rollback
+
+`helm rollback fraud-system <revision>` restores the previous pods. Migrations
+are forward-only in production practice: write each one so that the previous release
+still works against the new schema (add columns before using them, drop them a
+release later), so that rolling back the code never needs a schema downgrade.
+
+## Scaling
+
+- API: stateless; scale by CPU (HPA in values-prod).
+- Worker: one consumer per partition at most. The chart refuses
+  `resilience.autoscaling.worker.maxReplicas` above the partition count. To go wider,
+  add partitions first. That changes which partition a key maps to, so drain the
+  topic first if strict per-user ordering matters during the change.
+
+## Verifying a deployment
 
 ```bash
 kubectl -n fraud-detection get pods
-kubectl -n fraud-detection get svc
-kubectl -n fraud-detection rollout status deployment/fraud-api
-kubectl -n fraud-detection rollout status deployment/fraud-worker
+kubectl -n fraud-detection port-forward svc/kong 8000:80
+curl -s localhost:8000/api/v1/transactions -H "Authorization: Bearer $TOKEN"
+kubectl -n fraud-detection logs deploy/fraud-worker | grep transaction_processed | head
 ```
 
-## Production deployment
-
-Use the production overlay for cluster deployment:
-
-```bash
-helm upgrade --install fraud-system ./fraud-detection \
-  -f ./fraud-detection/values.yaml \
-  -f ./fraud-detection/values-prod.yaml \
-  --namespace fraud-detection \
-  --create-namespace
-```
-
-Before promoting the release, make sure that:
-
-1. Redis and PostgreSQL connection values are supplied securely through a secret manager or injected secret.
-2. Image tags are pinned to a stable build ID instead of a floating tag.
-3. database and messaging connectivity are validated from the cluster environment.
-4. Only the intended public endpoint is exposed, while internal services remain restricted.
-
-## Operational model
-
-The deployed stack includes the main application workloads plus the supporting platform components:
-
-- API service and worker deployment
-- Batch worker when enabled
-- PostgreSQL, Redis, Kafka, and related support services
-- Keycloak and UI components used for local auth and inspection
-- Optional resilience and monitoring resources defined in the chart
-
-## Relationship to other docs
-
-- [README.md](../README.md) — project overview and local development usage
-- [app/README.md](../app/README.md) — runtime module map
-- [fraud-detection/README.md](../fraud-detection/README.md) — chart-specific deployment summary
+CI renders the chart for every values file and validates it with kubeconform
+(see [.github/workflows/ci.yml](../.github/workflows/ci.yml)).

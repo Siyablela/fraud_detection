@@ -61,6 +61,8 @@ class Smoke:
         category: str = "GROCERIES",
         occurred_at: datetime | None = None,
         transaction_id: str | None = None,
+        currency: str = "ZAR",
+        **optional,
     ) -> str:
         event = {
             "schema_version": 1,
@@ -68,9 +70,11 @@ class Smoke:
             "transaction_id": transaction_id or str(uuid4()),
             "user_id": user_id,
             "amount": amount,
+            "currency": currency,
             "category": category,
             "occurred_at": (occurred_at or datetime.now(UTC)).isoformat(),
             "correlation_id": f"smoke-{uuid4()}",
+            **optional,
         }
         self.producer.produce(self.topic, key=user_id.encode(), value=json.dumps(event).encode())
         return event["transaction_id"]
@@ -112,11 +116,26 @@ class Smoke:
         self.check("Analyst cannot publish rules -> 403", forbidden.status_code == 403)
 
         now = datetime.now(UTC)
+        enriched = {
+            "channel": "ONLINE",
+            "country": "ZA",
+            "enrichment": {"distance_from_last_tx_km": "5.2", "is_new_merchant_for_user": True},
+        }
         cases = {
-            "ordinary purchase": (self.publish(str(uuid4()), "125.50"), []),
-            "high value at 10,000.00": (self.publish(str(uuid4()), "10000.00"), ["HIGH_VALUE_THRESHOLD"]),
-            "crypto at 5,000.01": (self.publish(str(uuid4()), "5000.01", "crypto"), ["RISKY_CATEGORY_LIMIT"]),
-            "gambling at 5,000.00 (boundary)": (self.publish(str(uuid4()), "5000.00", "GAMBLING"), []),
+            "ordinary purchase": (self.publish(str(uuid4()), "125.50", **enriched), [], "APPROVED"),
+            "high value at R10,000.00": (self.publish(str(uuid4()), "10000.00"), ["HIGH_VALUE_THRESHOLD"], "REVIEW"),
+            "crypto at R5,000.01": (
+                self.publish(str(uuid4()), "5000.01", "crypto"),
+                ["RISKY_CATEGORY_LIMIT"],
+                "REVIEW",
+            ),
+            "gambling at R5,000.00 (boundary)": (self.publish(str(uuid4()), "5000.00", "GAMBLING"), [], "APPROVED"),
+            "high-value crypto": (
+                self.publish(str(uuid4()), "14500.00", "CRYPTO", **enriched),
+                ["HIGH_VALUE_THRESHOLD", "RISKY_CATEGORY_LIMIT"],
+                "REJECTED",
+            ),
+            "USD purchase": (self.publish(str(uuid4()), "20.00", currency="USD"), ["FOREIGN_CURRENCY"], "REVIEW"),
         }
         velocity_user = str(uuid4())
         velocity_ids = [self.publish(velocity_user, "10.00", occurred_at=now + timedelta(seconds=i)) for i in range(6)]
@@ -143,19 +162,24 @@ class Smoke:
         )
         self.flush()
 
-        for name, (transaction_id, expected) in cases.items():
+        for name, (transaction_id, expected_rules, expected_verdict) in cases.items():
             decision = self.decision(transaction_id)
-            self.check(f"Rule: {name}", decision["triggered_rules"] == expected, f"got {decision['triggered_rules']}")
-        velocity = [self.decision(i)["triggered_rules"] for i in velocity_ids]
+            got = (decision["triggered_rules"], decision["verdict"])
+            self.check(f"Rule: {name} -> {expected_verdict}", got == (expected_rules, expected_verdict), f"got {got}")
+        velocity = [(d["triggered_rules"], d["verdict"]) for d in map(self.decision, velocity_ids)]
         self.check(
-            "Rule: 6th transaction in 60s trips VELOCITY_COUNT_EXCEEDED",
-            velocity == [[]] * 5 + [["VELOCITY_COUNT_EXCEEDED"]],
+            "Rule: 6th transaction in 60s trips VELOCITY_COUNT_EXCEEDED -> REVIEW",
+            velocity == [([], "APPROVED")] * 5 + [(["VELOCITY_COUNT_EXCEEDED"], "REVIEW")],
             str(velocity),
         )
-        amounts = [self.decision(i)["triggered_rules"] for i in amount_ids]
+        amounts = [(d["triggered_rules"], d["verdict"], d["risk_score"]) for d in map(self.decision, amount_ids)]
         self.check(
-            "Rule: 55,000 in 60s trips VELOCITY_AMOUNT",
-            amounts == [["HIGH_VALUE_THRESHOLD"], ["HIGH_VALUE_THRESHOLD", "VELOCITY_AMOUNT"]],
+            "Rule: R55,000 in 60s trips VELOCITY_AMOUNT -> REJECTED",
+            amounts
+            == [
+                (["HIGH_VALUE_THRESHOLD"], "REVIEW", 40),
+                (["HIGH_VALUE_THRESHOLD", "VELOCITY_AMOUNT"], "REJECTED", 90),
+            ],
             str(amounts),
         )
 
@@ -232,7 +256,7 @@ class Smoke:
         dry_run = self.http.post(
             f"{base}/evaluate",
             headers=self.reader,
-            json={"user_id": str(uuid4()), "amount": "8000.00", "category": "GROCERIES"},
+            json={"user_id": str(uuid4()), "amount": "8000.00", "currency": "ZAR", "category": "GROCERIES"},
         ).json()
         self.check(
             "Dry-run uses the new version", dry_run.get("triggered_rules") == ["HIGH_VALUE_THRESHOLD"], str(dry_run)

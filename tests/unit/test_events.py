@@ -63,3 +63,42 @@ def test_unknown_schema_version_is_rejected_explicitly(version):
 def test_malformed_payloads(raw):
     with pytest.raises(InvalidEventError):
         parse_transaction_event(raw)
+
+
+def test_currency_is_required_and_normalised():
+    with pytest.raises(InvalidEventError) as error:
+        parse_transaction_event(encode_event(make_event(currency=None)))
+    assert any(detail["field"] == "currency" for detail in error.value.details)
+    assert parse_transaction_event(encode_event(make_event(currency="usd"))).currency == "USD"
+
+
+def test_optional_channel_country_and_enrichment():
+    event = parse_transaction_event(
+        encode_event(
+            make_event(
+                channel="online",
+                country="za",
+                enrichment={"distance_from_last_tx_km": "5.2", "is_new_merchant_for_user": True, "future": 1},
+            )
+        )
+    )
+    assert (event.channel, event.country) == ("ONLINE", "ZA")
+    assert event.enrichment.distance_from_last_tx_km == Decimal("5.2")
+    assert event.enrichment.is_new_merchant_for_user is True
+    assert event.enrichment.minutes_since_last_tx is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    [
+        ({"currency": "RANDS"}, "currency"),
+        ({"country": "ZAF"}, "country"),
+        ({"channel": "ATM 1"}, "channel"),
+        ({"enrichment": {"minutes_since_last_tx": -1}}, "enrichment.minutes_since_last_tx"),
+        ({"enrichment": "not-an-object"}, "enrichment"),
+    ],
+)
+def test_invalid_optional_fields(overrides, field):
+    with pytest.raises(InvalidEventError) as error:
+        parse_transaction_event(encode_event(make_event(**overrides)))
+    assert any(detail["field"] == field for detail in error.value.details)

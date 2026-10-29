@@ -46,7 +46,7 @@ from app.observability import (
 )
 from app.processing import score_transaction
 from app.rate_limit import RateLimiter
-from app.rules import content_hash, parse_rule_set_definition
+from app.rules import Verdict, content_hash, parse_rule_set_definition
 from app.schemas import (
     CreateRuleSetVersionRequest,
     ErrorResponse,
@@ -268,6 +268,7 @@ def v1_routes():
         user_id: UUID | None = None,
         category: Annotated[Category | None, Query(description="Case-insensitive category")] = None,
         is_fraud: bool | None = None,
+        verdict: Verdict | None = None,
         occurred_from: Annotated[AwareDatetime | None, Query(description="Inclusive lower bound (ISO-8601)")] = None,
         occurred_to: Annotated[AwareDatetime | None, Query(description="Exclusive upper bound (ISO-8601)")] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -279,7 +280,12 @@ def v1_routes():
         except ValueError:
             raise HTTPException(status_code=400, detail="cursor is malformed or from a different query.") from None
         filters = TransactionFilters(
-            user_id=user_id, category=category, is_fraud=is_fraud, occurred_from=occurred_from, occurred_to=occurred_to
+            user_id=user_id,
+            category=category,
+            is_fraud=is_fraud,
+            verdict=verdict.value if verdict else None,
+            occurred_from=occurred_from,
+            occurred_to=occurred_to,
         )
         rows, next_cursor = await list_transactions(request.app.state.session_factory, filters, limit, page_cursor)
         return {"data": rows, "limit": limit, "next_cursor": next_cursor.encode() if next_cursor else None}
@@ -388,14 +394,21 @@ def v1_routes():
             rule_set,
             transaction_id=body.transaction_id,
             user_id=body.user_id,
-            amount=body.amount,
-            category=body.category,
             occurred_at=body.occurred_at or datetime.now(UTC),
+            amount=body.amount,
+            currency=body.currency,
+            category=body.category,
+            channel=body.channel,
+            country=body.country,
+            enrichment=body.enrichment.model_dump(exclude_none=True) if body.enrichment else None,
         )
+        assessment = score.assessment
         return EvaluateResponse(
             rule_set=rule_set.label,
-            is_fraud=score.is_fraud,
-            triggered_rules=score.triggered_rules,
+            risk_score=assessment.risk_score,
+            verdict=assessment.verdict,
+            is_fraud=assessment.is_fraud,
+            triggered_rules=assessment.triggered_rules,
             velocity=VelocityContext(
                 window_seconds=rule_set.definition.velocity_window_seconds,
                 prior_count=score.prior_count,
