@@ -8,6 +8,7 @@ import os
 import socket
 import time
 
+import docker
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -24,6 +25,36 @@ pytestmark = pytest.mark.integration
 
 TOPIC = "transactions-it"
 DLQ_TOPIC = f"{TOPIC}.dlq"
+
+
+def _docker_problem() -> str | None:
+    """Why Docker cannot be used, or None when it answers."""
+    try:
+        client = docker.from_env(timeout=10)
+        client.ping()
+        client.close()
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip integration tests with one clear reason when Docker is not running.
+
+    CI sets REQUIRE_DOCKER=1, so there a missing Docker fails the run instead of
+    silently skipping the tests that matter most.
+    """
+    integration = [item for item in items if item.get_closest_marker("integration")]
+    if not integration:
+        return
+    problem = _docker_problem()
+    if problem is None:
+        return
+    if os.getenv("REQUIRE_DOCKER") == "1":
+        raise pytest.UsageError(f"Integration tests need Docker, which is unavailable: {problem}")
+    skip = pytest.mark.skip(reason=f"Docker is not running ({problem}); start it to run integration tests")
+    for item in integration:
+        item.add_marker(skip)
 
 
 @pytest.fixture(scope="session")

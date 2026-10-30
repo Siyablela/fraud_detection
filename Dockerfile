@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # One image runs every process; the command selects which:
 #   API (default)   uvicorn app.main:app
 #   worker          python -m app.worker
