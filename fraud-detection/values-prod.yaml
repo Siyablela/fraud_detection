@@ -1,18 +1,13 @@
 global:
   environment: production
-
 image:
   repository: ghcr.io/siyablela/fraud_detection
   tag: main
   pullPolicy: IfNotPresent
-
-# Production uses managed, replicated PostgreSQL, Redis, Kafka and the corporate
-# identity provider; database-url / redis-url in the Secret point at them.
 inClusterDependencies:
   enabled: false
   kafka:
     partitions: 12
-
 config:
   kafkaBootstrapServers: kafka-bootstrap.kafka.svc:9093
   kafkaSecurityProtocol: SASL_SSL
@@ -21,13 +16,16 @@ config:
   jwtIssuer: https://auth.example.com/realms/fraud
   jwtJwksUrl: https://auth.example.com/realms/fraud/protocol/openid-connect/certs
   logLevel: INFO
-
 api:
   replicaCount: 2
-
+  image:
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: b0026c91d558219838f11d9f2d429798c56a95d4
 worker:
   replicaCount: 2
-
+  image:
+    repository: ghcr.io/siyablela/fraud_detection
+    tag: b0026c91d558219838f11d9f2d429798c56a95d4
 resilience:
   autoscaling:
     enabled: true
@@ -58,13 +56,14 @@ kong:
     className: nginx
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: 1m
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: '30'
+      nginx.ingress.kubernetes.io/proxy-send-timeout: '30'
     hosts:
-      - host: fraud-api.example.com
-        paths:
-          - path: /
-            pathType: Prefix
+    - host: fraud-api.example.com
+      paths:
+      - path: /
+        pathType: Prefix
     tls:
-      - hosts: [fraud-api.example.com]
-        secretName: fraud-api-tls
+    - hosts:
+      - fraud-api.example.com
+      secretName: fraud-api-tls
