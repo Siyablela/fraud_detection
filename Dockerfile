@@ -12,14 +12,18 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 COPY requirements.lock /tmp/requirements.lock
-RUN /opt/venv/bin/pip install --require-hashes --only-binary=:all: -r /tmp/requirements.lock
+RUN /opt/venv/bin/pip install --require-hashes --only-binary=:all: -r /tmp/requirements.lock \
+    && /opt/venv/bin/pip uninstall --yes pip
 
-# --- runtime: no compilers, no pip cache, non-root ------------------------------
+# --- runtime: no compilers, no pip, non-root ------------------------------------
 FROM ${PYTHON_IMAGE} AS runtime
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN groupadd --system --gid 10001 fraud \
+# Nothing installs packages at runtime, and pip's vendored libraries (urllib3,
+# msgpack, setuptools) carry CVEs that would fail the image scan.
+RUN python -m pip uninstall --yes --root-user-action=ignore pip \
+    && groupadd --system --gid 10001 fraud \
     && useradd --system --uid 10001 --gid fraud --no-create-home --shell /usr/sbin/nologin fraud
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
