@@ -46,14 +46,12 @@ resilience:
       maxReplicas: 6
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
-
 certManager:
   enabled: true
   issuerKind: ClusterIssuer
   issuerName: letsencrypt-prod
   ingressHost: fraud-api.example.com
   secretName: fraud-api-tls
-
 kong:
   ingress:
     enabled: true
