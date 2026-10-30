@@ -1,91 +1,94 @@
 # Security model
 
-This documents describes the authentication, authorization, and transport-security model for Fraud Detection service. It is referenced from the root [README](README.md).
+How the fraud-detection service authenticates callers, authorises them, protects
+data and handles secrets. Referenced from the [README](README.md).
 
-## Authentication (JWT / OIDC)
+## Authentication
 
-The API is pure **resource server**. It does not issue tokens; it validates Keycloak-issued JWTs on every protected request.
+The API is an OAuth 2.0 resource server: it never issues tokens, it verifies
+Keycloak-issued JWTs on every protected request ([app/security.py](app/security.py)).
 
-Validation (see [app/security.py](app/security.py)) enforces:
+- **Signature** with keys from the issuer's JWKS endpoint (`JWT_JWKS_URL`) or a pinned
+  PEM key (`JWT_PUBLIC_KEY_PATH`). Keys are cached; a token naming an unknown key id
+  (rotation) triggers a refresh **at most once per
+  `JWT_JWKS_MIN_REFRESH_INTERVAL_SECONDS`** (60 s), so forged `kid`s cannot turn every
+  request into a call to the identity provider.
+- **Algorithms**: only asymmetric ones (`RS*`, `PS*`, `ES*`) are accepted, and the
+  service refuses to start with anything else configured. This blocks `none` and the
+  HS256-with-the-public-key confusion attack (tested).
+- **Claims**: `exp`, `iat`, `sub`, `iss`, `aud` are required; issuer and audience must
+  match `JWT_ISSUER` / `JWT_AUDIENCE`; 30 s clock leeway.
+- Verification runs off the event loop, so a slow JWKS fetch cannot stall other requests.
 
-- **Signature** via issuer's JWKS endpoint (`JWT_JWKS_URL`) or a pinned PEM public key (`JWT_PUBLIC_KEY_PATH`). Resolved signing keys are cached and
-  refreshed every `JWT_JWKS_REFRESH_INTERVAL_SECONDS` so rotated keys are picked
-  up without restart.
-- **Algorithm allow-list** from `JWT_ALGORITHMS` (default `RS256`). Symmetric
-  algorithms and `none` are never accepted, preventing algorithm-confusion
-  downgrade attacks.
-- **Required claims:** `exp`, `iss`, `aud`, `sub` must all be present and valid
-  (`options={require: [...]}`), with `issuer` and `audience` checked against
-  `JWT_ISSUER` / `JWT_AUDIENCE`.
-
-Failures map to precise responses:
-
-| Failure | HTTP | `WWW-Authenticate` |
+| Failure | Status | `WWW-Authenticate` |
 |---|---|---|
-| Missing / non-Bearer token | 401 | `Bearer realm="fraud-detection"` |
-| Expired token | 401 | `Bearer error="invalid_token"` |
-| Invalid signature / claims | 401 | `Bearer error="invalid_token"` |
-| Missing subject | 401 | `Bearer error="invalid_token"` |
-| Insufficient scope | 403 | `Bearer error="insufficient_scope"` |
+| Missing or non-Bearer token | 401 | `Bearer realm="fraud-detection"` |
+| Expired, bad signature or claims, unknown key | 401 | `Bearer realm="fraud-detection", error="invalid_token"` |
+| Missing the route's scope | 403 | `Bearer error="insufficient_scope", scope="..."` |
 
-## Authorization (scope model)
+## Authorisation
 
-Access is scope-gated per route. The protected query endpoints require scope
-in `JWT_REQUIRED_SCOPE_FOR_TRANSACTION_READ` (default **`fraud:transaction:read`**).
-Both the OAuth2 `scope` (space-delimited string) and `scp` (list) claim shapes are
-accepted.
+Callers are back-office services and fraud analysts, not the cardholders whose
+transactions are stored, so access is granted per capability (scope):
 
-| Endpoint | Required scope |
+| Scope | Grants |
 |---|---|
-| `GET /api/v1/transactions/{transaction_id}` | `fraud:transaction:read` |
-| `GET /api/v1/categories/{category_name}` | `fraud:transaction:read` |
-| `GET /health`, `/live`, `/ready`, `/metric` | none (unauthenticated) |
+| `fraud:transactions:read` | Read decisions |
+| `fraud:rules:read` | Read rule-set versions; dry-run evaluation |
+| `fraud:rules:write` | Publish rule-set versions (recorded with the caller's `sub` as `created_by`) |
 
-### Keycloak clients
+Scope names are configurable (`SCOPE_*`), and each defaults to a distinct value, so
+read access can never imply write access. The local realm defines `fraud-analyst` (read scopes) and
+`fraud-rules-admin` (all three), both client-credentials only (no passwords, no
+browser flows).
 
-- **Human-facing clients** (web UI, CLI, dashboard): public client with **PKCE**,
-  client id `fraud-cli`.
-- **Backend microservices**: confidential client using the **client-credentials**
-  grant, client id `fraud-service-cli`.
+## Abuse protection
 
-- The local-only token helper endpoints (`KAFKA_SECURITY_PROTOCOL`)
-  (`SASL_SSL` for authenticated, encrypted broker traffic).
-- Authentication uses **SASL/AUTHBEARER** with Keycloak client-credentials
-  token callback (see [app/kafka_security.py](app/kafka_security.py)).
-- The producer runs with `acks=all` and idempotent enabled.
+- Per-caller rate limit (`RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS`) keyed
+  on the **verified** `sub`, stored in Redis so it holds across replicas and cannot be
+  dodged with self-made tokens. If Redis is down it fails open (counted in
+  `fraud_rate_limiter_errors_total`, alerted) rather than taking the API down.
+- In Kubernetes, Kong adds a per-IP limit and a 64 KB request-size limit in front.
+- Rule sets are untrusted input to an interpreter: operators are allow-listed, depth
+  and size are bounded, variables are checked, and the set is dry-run before storing.
+- Events above 64 KB are rejected before parsing.
 
-### Recommended broker ACLs (least privilege)
+## Data protection
 
-| Principal | Topic | Operations |
-|---|---|---|
-| fraud worker (consumer) | `transactions_topic` | `Read`, `Describe` |
-| fraud worker (producer) | `transactions_topic.dlq` | `Write`, `Describe` |
-| consumer group `fraud-worker-group` | - | `Read` |
+- No PII in logs: user ids and amounts are not logged; sensitive keys
+  (`LOGS_REDACT_FIELDS`) are masked at any depth. Metrics label routes by template,
+  never raw paths.
+- Errors return a stable code, a message and a correlation id, never stack traces or
+  exception text (tested).
+- The DLQ keeps raw payloads for replay; restrict its ACLs to operators.
+- All queries are built with SQLAlchemy expressions and bound parameters; there is
+  no string-built SQL.
 
-> For production, enable TLS at the broker and configure a CA truststore so the
-> SASL/AUTHBEARER credential is exchanged over an encrypted channel.
+## Secrets
 
-## CORS and rate limiting
+- No credential in source and no default for any secret: missing configuration stops
+  the process at startup, naming the variable but not printing values.
+- Values come from the environment or a mounted file (`<NAME>_FILE`).
+- Kubernetes: everything comes from one existing Secret (see [infra/README.md](infra/README.md)), populated by your secret store.
+- `.env.example` holds clearly labelled local-only values; `.env` is git-ignored.
 
-- **CORS** is deny-by-default. Cross-origin browser access is only granted to the
-  exact origins listed in `CORS_ALLOWED_ORIGINS` (comma-separated); an empty list
-  permits no cross-origin requests.
-- **Rate limiting** applied a per-instance **token-bucket** budget - a sustained
-  rate of `RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS` with a burst
-  capacity of `RATE_LIMIT_BURST` (defaults to the request budget) - and returns
-  `429` with a `Retry-After` header when exceeded. It is keyed by the
-  authenticated principal (JWT `sub` falling back to `azp` / `client_id`), not by
-  IP.
+## Transport
 
-## Secret management
+Local Compose binds every port to 127.0.0.1 and uses plaintext inside the Docker
+network. Elsewhere: TLS at the ingress (cert-manager), `KAFKA_SECURITY_PROTOCOL=SSL`
+or `SASL_SSL` with OAuth client credentials (`KAFKA_OAUTH_*`) and `KAFKA_SSL_*`
+certificates, and TLS URLs for Redis (`rediss://`) and PostgreSQL (`?ssl=require`; asyncpg
+does not read libpq's `sslmode`).
 
-- No secrets are committed; `.gitignore` excludes `.env`, `.env.*`
-- Configuration supports file-backed `*_FILE` convention for
-  Kubernetes/Vault-injected secret mounts.
-- In Kubernetes, credentials are provided from an external `Secret` via
-  `secretKeyRef`; the Helm values reference paths rather than literals.
+## Runtime hardening
+
+Containers run as UID 10001 with a read-only root filesystem, no Linux
+capabilities, no privilege escalation and the RuntimeDefault seccomp profile; service
+account tokens are not mounted. Network policies admit traffic to the API only from
+the gateway and Prometheus, and to the data stores only from the application.
+Dependencies are pinned with hashes (`requirements.lock`); CI runs `pip-audit` and a
+Trivy image scan and fails on fixable HIGH/CRITICAL findings.
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities privately to the maintainer rather than opening
-a public issue. Please provide reproduction steps and affected endpoints/versions.
+Please report privately to the maintainers rather than opening a public issue.

@@ -1,120 +1,71 @@
-from __future__ import annotations
+"""Per-caller API rate limiting backed by Redis.
+
+Keyed on the *verified* token subject, so a caller cannot dodge the limit by
+minting tokens with fresh ``sub`` claims, and counters live in Redis so the limit
+holds across API replicas and never grows process memory.
+
+Fixed-window counters: one ``INCR`` + ``EXPIRE`` round trip per request. A
+caller can briefly reach 2x the limit across a window boundary; that is accepted
+for an abuse guard (it is not a billing meter).
+
+If Redis is unavailable the check fails open: rejecting every read because the
+limiter's own store is down would turn a cache outage into an API outage. Each
+fail-open is counted in ``fraud_rate_limiter_errors_total`` for alerting.
+"""
+
+import hashlib
 import math
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Callable
 
-import jwt
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+import redis.asyncio as aioredis
+from fastapi import HTTPException, status
 
-# Paths that must never be rate limited (health/observability probes).
-DEFAULT_EXEMPT_PATHS = frozenset(("/live", "/ready", "/health", "/metrics"))
+from app.observability import get_logger, record_rate_limiter_error
 
-
-def _unverified_principal(token: str) -> str | None:
-    """Read a stable principal id from a bearer token without verifying it.
-    Used only for rate-limit bucketing, never for authentication.
-    Prefers the 'sub' claim and falls back to the authorized-party/client
-    identifiers used by client-credentials tokens.
-    """
-    try:
-        claims = jwt.decode(token, options={"verify_signature": False})
-    except jwt.PyJWTError:
-        return None
-
-    for claim in ("sub", "azp", "client_id"):
-        value = claims.get(claim)
-        if value:
-            return str(value)
-    return None
+logger = get_logger(__name__)
 
 
-#: Shared bucket for all requests that carry no resolvable principal.
-ANONYMOUS_KEY = "anon"
-
-
-def principal_key(request: Request) -> str:
-    """Resolve a rate-limit bucket key from the caller's identity (never the IP).
-    Returns "sub:<principal>" for a bearer-token request, or a single shared
-    'anon' bucket for tokenless requests. The "sub:" namespace prevents an
-    authenticated principal from ever colliding with the anonymous bucket.
-    """
-    authorization = request.headers.get("authorization", "")
-    if authorization.lower().startswith("bearer "):
-        principal = _unverified_principal(authorization[7:].strip())
-        if principal:
-            return f"sub:{principal}"
-    return ANONYMOUS_KEY
-
-
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Token-bucket rate limiter keyed by caller identity.
-
-    Args:
-        app: The wrapped ASGI application.
-        max_requests: Sustained request budget per "window_seconds" (sets the continuous refill rate).
-        window_seconds: Window the sustained rate is expressed over.
-        burst: Bucket capacity - the largest instantaneous burst allowed. Defaults to "max_requests" when not set ("None" or "0").
-        exempt_paths: Request paths that bypass rate limiting entirely.
-        key_func: Resolves the bucket key from a request (defaults to principal keying, with a shared anonymous bucket for tokenless calls).
-        clock: Injectable monotonic clock (seconds) for deterministic testing.
-    """
-
+class RateLimiter:
     def __init__(
         self,
-        app,
+        redis_client: aioredis.Redis,
         max_requests: int,
         window_seconds: int,
-        burst: int | None = None,
-        exempt_paths: Iterable[str] = DEFAULT_EXEMPT_PATHS,
-        key_func: Callable[[Request], str] = principal_key,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        super().__init__(app)
-        self._refill_rate = max_requests / window_seconds  # tokens per second
-        self._capacity = float(burst) if burst and burst > 0 else float(max_requests)
-        self._exempt_paths = frozenset(exempt_paths)
-        self._key_func = key_func
+        clock: Callable[[], float] = time.time,
+    ):
+        self._redis = redis_client
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
         self._clock = clock
 
-        # key -> (available_tokens, last_refill_time)
-        self._buckets: dict[str, tuple[float, float]] = {}
+    def _bucket_key(self, subject: str, window: int) -> str:
+        # Hash the subject: keys stay fixed-length and never carry raw identifiers.
+        digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+        return f"fraud:ratelimit:{digest}:{window}"
 
-    def _consume(self, key: str) -> tuple[bool, int]:
-        """Refill the bucket for "key" and try to take one token.
-        Returns "(allowed, retry_after_seconds)".
-        "retry_after_seconds" is the whole-second wait until a token is available when the request is denied.
+    async def enforce(self, subject: str) -> None:
+        """Count one request for ``subject``.
+
+        Raises:
+            HTTPException: 429 with ``Retry-After`` when the window budget is spent.
         """
         now = self._clock()
-        tokens, last_refill = self._buckets.get(key, (self._capacity, now))
-
-        tokens = min(self._capacity, tokens + (now - last_refill) * self._refill_rate)
-
-        if tokens >= 1.0:
-            self._buckets[key] = (tokens - 1.0, now)
-            return True, 0
-
-        self._buckets[key] = (tokens, now)
-        deficit = 1.0 - tokens
-        retry_after = (
-            math.ceil(deficit / self._refill_rate) if self._refill_rate > 0 else 1
-        )
-        return False, max(1, retry_after)
-
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        """Enforce the per-principal token budget, exempting probe endpoints."""
-        if request.url.path in self._exempt_paths:
-            return await call_next(request)
-
-        allowed, retry_after = self._consume(self._key_func(request))
-        if not allowed:
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded. Try again later."},
+        window = int(now // self._window_seconds)
+        key = self._bucket_key(subject, window)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.incr(key)
+                pipe.expire(key, self._window_seconds + 1)
+                count, _ = await pipe.execute()
+        except Exception as exc:
+            record_rate_limiter_error()
+            logger.warning("rate_limiter_unavailable_failing_open", error_type=type(exc).__name__)
+            return
+        if count > self._max_requests:
+            retry_after = max(1, math.ceil((window + 1) * self._window_seconds - now))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded. Retry after the indicated number of seconds.",
                 headers={"Retry-After": str(retry_after)},
             )
-
-        return await call_next(request)

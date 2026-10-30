@@ -1,300 +1,124 @@
+"""Structured logging, correlation IDs, Prometheus metrics, and optional tracing."""
+
 import logging
-import os
+import re
 import time
+from collections.abc import Iterable
 from contextvars import ContextVar
+from typing import Any
 from uuid import uuid4
 
+import structlog
 from fastapi import FastAPI, Request
-from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    Counter,
-    Gauge,
-    Histogram,
-    generate_latest,
-)
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-from starlette.routing import Route, Match
-import structlog
+from starlette.routing import Match, Route
 
+CORRELATION_ID_HEADER = "x-correlation-id"
+REQUEST_ID_HEADER = "x-request-id"
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
+_REDACTED = "[REDACTED]"
 
-def _resolved_route_template(request: Request) -> str:
-    """Return the matched route template for a request, never the raw path.
-
-    Prefers the route already attached to the request scope; otherwise re-matches
-    against the app's routes so the templated path (e.g. ``/x/{id}``) is recovered
-    even when the scope's ``route`` was not populated for the middleware. Falls back
-    to a single bounded ``"<unmatched>"`` bucket so no identifier-bearing raw path is
-    ever used as a metric label.
-
-    Only ``starlette.routing.Route`` instances are considered (FastAPI's ``APIRoute``
-    is one); they guarantee both ``matches`` and ``path``, so no attribute probing is
-    needed and non-path routes (mounts, hosts) are skipped.
-    """
-    scoped_route = request.scope.get("route")
-    if isinstance(scoped_route, Route):
-        return scoped_route.path
-    for route in request.app.routes:
-        if isinstance(route, Route):
-            match, _ = route.matches(request.scope)
-            if match == Match.FULL:
-                return route.path
-
-    return "<unmatched>"
-
-
-_request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
-_correlation_id_context: ContextVar[str] = ContextVar("correlation_id", default="-")
+_correlation_id_context: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
 _http_requests_total = Counter(
     "fraud_http_requests_total",
     "Total HTTP requests handled by fraud services",
     ["service", "method", "route", "status_code"],
 )
-
 _http_request_latency_seconds = Histogram(
-    "fraud_http_request_duration_seconds",
-    "HTTP request latency in seconds",
-    ["service", "method", "route"],
+    "fraud_http_request_duration_seconds", "HTTP request latency in seconds", ["service", "method", "route"]
 )
-
 _worker_messages_total = Counter(
     "fraud_worker_messages_total",
-    "Total worker messages processed",
+    "Kafka messages finished by the worker, by outcome (evaluated, duplicate, dlq)",
     ["service", "topic", "status"],
 )
-
+_worker_retries_total = Counter(
+    "fraud_worker_retries_total", "Processing attempts that failed and were retried", ["service", "failure_class"]
+)
 _worker_decisions_total = Counter(
-    "fraud_worker_decisions_total",
-    "Total worker fraud decisions",
-    ["service", "is_fraud"],
+    "fraud_worker_decisions_total", "Fraud decisions made by the worker, by verdict", ["service", "verdict"]
 )
-
+_worker_rule_triggers_total = Counter(
+    "fraud_worker_rule_triggers_total", "Times each fraud rule fired", ["service", "rule"]
+)
 _worker_message_latency_seconds = Histogram(
-    "fraud_worker_message_duration_seconds",
-    "Worker message processing time in seconds",
-    ["service", "topic"],
+    "fraud_worker_message_duration_seconds", "Worker message processing time in seconds", ["service", "topic"]
 )
-
-_database_up = Gauge(
-    "fraud_database_up",
-    "Database availability for the fraud service (1=up, 0=down)",
-    ["service"],
+_worker_partition_backlog = Gauge(
+    "fraud_worker_partition_backlog", "Messages queued in the worker per partition", ["service", "partition"]
 )
-
-_kafka_up = Gauge(
-    "fraud_kafka_up",
-    "Kafka connectivity status for the fraud service (1=up, 0=down)",
-    ["service", "component"],
+_rule_cache_lookups_total = Counter(
+    "fraud_rule_cache_lookups_total", "Active rule-set lookups by the layer that answered", ["layer"]
 )
+_rate_limiter_errors_total = Counter(
+    "fraud_rate_limiter_errors_total", "Rate-limit checks that failed open because Redis was unavailable"
+)
+_database_up = Gauge("fraud_database_up", "Database reachability (1=up, 0=down)", ["service"])
+_kafka_up = Gauge("fraud_kafka_up", "Kafka connectivity (1=up, 0=down)", ["service", "component"])
 
 
-class RequestContextFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        """Attach active request and correlation IDs to each log record.
-
-        Args:
-            record: The log record being emitted.
-
-        Returns:
-            bool: Always ``True`` so the record is processed normally.
-        """
-        record.request_id = _request_id_context.get()
-        record.correlation_id = _correlation_id_context.get()
-        return True
+# --- Correlation IDs ----------------------------------------------------------
 
 
-def get_request_id() -> str:
-    """Return the request ID currently bound to the execution context.
-
-    Returns:
-        str: The active request ID or the default placeholder.
-    """
-    return _request_id_context.get()
-
-
-def get_correlation_id() -> str:
-    """Return the active correlation ID from the current request context.
-
-    Returns:
-        str: The active correlation ID or the default placeholder.
-    """
-    return _correlation_id_context.get()
-
-
-def ensure_correlation_id() -> str:
-    """Create and bind a correlation ID when the current context does not already have one.
-
-    Returns:
-        str: The bound correlation ID for the current execution context.
-    """
-    existing = _correlation_id_context.get()
-    if existing not in (None, "-", ""):
-        return existing
-
-    correlation_id = str(uuid4())
-    _correlation_id_context.set(correlation_id)
-    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
-    return correlation_id
-
-
-def attach_correlation_id(payload: dict | None) -> dict:
-    """Attach the active correlation ID to a payload dictionary when missing.
-
-    Args:
-        payload: The dictionary payload to enrich with correlation metadata.
-
-    Returns:
-        dict: The same payload with a correlation ID added when absent.
-    """
-    if not isinstance(payload, dict):
-        return payload if payload is not None else {}
-
-    correlation_id = get_correlation_id()
-    if not correlation_id or correlation_id in (None, "-", ""):
-        correlation_id = ensure_correlation_id()
-
-    payload.setdefault("correlation_id", correlation_id)
-    return payload
-
-
-def extract_correlation_id(payload: dict | None) -> str | None:
-    """Return the correlation ID from a payload when present and non-empty.
-
-    Args:
-        payload: A dictionary payload that may contain a correlation ID.
-
-    Returns:
-        str | None: The extracted correlation ID, or ``None`` if missing.
-    """
-    if not isinstance(payload, dict):
-        return None
-
-    correlation_id = payload.get("correlation_id")
-    if correlation_id not in (None, "", "-"):
-        return str(correlation_id)
+def sanitise_correlation_id(value: object) -> str | None:
+    """Accept a caller-supplied ID only if it is short and log-safe."""
+    if isinstance(value, str) and _SAFE_ID.match(value):
+        return value
     return None
 
 
-class ServiceNameFilter(logging.Filter):
-    def __init__(self, service_name: str):
-        """Bind the current service name into log records for downstream formatting.
-
-        Args:
-            service_name: The logical service name used across emitted logs.
-        """
-        super().__init__()
-        self.service_name = service_name
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        """Ensure every log record carries the service name field.
-
-        Args:
-            record: The log record to enrich.
-
-        Returns:
-            bool: Always ``True`` so the record continues through the logger chain.
-        """
-        if not hasattr(record, "service"):
-            record.service = self.service_name
-        return True
+def get_correlation_id() -> str | None:
+    return _correlation_id_context.get()
 
 
-class MetricsAndRequestIdMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: FastAPI, service_name: str):
-        """Create HTTP middleware that emits request IDs, metrics, and correlation logs.
-
-        Args:
-            app: The FastAPI application instance to instrument.
-            service_name: The name used when labeling request metrics and logs.
-        """
-        super().__init__(app)
-        self.service_name = service_name
-
-    async def dispatch(self, request: Request, call_next):
-        """Measure the request lifecycle and attach request/correlation metadata to each response.
-
-        Args:
-            request: The incoming HTTP request.
-            call_next: The downstream request handler.
-
-        Returns:
-            Response: The response from the downstream endpoint, enriched with request IDs.
-        """
-        request_id = request.headers.get("x-request-id") or str(uuid4())
-        correlation_id = str(uuid4())
-
-        request_token = _request_id_context.set(request_id)
-        correlation_token = _correlation_id_context.set(correlation_id)
-        structlog.contextvars.bind_contextvars(
-            request_id=request_id, correlation_id=correlation_id
-        )
-        start_time = time.perf_counter()
-        status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            response.headers["x-request-id"] = request_id
-            response.headers["x-correlation-id"] = correlation_id
-            return response
-        finally:
-            elapsed = time.perf_counter() - start_time
-            # Label with the matched route **template** (e.g. /api/v1/transactions/{transaction_id}).
-            # Never fall back to the raw path. That would embed identifiers such as
-            # transaction IDs in the metric labels, wleaking them via /metric and exploding
-            # label cardinality (a memory exhaustion vector). Unmatched paths collapse to a
-            # single bounded bucket.
-            route = _resolved_route_template(request)
-
-            _http_requests_total.labels(
-                service=self.service_name,
-                method=request.method,
-                route=route,
-                status_code=str(status_code),
-            ).inc()
-            _http_request_latency_seconds.labels(
-                service=self.service_name,
-                method=request.method,
-                route=route,
-            ).observe(elapsed)
-            get_logger("fraud.http").info(
-                "http_request_completed",
-                method=request.method,
-                route=route,
-                status_code=status_code,
-                duration_ms=round(elapsed * 1000, 2),
-                request_id=request_id,
-                correlation_id=correlation_id,
-            )
-            structlog.contextvars.clear_contextvars()
-            _request_id_context.reset(request_token)
-            _correlation_id_context.reset(correlation_token)
+def bind_correlation_id(correlation_id: str | None = None) -> str:
+    """Bind ``correlation_id`` (or a new one) to the current context and its logs."""
+    resolved = sanitise_correlation_id(correlation_id) or str(uuid4())
+    _correlation_id_context.set(resolved)
+    structlog.contextvars.bind_contextvars(correlation_id=resolved)
+    return resolved
 
 
-def configure_logging(service_name: str, level: str = "INFO") -> None:
-    """Configure the root logger and structlog to emit JSON logs with request context fields.
+def clear_log_context() -> None:
+    _correlation_id_context.set(None)
+    structlog.contextvars.clear_contextvars()
 
-    Args:
-        service_name: The logical service name assigned to each log record.
-        level: The logging threshold to apply to the root logger.
 
-    Returns:
-        None: The logging configuration is applied in place.
+# --- Logging ------------------------------------------------------------------
+
+
+def _redaction_processor(sensitive_keys: Iterable[str]):
+    keys = frozenset(key.lower() for key in sensitive_keys)
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: _REDACTED if str(k).lower() in keys else redact(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [redact(item) for item in value]
+        return value
+
+    def processor(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        return redact(event_dict)
+
+    return processor
+
+
+def configure_logging(service_name: str, level: str = "INFO", redact_fields: Iterable[str] = ()) -> None:
+    """Emit one JSON object per line on stdout, for collection by the platform.
+
+    Every record carries ``service``, ``level``, ``timestamp`` and, when bound,
+    ``correlation_id``. Keys listed in ``redact_fields`` are masked at any depth.
     """
-    root_logger = logging.getLogger()
-    if getattr(root_logger, "_fraud_logging_configured", False):
-        return
-
-    log_level = getattr(logging, level.upper(), logging.INFO)
-
-    # Keep the processor list shared between structlog and standard-library logging output.
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
+        _redaction_processor(redact_fields),
     ]
-
     handler = logging.StreamHandler()
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
@@ -305,12 +129,11 @@ def configure_logging(service_name: str, level: str = "INFO") -> None:
             ],
         )
     )
-    handler.addFilter(RequestContextFilter())
-    handler.addFilter(ServiceNameFilter(service_name))
-
+    root_logger = logging.getLogger()
     root_logger.handlers = [handler]
-    root_logger.setLevel(log_level)
-    root_logger._fraud_logging_configured = True
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    # Uvicorn's access log duplicates http_request_completed without correlation IDs.
+    logging.getLogger("uvicorn.access").disabled = True
 
     structlog.configure(
         processors=[
@@ -324,157 +147,143 @@ def configure_logging(service_name: str, level: str = "INFO") -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-
     structlog.contextvars.bind_contextvars(service=service_name)
 
 
 def get_logger(name: str):
-    """Return a configured structlog logger for the given module or component name.
-
-    Args:
-        name: The logger name, usually ``__name__`` for a module.
-
-    Returns:
-        BoundLogger: A structlog logger bound to the requested component.
-    """
     return structlog.get_logger(name)
 
 
-def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
-    """Install structured request logging and metrics middleware for a FastAPI app.
+# --- HTTP instrumentation -----------------------------------------------------
 
-    Args:
-        app: The FastAPI application to instrument.
-        service_name: Logical name used in metrics and logs for the service.
 
-    Returns:
-        None: The middleware and metrics endpoint are installed on the app.
+def _resolved_route_template(request: Request) -> str:
+    """Return the matched route template (``/x/{id}``), never the raw path.
+
+    Raw paths would put identifiers into metric labels: a data leak via /metrics and
+    unbounded label cardinality. Unmatched paths share one ``<unmatched>`` bucket.
     """
-    app.add_middleware(MetricsAndRequestIdMiddleware, service_name=service_name)
+    scoped_route = request.scope.get("route")
+    if isinstance(scoped_route, Route):
+        return scoped_route.path
+    for route in request.app.routes:
+        if isinstance(route, Route):
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                return route.path
+    return "<unmatched>"
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Bind request/correlation IDs, and record a metric and a log line per request."""
+
+    def __init__(self, app: FastAPI, service_name: str):
+        super().__init__(app)
+        self.service_name = service_name
+
+    async def dispatch(self, request: Request, call_next):
+        clear_log_context()
+        request_id = sanitise_correlation_id(request.headers.get(REQUEST_ID_HEADER)) or str(uuid4())
+        correlation_id = bind_correlation_id(request.headers.get(CORRELATION_ID_HEADER))
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        start_time = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers[REQUEST_ID_HEADER] = request_id
+            response.headers[CORRELATION_ID_HEADER] = correlation_id
+            return response
+        finally:
+            elapsed = time.perf_counter() - start_time
+            route = _resolved_route_template(request)
+            _http_requests_total.labels(self.service_name, request.method, route, str(status_code)).inc()
+            _http_request_latency_seconds.labels(self.service_name, request.method, route).observe(elapsed)
+            log = get_logger("fraud.http")
+            log_method = log.warning if status_code >= 500 else log.info
+            if route not in {"/live", "/ready", "/metrics"} or status_code >= 400:
+                log_method(
+                    "http_request_completed",
+                    method=request.method,
+                    route=route,
+                    status_code=status_code,
+                    duration_ms=round(elapsed * 1000, 2),
+                )
+            clear_log_context()
+
+
+def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
+    app.add_middleware(RequestContextMiddleware, service_name=service_name)
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
-        """Expose Prometheus metrics for the running service."""
-        payload = generate_latest()
-        return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def setup_tracing(service_name: str) -> None:
-    """Enable Otel tracing when the exporter endpoint is configured for this service.
-
-    Args:
-        service_name: The logical service name used in tracing metadata.
-
-    Returns:
-        None: If a tracer endpoint is configured, the global tracer provider is set.
-    """
-    endpoint = os.getenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "",
-    ).strip()
+def setup_tracing(service_name: str, endpoint: str, app: FastAPI | None = None) -> None:
+    """Export OpenTelemetry traces over OTLP/HTTP when an endpoint is configured."""
     if not endpoint:
+        get_logger(__name__).warning("tracing_enabled_without_endpoint", service_name=service_name)
         return
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
+    if not isinstance(trace.get_tracer_provider(), TracerProvider):
+        provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+        trace.set_tracer_provider(provider)
+    if app is not None:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except Exception:
-        get_logger(__name__).warning(
-            "tracing_dependencies_missing",
-            detail="Tracing is enabled, but the required OpenTelemetry dependencies are not installed.",
-            service_name=service_name,
-        )
-        return
 
-    if isinstance(trace.get_tracer_provider(), TracerProvider):
-        return
-
-    resource = Resource.create({"service.name": service_name})
-    provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
-    trace.set_tracer_provider(provider)
-
-    # Return an instrument helper so API apps can opt-in without otel directly.
-    def _instrument_fastapi(app: FastAPI) -> None:
-        """Instrument a FastAPI app with OpenTelemetry tracing when availale."""
         FastAPIInstrumentor.instrument_app(app)
 
-    setattr(apply_tracing, "instrument_fastapi", _instrument_fastapi)
 
-
-def apply_tracing(app: FastAPI) -> None:
-    """Instrument yhe app with configured tracing helper if available.
-
-    Args:
-        app: The FastAPI application to instrument.
-
-    Returns:
-        None: The app instrumented only if the tracing helper is available.
-    """
-    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-    FastAPIInstrumentor.instrument_app(app)
+# --- Worker and dependency metrics -------------------------------------------
 
 
 def worker_message_timer(service_name: str, topic: str):
-    """Return a timer context manager for measuring worker message processing latency.
-
-    Args:
-        service_name: Name of the worker service emitting the metric.
-        topic: Kafka topic being processed.
-
-    Returns:
-        contextlib._GeneratorContextManager: A timer context manager for the latency metric.
-    """
-    return _worker_message_latency_seconds.labels(
-        service=service_name, topic=topic
-    ).time()
+    return _worker_message_latency_seconds.labels(service=service_name, topic=topic).time()
 
 
 def worker_message_outcome(service_name: str, topic: str, status: str) -> None:
-    """Record the final outcome for a processed Kafka message.
-
-    Args:
-        service_name: Name of the worker service emitting the metric.
-        topic: Kafka topic associated with the message.
-        status: Outcome status such as ``success`` or ``dlq``.
-
-    Returns:
-        None: The worker outcome counter is incremented in place.
-    """
-    _worker_messages_total.labels(
-        service=service_name, topic=topic, status=status
-    ).inc()
+    _worker_messages_total.labels(service=service_name, topic=topic, status=status).inc()
 
 
-def worker_fraud_decision(service_name: str, is_fraud: bool) -> None:
-    """Record whether the worker considered the event fraudulent.
+def worker_retry(service_name: str, failure_class: str) -> None:
+    _worker_retries_total.labels(service=service_name, failure_class=failure_class).inc()
 
-    Args:
-        service_name: Name of the worker service emitting the metric.
-        is_fraud: Whether the evaluated transaction was classified as fraud.
 
-    Returns:
-        None: The fraud decision counter is incremented in place.
-    """
-    _worker_decisions_total.labels(
-        service=service_name, is_fraud=str(is_fraud).lower()
-    ).inc()
+def worker_fraud_decision(service_name: str, verdict: str, triggered_rules: Iterable[str]) -> None:
+    _worker_decisions_total.labels(service=service_name, verdict=verdict).inc()
+    for rule in triggered_rules:
+        _worker_rule_triggers_total.labels(service=service_name, rule=rule).inc()
+
+
+def set_partition_backlog(service_name: str, partition: int, size: int) -> None:
+    _worker_partition_backlog.labels(service=service_name, partition=str(partition)).set(size)
+
+
+def remove_partition_backlog(service_name: str, partition: int) -> None:
+    try:
+        _worker_partition_backlog.remove(service_name, str(partition))
+    except KeyError:
+        pass
+
+
+def record_rule_cache_lookup(layer: str) -> None:
+    _rule_cache_lookups_total.labels(layer=layer).inc()
+
+
+def record_rate_limiter_error() -> None:
+    _rate_limiter_errors_total.inc()
 
 
 def set_database_health(service_name: str, is_healthy: bool) -> None:
-    """Publish the database health signal used in Prometheus alert rules."""
     _database_up.labels(service=service_name).set(1 if is_healthy else 0)
 
 
 def set_kafka_health(service_name: str, component: str, is_healthy: bool) -> None:
-    """Publish the Kafka health signal used in Prometheus alert rules."""
-    _kafka_up.labels(service=service_name, component=component).set(
-        1 if is_healthy else 0
-    )
+    _kafka_up.labels(service=service_name, component=component).set(1 if is_healthy else 0)

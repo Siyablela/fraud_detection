@@ -1,0 +1,99 @@
+{
+  "realm": "fraud",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 300,
+  "clientScopes": [
+    {
+      "name": "fraud:transactions:read",
+      "description": "Read fraud decisions",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "fraud:rules:read",
+      "description": "Read and dry-run rule sets",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "fraud:rules:write",
+      "description": "Publish rule-set versions",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "fraud-api-audience",
+      "description": "Adds the fraud API to the token audience",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
+      "protocolMappers": [
+        {
+          "name": "fraud-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "fraud-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "subject",
+      "description": "Adds the sub claim (the service account's id)",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": { "access.token.claim": "true", "introspection.token.claim": "true" }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "fraud-analyst",
+      "name": "Fraud analyst (read only)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${FRAUD_ANALYST_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "fullScopeAllowed": false,
+      "protocol": "openid-connect",
+      "defaultClientScopes": ["subject", "fraud-api-audience", "fraud:transactions:read", "fraud:rules:read"],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "fraud-rules-admin",
+      "name": "Fraud rules administrator",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${FRAUD_RULES_ADMIN_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "fullScopeAllowed": false,
+      "protocol": "openid-connect",
+      "defaultClientScopes": [
+        "subject",
+        "fraud-api-audience",
+        "fraud:transactions:read",
+        "fraud:rules:read",
+        "fraud:rules:write"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}

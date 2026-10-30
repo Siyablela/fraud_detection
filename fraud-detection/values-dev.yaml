@@ -1,38 +1,28 @@
 global:
   environment: dev
 
-worker:
-  replicaCount: 1
-  image:
-    repository: fraud-detection
-    tag: dev
-    pullPolicy: Never
+# Image built locally: docker build -t fraud-detection:dev .
+image:
+  repository: fraud-detection
+  tag: dev
+  pullPolicy: Never
 
-api:
-  replicaCount: 1
-  image:
-    repository: fraud-detection
-    tag: dev
-    pullPolicy: Never
+inClusterDependencies:
+  enabled: true
 
-security:
-  jwtIssuer: http://localhost:8081/realms/fraud
-  jwtAudience: fraud-api
-  jwtJwksUrl: http://localhost:8081/realms/fraud/protocol/openid-connect/certs
-  authTokenEndpointEnabled: true
-
-kafkaSecurity:
-  protocol: PLAINTEXT
+config:
+  logLevel: DEBUG
 
 kong:
   service:
     type: NodePort
     port: 80
     targetPort: 8000
-    nodePort: null
-  ingress:
-    enabled: false
 
 resilience:
+  enablePreferredAntiAffinity: false
   autoscaling:
     enabled: false
+
+alerting:
+  enabled: false

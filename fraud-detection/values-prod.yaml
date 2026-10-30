@@ -1,35 +1,34 @@
 global:
   environment: production
+
+image:
+  repository: ghcr.io/siyablela/fraud_detection
+  tag: main
+  pullPolicy: IfNotPresent
+
+# Production uses managed, replicated PostgreSQL, Redis, Kafka and the corporate
+# identity provider; database-url / redis-url in the Secret point at them.
+inClusterDependencies:
+  enabled: false
+  kafka:
+    partitions: 12
+
+config:
+  kafkaBootstrapServers: kafka-bootstrap.kafka.svc:9093
+  kafkaSecurityProtocol: SASL_SSL
+  kafkaOauthTokenUrl: https://auth.example.com/realms/fraud/protocol/openid-connect/token
+  kafkaOauthClientId: fraud-worker
+  jwtIssuer: https://auth.example.com/realms/fraud
+  jwtJwksUrl: https://auth.example.com/realms/fraud/protocol/openid-connect/certs
+  logLevel: INFO
+
 api:
   replicaCount: 2
-  image:
-    pullPolicy: IfNotPresent
-    repository: ghcr.io/siyablela/fraud_detection
-    tag: 09a82e4749765607fc1f0b64e79bcd915fe5fe18
+
 worker:
   replicaCount: 2
-  image:
-    pullPolicy: IfNotPresent
-    repository: ghcr.io/siyablela/fraud_detection
-    tag: 09a82e4749765607fc1f0b64e79bcd915fe5fe18
-batch:
-  enabled: true
-  suspend: false
-security:
-  authTokenEndpointEnabled: false
-  keycloakServiceClientId: fraud-service-cli
-  keycloakServiceClientSecret: '{{ vault:secret/data/keycloak/clients#service-client-secret
-    }}'
-  keycloakServiceTokenScope: '{{ vault:secret/data/keycloak/clients#service-token-scope
-    }}'
-kafkaSecurity:
-  protocol: PLAINTEXT
+
 resilience:
-  enablePreferredAntiAffinity: true
-  topologyKey: kubernetes.io/hostname
-  podDisruptionBudget:
-    enabled: true
-    minAvailable: 1
   autoscaling:
     enabled: true
     api:
@@ -39,7 +38,7 @@ resilience:
       targetMemoryUtilizationPercentage: 80
     worker:
       minReplicas: 2
-      maxReplicas: 3
+      maxReplicas: 12
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
     kong:
@@ -54,23 +53,18 @@ certManager:
   ingressHost: fraud-api.example.com
   secretName: fraud-api-tls
 kong:
-  service:
-    type: ClusterIP
-    port: 80
-    targetPort: 8000
-ingress:
-  enabled: true
-  className: nginx
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: 1m
-    nginx.ingress.kubernetes.io/proxy-read-timeout: '30'
-    nginx.ingress.kubernetes.io/proxy-send-timeout: '30'
-  hosts:
-  - host: fraud-api.example.com
-    paths:
-    - path: /
-      pathType: Prefix
-  tls:
-  - hosts:
-    - fraud-api.example.com
-    secretName: fraud-api-tls
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: 1m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    hosts:
+      - host: fraud-api.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts: [fraud-api.example.com]
+        secretName: fraud-api-tls

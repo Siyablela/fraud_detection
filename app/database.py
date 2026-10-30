@@ -1,62 +1,56 @@
-import asyncio
+"""PostgreSQL schema and data access.
+
+Write-path idempotency (Kafka delivers at least once):
+
+* ``transactions`` is keyed by ``transaction_id`` and the first decision wins.
+  A redelivered or re-published event never re-evaluates, because its velocity
+  context has changed since the first evaluation and the decision would drift.
+* ``transaction_history`` is an append-only processing audit. The unique
+  ``(source_topic, source_partition, source_offset)`` key makes redelivery of the
+  same Kafka message a no-op, while a re-publish (new offset) is recorded with
+  ``outcome = 'duplicate'``.
+* A re-published event whose data differs from the stored transaction raises
+  :class:`ConflictingDuplicateError` and the whole unit of work rolls back.
+"""
+
+import base64
+import binascii
+import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
-from uuid import uuid4
+from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
-    Float,
+    Index,
     Integer,
+    Numeric,
     String,
     func,
     select,
     text,
 )
-
-
-def _epoch_to_utc_datetime(value: float) -> datetime:
-    """Convert a Unix epoch timestamp to a timezone-aware UTC datetime.
-
-    Already-datetime values are returned unchanged (assume UTC is naive). None-numeric
-    Values are returned as-is so callers/tests passing other shapes are not broken.
-    """
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=datetime.timezone.utc)
-    return value
-
-
-def _datetime_to_epoch(value: datetime) -> float:
-    """Convert a stored datetime back to epoch seconds for the external contracts."""
-    if isinstance(value, datetime):
-        return value.timestamp()
-    if isinstance(value, (int, float)):
-        return float(value)
-    return value
-
-
 from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.errors import ConflictingDuplicateError, RuleSetNotFoundError, RuleSetVersionConflictError
 from app.observability import set_database_health
-from app.settings import get_settings
-from app.time_utils import normalize_utc_datetime, utc_now
+from app.rules import RuleSet, RuleSetDefinition
+from app.settings import Settings
 
-
-def _as_async_sqlalchemy_url(url: str) -> str:
-    """Convert a PostgreSQL URL to the asyncpg-backed SQLAlchemy dialect when needed."""
-    if url.startswith("postgresql+asyncpg://"):
-        return url
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
+SessionFactory = async_sessionmaker[AsyncSession]
+_UTC_NOW = text("timezone('UTC', now())")
 
 
 class Base(DeclarativeBase):
@@ -66,26 +60,41 @@ class Base(DeclarativeBase):
 class TransactionRecord(Base):
     __tablename__ = "transactions"
 
-    transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
-    category: Mapped[str] = mapped_column(String, nullable=False)
-    timestamp: Mapped[float] = mapped_column(Float, nullable=False)
+    transaction_id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(sa.Uuid, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    # none_as_null: store an absent value as SQL NULL, not the JSON literal null.
+    enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    rules_version: Mapped[str] = mapped_column(String, nullable=False)
-    rules_hash: Mapped[str] = mapped_column(String, nullable=False)
-    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text("timezone('UTC', now())"),
-    )
-    updated_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text("timezone('UTC', now())"),
-        onupdate=sa.text("timezone('UTC', now())"),
+    rules_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    rules_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+        CheckConstraint("risk_score >= 0", name="ck_transactions_risk_score_non_negative"),
+        CheckConstraint("verdict IN ('APPROVED', 'REVIEW', 'REJECTED')", name="ck_transactions_verdict"),
+        CheckConstraint("is_fraud = (verdict <> 'APPROVED')", name="ck_transactions_is_fraud_matches_verdict"),
+        Index("ix_transactions_verdict_occurred", "verdict", "occurred_at", "transaction_id"),
+        Index("ix_transactions_user_occurred", "user_id", "occurred_at", "transaction_id"),
+        Index("ix_transactions_category_occurred", "category", "occurred_at", "transaction_id"),
+        Index("ix_transactions_occurred", "occurred_at", "transaction_id"),
+        Index(
+            "ix_transactions_fraud_occurred",
+            "occurred_at",
+            "transaction_id",
+            postgresql_where=text("is_fraud"),
+        ),
     )
 
 
@@ -93,422 +102,487 @@ class TransactionHistoryRecord(Base):
     __tablename__ = "transaction_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    transaction_id: Mapped[str] = mapped_column(String, nullable=False)
-    user_id: Mapped[str] = mapped_column(String, nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Float, nullable=False)
-    category: Mapped[str] = mapped_column(String, nullable=False)
-    timestamp: Mapped[float] = mapped_column(Float, nullable=False)
+    transaction_id: Mapped[UUID] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("transactions.transaction_id", ondelete="CASCADE", name="fk_transaction_history_transaction"),
+        nullable=False,
+    )
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(sa.Uuid, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     is_fraud: Mapped[bool] = mapped_column(Boolean, nullable=False)
     triggered_rules: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    rules_version: Mapped[str] = mapped_column(String, nullable=False)
-    rules_hash: Mapped[str] = mapped_column(String, nullable=False)
-    source_topic: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rules_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    rules_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_partition: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
     source_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    processed_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text("timezone('UTC', now())"),
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
+
+    __table_args__ = (
+        CheckConstraint("outcome IN ('evaluated', 'duplicate')", name="ck_transaction_history_outcome"),
+        sa.UniqueConstraint("source_topic", "source_partition", "source_offset", name="uq_transaction_history_source"),
+        Index("ix_transaction_history_transaction_processed_at", "transaction_id", "processed_at"),
     )
 
 
-def create_pool() -> tuple[Any, async_sessionmaker[AsyncSession]]:
-    """Create the application's asynchronous database engine and session factory.
+class RuleSetVersionRecord(Base):
+    __tablename__ = "rule_set_versions"
 
-    Configures a SQLAlchemy asynchronous engine using the configured database
-    URL and connection pool settings. The engine maintains a pool of reusable
-    database connections, performs connection health checks before each use,
-    and supports temporary overflow connections during periods of increased
-    demand.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    rule_set_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
 
-    An ``async_sessionmaker`` is also created to provide ``AsyncSession``
-    instances for interacting with the database.
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_rule_set_versions_version_positive"),
+        sa.UniqueConstraint("rule_set_key", "version", name="uq_rule_set_versions_key_version"),
+    )
 
-    Returns:
-        tuple[Any, async_sessionmaker[AsyncSession]]:
-            A tuple containing the configured SQLAlchemy async engine and an
-            ``async_sessionmaker`` configured with ``expire_on_commit=False``.
-    """
 
-    settings = get_settings()
-    engine = create_async_engine(
-        _as_async_sqlalchemy_url(settings.database_url),
-        pool_size=settings.db_pool_min_size,
-        max_overflow=max(settings.db_pool_max_size - settings.db_pool_min_size, 0),
+# --- Engine lifecycle ---------------------------------------------------------
+
+
+def _async_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def create_engine(settings: Settings) -> AsyncEngine:
+    """Create the shared connection pool. One per process, reused for its lifetime."""
+    return create_async_engine(
+        _async_url(settings.database_url),
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_pool_max_overflow,
+        pool_timeout=settings.db_pool_timeout_seconds,
         pool_pre_ping=True,
+        connect_args={
+            "server_settings": {"statement_timeout": str(settings.db_statement_timeout_ms)},
+            "timeout": settings.db_pool_timeout_seconds,
+        },
     )
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    return engine, session_factory
+
+
+def create_session_factory(engine: AsyncEngine) -> SessionFactory:
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
 @asynccontextmanager
-async def database_pool():
-    """Provide a managed asynchronous database session factory.
-
-    Creates a SQLAlchemy async engine and session factory, yields the
-    session factory to the caller, and ensures that the engine and all
-    pooled database connections are cleanly disposed of when the context
-    exits.
-
-    This context manager is intended to be used during application
-    startup and shutdown to manage the lifecycle of the database
-    connection pool.
-
-    Yields:
-        async_sessionmaker[AsyncSession]: A session factory for creating
-            ``AsyncSession`` instances.
-
-    """
-    engine, session_factory = create_pool()
+async def database_session_factory(settings: Settings) -> AsyncIterator[SessionFactory]:
+    """Own an engine for the duration of the block and dispose it afterwards."""
+    engine = create_engine(settings)
     try:
-        yield session_factory
+        yield create_session_factory(engine)
     finally:
         await engine.dispose()
 
 
-async def _retry_async(
-    operation,
-    *,
-    retries: int = 3,
-    delay_seconds: float = 0.5,
-    retry_exceptions: tuple[type[BaseException], ...] = (
-        asyncio.TimeoutError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    ),
-):
-    """Retry only a narrow, explicitly transient set of network and timeout failures."""
-    last_error: Exception | None = None
-    for attempt in range(1, retries + 1):
-        try:
-            return await operation()
-        except Exception as exc:  # pragma: no cover - exercised via runtime behavior
-            message = str(exc).lower()
-            is_sqlalchemy_transient = isinstance(exc, sa.exc.OperationalError) and any(
-                marker in message
-                for marker in (
-                    "timeout",
-                    "could not connect",
-                    "connection refused",
-                    "connection reset",
-                )
-            )
-            if not isinstance(exc, retry_exceptions) and not is_sqlalchemy_transient:
-                raise
-            last_error = exc
-            if attempt == retries:
-                raise
-            await asyncio.sleep(delay_seconds * attempt)
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("Retry helper did not return a result.")
-
-
-async def ping_database(session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """Verify database connectivity.
-
-    Executes a lightweight query against the database to confirm that a
-    connection can be established and SQL statements can be executed
-    successfully.
-
-    Args:
-        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
-            an ``AsyncSession``.
-
-    Raises:
-        sqlalchemy.exc.SQLAlchemyError: If a connection cannot be established
-            or the query execution fails.
-    """
-
-    async def _execute_ping() -> None:
+async def ping_database(session_factory: SessionFactory, service_name: str) -> None:
+    """Run ``SELECT 1`` and publish the result as the ``fraud_database_up`` gauge."""
+    try:
         async with session_factory() as session:
             await session.execute(text("SELECT 1"))
-
-    try:
-        await _retry_async(_execute_ping, retries=3, delay_seconds=0.5)
-        set_database_health("fraud-service", True)
     except Exception:
-        set_database_health("fraud-service", False)
+        set_database_health(service_name, False)
         raise
+    set_database_health(service_name, True)
 
 
-async def save_transaction(
-    session_factory: async_sessionmaker[AsyncSession],
-    result: dict[str, Any],
-    source_metadata: dict[str, Any] | None = None,
-    correlation_id: str | None = None,
-) -> None:
-    """Insert or update a transaction record in the database.
+# --- Transactions -------------------------------------------------------------
 
-    Persists the supplied transaction by performing an upsert based on the
-    transaction identifier. If a record with the same ``transaction_id``
-    already exists, its fields are updated with the latest values;
-    otherwise, a new record is inserted.
 
-    Args:
-        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
-            an ``AsyncSession``.
-        result: A dictionary containing the transaction details. Expected
-            keys are ``transaction_id``, ``user_id``, ``amount``,
-            ``category``, ``timestamp``, ``is_fraud``, and
-            ``triggered_rules``.
-        source_metadata: Optional Kafka source metadata for appending to the
-            immutable transaction history record.
+class RecordOutcome(StrEnum):
+    EVALUATED = "evaluated"
+    DUPLICATE = "duplicate"
+
+
+@dataclass(frozen=True)
+class TransactionDecision:
+    transaction_id: UUID
+    user_id: UUID
+    amount: Decimal
+    currency: str
+    category: str
+    occurred_at: datetime
+    risk_score: int
+    verdict: str
+    is_fraud: bool
+    triggered_rules: list[str]
+    rules_version: str
+    rules_hash: str
+    correlation_id: str | None
+    channel: str | None = None
+    country: str | None = None
+    enrichment: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class MessageProvenance:
+    topic: str
+    partition: int
+    offset: int
+    timestamp_ms: int | None
+
+
+@dataclass(frozen=True)
+class RecordResult:
+    outcome: RecordOutcome
+    decision: TransactionDecision
+
+
+def _decision_from_record(record: TransactionRecord) -> TransactionDecision:
+    return TransactionDecision(
+        transaction_id=record.transaction_id,
+        user_id=record.user_id,
+        amount=record.amount,
+        currency=record.currency,
+        category=record.category,
+        occurred_at=record.occurred_at,
+        risk_score=record.risk_score,
+        verdict=record.verdict,
+        is_fraud=record.is_fraud,
+        triggered_rules=list(record.triggered_rules),
+        rules_version=record.rules_version,
+        rules_hash=record.rules_hash,
+        correlation_id=record.correlation_id,
+        channel=record.channel,
+        country=record.country,
+        enrichment=record.enrichment,
+    )
+
+
+def _same_transaction(left: TransactionDecision, right: TransactionDecision) -> bool:
+    return (
+        left.user_id == right.user_id
+        and left.amount == right.amount
+        and left.currency == right.currency
+        and left.category == right.category
+        and left.occurred_at == right.occurred_at
+    )
+
+
+def _history_values(
+    decision: TransactionDecision, provenance: MessageProvenance, outcome: RecordOutcome, correlation_id: str | None
+) -> dict[str, Any]:
+    return {
+        "transaction_id": decision.transaction_id,
+        "outcome": outcome.value,
+        "user_id": decision.user_id,
+        "amount": decision.amount,
+        "currency": decision.currency,
+        "category": decision.category,
+        "occurred_at": decision.occurred_at,
+        "risk_score": decision.risk_score,
+        "verdict": decision.verdict,
+        "is_fraud": decision.is_fraud,
+        "triggered_rules": decision.triggered_rules,
+        "rules_version": decision.rules_version,
+        "rules_hash": decision.rules_hash,
+        "source_topic": provenance.topic,
+        "source_partition": provenance.partition,
+        "source_offset": provenance.offset,
+        "source_timestamp": provenance.timestamp_ms,
+        "correlation_id": correlation_id,
+    }
+
+
+async def record_decision(
+    session_factory: SessionFactory, decision: TransactionDecision, provenance: MessageProvenance
+) -> RecordResult:
+    """Persist a decision and its audit row in one database transaction.
+
+    Returns:
+        RecordResult: ``EVALUATED`` with ``decision`` when this call stored it, or
+        ``DUPLICATE`` with the previously stored decision.
 
     Raises:
-        sqlalchemy.exc.SQLAlchemyError: If the database operation or commit
-            fails.
+        ConflictingDuplicateError: The id exists with different transaction data.
     """
-    resolved_correlation_id = correlation_id or str(uuid4())
-    now_utc = utc_now()
-    stmt = insert(TransactionRecord).values(
-        transaction_id=result["transaction_id"],
-        user_id=result["user_id"],
-        amount=result["amount"],
-        category=result["category"],
-        timestamp=result["timestamp"],
-        is_fraud=result["is_fraud"],
-        triggered_rules=result["triggered_rules"],
-        rules_version=result["rules_version"],
-        rules_hash=result["rules_hash"],
-        correlation_id=resolved_correlation_id,
-        created_at=now_utc,
-        updated_at=now_utc,
-    )
-    upsert_stmt = stmt.on_conflict_do_update(
-        index_elements=[TransactionRecord.transaction_id],
-        set_={
-            "user_id": stmt.excluded.user_id,
-            "amount": stmt.excluded.amount,
-            "category": stmt.excluded.category,
-            "timestamp": stmt.excluded.timestamp,
-            "is_fraud": stmt.excluded.is_fraud,
-            "triggered_rules": stmt.excluded.triggered_rules,
-            "correlation_id": stmt.excluded.correlation_id,
-            "updated_at": utc_now(),
-        },
-    )
+    async with session_factory() as session, session.begin():
+        inserted = await session.scalar(
+            insert(TransactionRecord)
+            .values(
+                transaction_id=decision.transaction_id,
+                user_id=decision.user_id,
+                amount=decision.amount,
+                currency=decision.currency,
+                category=decision.category,
+                occurred_at=decision.occurred_at,
+                channel=decision.channel,
+                country=decision.country,
+                enrichment=decision.enrichment,
+                risk_score=decision.risk_score,
+                verdict=decision.verdict,
+                is_fraud=decision.is_fraud,
+                triggered_rules=decision.triggered_rules,
+                rules_version=decision.rules_version,
+                rules_hash=decision.rules_hash,
+                correlation_id=decision.correlation_id,
+            )
+            .on_conflict_do_nothing(index_elements=[TransactionRecord.transaction_id])
+            .returning(TransactionRecord.transaction_id)
+        )
+        if inserted is not None:
+            outcome, stored = RecordOutcome.EVALUATED, decision
+        else:
+            existing = await session.scalar(
+                select(TransactionRecord).where(TransactionRecord.transaction_id == decision.transaction_id)
+            )
+            stored = _decision_from_record(existing)
+            if not _same_transaction(stored, decision):
+                raise ConflictingDuplicateError(
+                    "transaction_id already recorded with different user, amount, currency, category or occurred_at"
+                )
+            outcome = RecordOutcome.DUPLICATE
 
-    async def _persist_transaction() -> None:
-        async with session_factory() as session:
-            await session.execute(upsert_stmt)
+        await session.execute(
+            insert(TransactionHistoryRecord)
+            .values(_history_values(stored, provenance, outcome, decision.correlation_id))
+            .on_conflict_do_nothing(constraint="uq_transaction_history_source")
+        )
+    return RecordResult(outcome=outcome, decision=stored)
+
+
+async def get_velocity_aggregates(
+    session_factory: SessionFactory,
+    user_id: UUID,
+    window_start: datetime,
+    window_end: datetime,
+    exclude_transaction_id: UUID,
+    currency: str,
+) -> tuple[int, Decimal]:
+    """Count and sum a user's other transactions with ``window_start <= occurred_at <= window_end``.
+
+    The count covers every currency; the sum only adds ``currency`` amounts, because
+    adding ZAR to USD is meaningless. Excluding the transaction being evaluated
+    keeps a redelivered message from counting itself. Served by ``ix_transactions_user_occurred``.
+    """
+    async with session_factory() as session:
+        row = (
             await session.execute(
-                insert(TransactionHistoryRecord).values(
-                    _build_history_values(
-                        result, source_metadata, correlation_id=resolved_correlation_id
-                    )
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(TransactionRecord.amount).filter(TransactionRecord.currency == currency), 0),
+                ).where(
+                    TransactionRecord.user_id == user_id,
+                    TransactionRecord.occurred_at >= window_start,
+                    TransactionRecord.occurred_at <= window_end,
+                    TransactionRecord.transaction_id != exclude_transaction_id,
                 )
             )
-            await session.commit()
-
-    await _retry_async(_persist_transaction, retries=3, delay_seconds=0.5)
-
-
-def _build_history_values(
-    result: dict[str, Any],
-    source_metadata: dict[str, Any] | None = None,
-    correlation_id: str | None = None,
-) -> dict[str, Any]:
-    """Build the immutable transaction history row payload, including Kafka source data.
-
-    Args:
-        result: A transaction evaluation result dictionary containing the core
-            transaction fields.
-        source_metadata: Optional Kafka metadata describing the originating topic,
-            partition, offset, and timestamp.
-        correlation_id: The request or message correlation ID to persist with the
-            history record.
-
-    Returns:
-        dict[str, Any]: A row dictionary suitable for insertion into the
-            ``transaction_history`` table.
-    """
-    source_metadata = source_metadata or {}
-    resolved_correlation_id = correlation_id or str(uuid4())
-    processed_at = utc_now()
-    return {
-        "transaction_id": result["transaction_id"],
-        "user_id": result["user_id"],
-        "amount": result["amount"],
-        "category": result["category"],
-        "timestamp": result["timestamp"],
-        "is_fraud": result["is_fraud"],
-        "triggered_rules": result["triggered_rules"],
-        "rules_version": result["rules_version"],
-        "rules_hash": result["rules_hash"],
-        "source_topic": source_metadata.get("source_topic"),
-        "source_partition": source_metadata.get("source_partition"),
-        "source_offset": source_metadata.get("source_offset"),
-        "source_timestamp": source_metadata.get("source_timestamp"),
-        "correlation_id": resolved_correlation_id,
-        "processed_at": processed_at,
-    }
+        ).one()
+    return int(row[0]), Decimal(row[1])
 
 
-async def get_transaction(
-    session_factory: async_sessionmaker[AsyncSession], transaction_id: str
-) -> dict[str, Any] | None:
-    """
-    Retrieve a transaction record by its identifier.
-
-    Args:
-        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
-            an ``AsyncSession``.
-        transaction_id: The unique identifier of the transaction to retrieve.
-
-    Returns:
-        dict[str, Any] | None: A dictionary containing the transaction details
-        if found, otherwise ``None``.
-    """
+async def get_transaction(session_factory: SessionFactory, transaction_id: UUID) -> TransactionRecord | None:
     async with session_factory() as session:
-        row = await session.scalar(
-            select(TransactionRecord).where(
-                TransactionRecord.transaction_id == transaction_id
-            )
+        return await session.get(TransactionRecord, transaction_id)
+
+
+@dataclass(frozen=True)
+class TransactionFilters:
+    user_id: UUID | None = None
+    category: str | None = None
+    is_fraud: bool | None = None
+    verdict: str | None = None
+    occurred_from: datetime | None = None
+    occurred_to: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PageCursor:
+    """Keyset position: the sort key of the last row on the previous page."""
+
+    occurred_at: datetime
+    transaction_id: UUID
+
+    def encode(self) -> str:
+        raw = json.dumps({"o": self.occurred_at.isoformat(), "t": str(self.transaction_id)})
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @classmethod
+    def decode(cls, token: str) -> PageCursor:
+        """Parse a token produced by :meth:`encode`; raises ``ValueError`` if malformed."""
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+            return cls(occurred_at=datetime.fromisoformat(payload["o"]), transaction_id=UUID(payload["t"]))
+        except (binascii.Error, ValueError, KeyError, TypeError, UnicodeError) as exc:
+            raise ValueError("cursor is malformed") from exc
+
+
+async def list_transactions(
+    session_factory: SessionFactory, filters: TransactionFilters, limit: int, cursor: PageCursor | None
+) -> tuple[list[TransactionRecord], PageCursor | None]:
+    """Return one page, newest ``occurred_at`` first, plus the cursor for the next page.
+
+    Keyset pagination keeps every page an index range scan; OFFSET pagination
+    re-reads and discards all earlier rows, so deep pages get slower as data grows.
+    """
+    query = select(TransactionRecord)
+    if filters.user_id is not None:
+        query = query.where(TransactionRecord.user_id == filters.user_id)
+    if filters.category is not None:
+        query = query.where(TransactionRecord.category == filters.category)
+    if filters.is_fraud is not None:
+        query = query.where(TransactionRecord.is_fraud.is_(filters.is_fraud))
+    if filters.verdict is not None:
+        query = query.where(TransactionRecord.verdict == filters.verdict)
+    if filters.occurred_from is not None:
+        query = query.where(TransactionRecord.occurred_at >= filters.occurred_from)
+    if filters.occurred_to is not None:
+        query = query.where(TransactionRecord.occurred_at < filters.occurred_to)
+    if cursor is not None:
+        query = query.where(
+            sa.tuple_(TransactionRecord.occurred_at, TransactionRecord.transaction_id)
+            < sa.tuple_(sa.literal(cursor.occurred_at), sa.literal(cursor.transaction_id))
         )
-    return _row_to_result(row) if row else None
+    query = query.order_by(TransactionRecord.occurred_at.desc(), TransactionRecord.transaction_id.desc()).limit(
+        limit + 1
+    )
 
-
-async def get_transactions_by_category(
-    session_factory: async_sessionmaker[AsyncSession],
-    category: str,
-    offset: int,
-    limit: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """
-    Retrieve a paginated list of transaction records filtered by category.
-
-    Args:
-        session_factory: A SQLAlchemy ``async_sessionmaker`` used to create
-            an ``AsyncSession``.
-        category: The category to filter transactions by.
-        offset: The number of rows to skip.
-        limit: The maximum number of records to retrieve.
-
-    Returns:
-        tuple[list[dict[str, Any]], int]: A tuple containing the page of
-        transaction details and the total number of matching rows.
-    """
     async with session_factory() as session:
-        base_query = select(TransactionRecord).where(
-            func.lower(TransactionRecord.category) == func.lower(category)
-        )
-        total_count = await session.scalar(
-            select(func.count()).select_from(base_query.subquery())
-        )
-        rows = await session.scalars(
-            base_query.order_by(TransactionRecord.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        records = rows.all()
-    return [_row_to_result(row) for row in records], int(total_count or 0)
+        rows = list((await session.scalars(query)).all())
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = PageCursor(occurred_at=rows[-1].occurred_at, transaction_id=rows[-1].transaction_id)
+    return rows, next_cursor
 
 
-def _row_to_result(row: TransactionRecord) -> dict[str, Any]:
-    """Map a SQLAlchemy transaction row to a serializable dictionary payload.
-
-    Args:
-        row: A ``TransactionRecord`` instance loaded from the database.
-
-    Returns:
-        dict[str, Any]: A JSON-friendly transaction representation without ORM
-            metadata.
-    """
-    return {
-        "transaction_id": row.transaction_id,
-        "user_id": row.user_id,
-        "amount": row.amount,
-        "category": row.category,
-        "timestamp": row.timestamp,
-        "is_fraud": row.is_fraud,
-        "triggered_rules": row.triggered_rules,
-        "rules_version": row.rules_version,
-        "rules_hash": row.rules_hash,
-        "correlation_id": row.correlation_id,
-        "created_at": normalize_utc_datetime(row.created_at),
-        "updated_at": normalize_utc_datetime(row.updated_at),
-    }
-
-
-async def get_recent_user_activity(
-    session_factory: async_sessionmaker[AsyncSession],
-    user_id: str,
-    window_start_epoch: float,
-    window_end_epoch: float,
-) -> list[dict[str, Any]]:
-    """Return a user's transaction count and amount total in an event-time window.
-
-    Used by the worker to feed the stateful velocity fraud rule. Only transacyions
-    with a business ``timestamp`` between ```window_start_epoch`` and
-    ``window_end_epoch``(inclusive) are considered.
-
-    Args:
-        session_factory: Async session favtory for the database.
-        user_id: The user whose recent activity is being summed.
-        window_start_epoch: Inclusive lower bound for event-time lookup.
-        window_end_epoch: Inclusive upper bound for event-time lookup.
-
-    Returns:
-        tuple[int, Decimal]: the number of matching transactions and sum of their amounts.
-    """
+async def summarize_transactions(session_factory: SessionFactory, since: datetime) -> dict[str, Any]:
+    """Totals for the batch summary job: all, fraudulent, and per category since ``since``."""
     async with session_factory() as session:
-        count = await session.scalar(
-            select(func.count())
-            .select_from(TransactionRecord)
-            .where(
-                TransactionRecord.user_id == user_id,
-                TransactionRecord.timestamp >= window_start_epoch,
-                TransactionRecord.timestamp >= window_end_epoch,
+        totals = (
+            await session.execute(
+                select(func.count(), func.count().filter(TransactionRecord.is_fraud.is_(True))).where(
+                    TransactionRecord.created_at >= since
+                )
             )
-        )
-        total = await session.scalar(
-            select(func.coalesce(func.sum(TransactionRecord.amount), 0)).where(
-                TransactionRecord.user_id == user_id,
-                TransactionRecord.timestamp >= window_start_epoch,
-                TransactionRecord.timestamp <= window_end_epoch,
-            )
-        )
-    return int(count or 0), Decimal(str(total or 0))
-
-
-async def summarize_transactions(
-    session_factory: async_sessionmaker[AsyncSession], since: datetime
-) -> dict[str, Any]:
-    """Summarize transaction activity since a cutoff time, for the deffered batch job.
-
-    Args:
-        session_factory: Async session factory for the database.
-        since: The inclusion lower bound for the transaction ``timestamp``.
-
-    Returns:
-        dict[str, Any]:  total and per category breakdown of processed transactions.
-    """
-    async with session_factory() as session:
-        total = await session.scalar(
-            select(func.count())
-            .select_from(TransactionRecord)
-            .where(TransactionRecord.created_at >= since)
-        )
-        fraud_total = await session.scalar(
-            select(func.count())
-            .select_from(TransactionRecord)
-            .where(
-                TransactionRecord.created_at >= since,
-                TransactionRecord.is_fraud.is_(True),
-            )
-        )
+        ).one()
         category_rows = await session.execute(
             select(TransactionRecord.category, func.count())
             .where(TransactionRecord.created_at >= since)
             .group_by(TransactionRecord.category)
         )
         by_category = {category: int(count) for category, count in category_rows.all()}
-    return {
-        "total": int(total or 0),
-        "fraud": int(fraud_total or 0),
-        "by_category": by_category,
-    }
+    return {"total": int(totals[0]), "fraud": int(totals[1]), "by_category": by_category}
+
+
+# --- Rule sets ----------------------------------------------------------------
+
+
+def _rule_set_from_record(record: RuleSetVersionRecord) -> RuleSet:
+    return RuleSet(
+        key=record.rule_set_key,
+        version=record.version,
+        definition=RuleSetDefinition.model_validate(record.definition),
+        content_hash=record.content_hash,
+        description=record.description,
+        created_by=record.created_by,
+        created_at=record.created_at,
+    )
+
+
+async def get_latest_rule_set(session_factory: SessionFactory, key: str) -> RuleSet:
+    """Return the highest version for ``key``; the latest version is the active one.
+
+    Raises:
+        RuleSetNotFoundError: No version exists for ``key``.
+    """
+    async with session_factory() as session:
+        record = await session.scalar(
+            select(RuleSetVersionRecord)
+            .where(RuleSetVersionRecord.rule_set_key == key)
+            .order_by(RuleSetVersionRecord.version.desc())
+            .limit(1)
+        )
+    if record is None:
+        raise RuleSetNotFoundError(f"No rule set exists for key '{key}'")
+    return _rule_set_from_record(record)
+
+
+async def get_rule_set_version(session_factory: SessionFactory, key: str, version: int) -> RuleSet:
+    async with session_factory() as session:
+        record = await session.scalar(
+            select(RuleSetVersionRecord).where(
+                RuleSetVersionRecord.rule_set_key == key, RuleSetVersionRecord.version == version
+            )
+        )
+    if record is None:
+        raise RuleSetNotFoundError(f"Rule set '{key}' has no version {version}")
+    return _rule_set_from_record(record)
+
+
+async def list_rule_set_versions(
+    session_factory: SessionFactory, key: str, limit: int, before_version: int | None
+) -> list[RuleSet]:
+    query = select(RuleSetVersionRecord).where(RuleSetVersionRecord.rule_set_key == key)
+    if before_version is not None:
+        query = query.where(RuleSetVersionRecord.version < before_version)
+    query = query.order_by(RuleSetVersionRecord.version.desc()).limit(limit)
+    async with session_factory() as session:
+        records = (await session.scalars(query)).all()
+    return [_rule_set_from_record(record) for record in records]
+
+
+async def create_rule_set_version(
+    session_factory: SessionFactory,
+    key: str,
+    definition: RuleSetDefinition,
+    definition_hash: str,
+    description: str,
+    created_by: str,
+    expected_current_version: int | None,
+) -> RuleSet:
+    """Append a new version; versions are immutable once written.
+
+    ``expected_current_version`` is an optimistic-concurrency guard: ``0`` means
+    "the key must not exist yet". Two concurrent writers that both pass the check
+    still cannot both win, because ``uq_rule_set_versions_key_version`` rejects the
+    second insert.
+
+    Raises:
+        RuleSetVersionConflictError: The current version is not the expected one, or
+            a concurrent write took the next version number first.
+    """
+    async with session_factory() as session:
+        try:
+            async with session.begin():
+                current = await session.scalar(
+                    select(func.coalesce(func.max(RuleSetVersionRecord.version), 0)).where(
+                        RuleSetVersionRecord.rule_set_key == key
+                    )
+                )
+                if expected_current_version is not None and current != expected_current_version:
+                    raise RuleSetVersionConflictError(
+                        f"Current version of '{key}' is {current}, expected {expected_current_version}"
+                    )
+                record = RuleSetVersionRecord(
+                    rule_set_key=key,
+                    version=int(current) + 1,
+                    definition=definition.model_dump(mode="json"),
+                    content_hash=definition_hash,
+                    description=description,
+                    created_by=created_by,
+                )
+                session.add(record)
+                await session.flush()
+                await session.refresh(record)
+        except IntegrityError as exc:
+            raise RuleSetVersionConflictError(
+                f"Another version of '{key}' was created concurrently; retry with the new current version"
+            ) from exc
+    return _rule_set_from_record(record)

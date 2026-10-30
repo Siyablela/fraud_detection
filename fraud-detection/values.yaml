@@ -1,38 +1,56 @@
+# Defaults suit a development cluster. values-prod.yaml overrides for production.
+
 global:
   environment: production
 
-# Application secrets are expected to come from a Kubernetes Secret.
-# Populate this Secret outside the app, for example from Vault or another secret-sync mechanism.
+# One image runs every process (API, worker, batch job, migrations).
+image:
+  repository: ghcr.io/siyablela/fraud_detection
+  tag: ""          # defaults to the chart appVersion; CD pins the commit SHA
+  digest: ""       # optional; when set, used instead of the tag
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Every credential comes from this existing Secret (created by your secret store,
+# e.g. External Secrets / Vault). Keys:
+#   database-url, redis-url                      always
+#   kafka-oauth-client-secret                    when config.kafkaSecurityProtocol is SASL_*
+#   postgres-password, redis-password,
+#   keycloak-admin-password,
+#   fraud-analyst-client-secret,
+#   fraud-rules-admin-client-secret              only with inClusterDependencies.enabled
 secrets:
   existingSecretName: fraud-secrets
 
-worker:
-  replicaCount: 1
-  image:
-    repository: fraud-worker
-    tag: latest
-    pullPolicy: IfNotPresent
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
+config:
+  kafkaBootstrapServers: kafka:9092
+  kafkaTopicName: transactions
+  kafkaConsumerGroupId: fraud-worker
+  kafkaSecurityProtocol: PLAINTEXT   # PLAINTEXT only for in-cluster dev; SSL or SASL_SSL elsewhere
+  kafkaOauthTokenUrl: ""
+  kafkaOauthClientId: ""
+  jwtIssuer: http://keycloak:8080/realms/fraud
+  jwtAudience: fraud-api
+  jwtJwksUrl: http://keycloak:8080/realms/fraud/protocol/openid-connect/certs
+  ruleSetKey: fraud-default
+  corsAllowedOrigins: ""             # comma-separated; empty = no browser cross-origin access
+  rateLimitRequests: 100             # per caller per minute
+  logLevel: INFO
+  enableTracing: false
+  otlpEndpoint: ""
 
 api:
   replicaCount: 1
-  image:
-    repository: fraud-api
-    tag: latest
-    pullPolicy: IfNotPresent
   resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+worker:
+  replicaCount: 1
+  shutdownTimeoutSeconds: 25
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: "1", memory: 512Mi }
 
 batch:
   enabled: true
@@ -42,35 +60,70 @@ batch:
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
   resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
 
-security:
-  jwtIssuer: https://auth.example.com/
-  jwtAudience: fraud-api
-  jwtJwksUrl: https://auth.example.com/.well-known/jwks.json
-  jwtPublicKeyPath: ""
-  jwtAlgorithms: RS256
-  requiredReadScope: fraud:transactions:read
-  authTokenEndpointEnabled: false
-  keycloakAdminUrl: http://keycloak:8081
-  keycloakAdminUsername: "{{ vault:secret/data/keycloak/admin#username }}"
-  keycloakAdminPassword: "{{ vault:secret/data/keycloak/admin#password }}"
-  keycloakDemoUsername: "{{ vault:secret/data/keycloak/demo#username }}"
-  keycloakDemoPassword: "{{ vault:secret/data/keycloak/demo#password }}"
-  keycloakTokenClientId: fraud-cli
-  keycloakTokenClientSecret: "{{ vault:secret/data/keycloak/clients#token-client-secret }}"
-  keycloakServiceClientId: fraud-service-cli
-  keycloakServiceClientSecret: "{{ vault:secret/data/keycloak/clients#service-client-secret }}"
-  keycloakServiceTokenScope: "{{ vault:secret/data/keycloak/clients#service-token-scope }}"
-  allowedOrigins: ["*"]
-  
-kafkaSecurity:
-  protocol: PLAINTEXT
+migrations:
+  enabled: true
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# Single-replica PostgreSQL, Redis, Kafka and Keycloak for dev/test clusters.
+inClusterDependencies:
+  enabled: true
+  postgres:
+    image: postgres:16.4-alpine
+    database: fraud_detection
+    user: fraud
+    storage: 10Gi
+    storageClassName: ""
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: "1", memory: 1Gi }
+  redis:
+    image: redis:7.4.1-alpine
+    storage: 1Gi
+    storageClassName: ""
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+  kafka:
+    image: apache/kafka:3.9.0
+    partitions: 6        # upper bound for useful worker replicas
+    storage: 20Gi
+    storageClassName: ""
+    resources:
+      requests: { cpu: 250m, memory: 768Mi }
+      limits: { cpu: "2", memory: 2Gi }
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    hostname: http://keycloak:8080   # must match config.jwtIssuer's origin
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1Gi }
+
+kong:
+  image: kong:3.8.0
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+    nodePort: null
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: fraud-gateway.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
 
 networkPolicy:
   enabled: true
@@ -86,7 +139,7 @@ resilience:
   topologyKey: kubernetes.io/hostname
   podDisruptionBudget:
     enabled: true
-    minAvailable: 1
+    maxUnavailable: 1
   autoscaling:
     enabled: false
     api:
@@ -95,11 +148,10 @@ resilience:
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
     worker:
-      # Capped at the transactions topic's partition count (3): a consumer
-      # group can't use more concurrent consumers than partitions, so extra
-      # replicas above this would sit idle.
+      # A consumer group cannot use more consumers than partitions; the chart
+      # refuses a maxReplicas above inClusterDependencies.kafka.partitions.
       minReplicas: 2
-      maxReplicas: 3
+      maxReplicas: 6
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
     kong:
@@ -108,41 +160,12 @@ resilience:
       targetCPUUtilizationPercentage: 70
       targetMemoryUtilizationPercentage: 80
 
-persistence:
-  postgres:
-    enabled: true
-    accessMode: ReadWriteOnce
-    size: 20Gi
-    storageClassName: ""
-  kafka:
-    enabled: true
-    accessMode: ReadWriteOnce
-    size: 30Gi
-    storageClassName: ""
-
 certManager:
   enabled: false
   issuerKind: ClusterIssuer
   issuerName: ""
   ingressHost: fraud-api.example.com
   secretName: fraud-api-tls
-
-appConfig:
-  kafkaTopicName: transactions_topic
-  kafkaDlqTopicName: transactions_topic.dlq
-  kafkaConsumerGroupId: fraud-worker-group
-  kafkaProducerAcks: all
-  kafkaProducerEnableIdempotence: true
-  dbPoolMinSize: 1
-  dbPoolMaxSize: 10
-  defaultHighValueThreshold: 10000
-  defaultRestrictedCategoriesJson: '{"GAMBLING": 5000, "CRYPTO": 5000}'
-
-observability:
-  logLevel: INFO
-  enableTracing: false
-  workerMetricsPort: 9100
-  otlpEndpoint: ""
 
 alerting:
   enabled: true
@@ -167,82 +190,35 @@ alerting:
     slackWebhookUrl: ""
     slackChannel: "#fraud-alerts"
 
-instana:
-  enabled: false
-  otlpEndpoint: "http://instana-agent.instana-agent.svc.cluster.local:4318/v1/traces"
-
-# Infrastructure Components (Third-Party Images)
-postgres:
-  image: postgres:16-alpine
-kafka:
-  image: apache/kafka:latest
-  durability:
-    offsetsTopicReplicationFactor: 1
-    transactionStateLogReplicationFactor: 1
-    transactionStateLogMinIsr: 1
-    defaultReplicationFactor: 1
-    minInSyncReplicas: 1
-keycloak:
-  image: quay.io/keycloak/keycloak:26.0
-kong:
-  image: kong:3.8
-  replicaCount: 1
-  service:
-    type: ClusterIP
-    port: 80
-    targetPort: 8000
-    nodePort: null
-  ingress:
-    enabled: false
-    className: ""
-    annotations: {}
-    hosts:
-      - host: fraud-gateway.local
-        paths:
-          - path: /
-            pathType: Prefix
-    tls: []
-kafkaUi:
-  image: ghcr.io/kafbat/kafka-ui:latest
-
-# Application Configurations (Injected via ConfigMap)
-rulesConfig: |
-  {
-    "example_rule": "fraud_rules_go_here"
-  }
-
+# Kong declarative config: only the API's public routes are exposed; health,
+# readiness and /metrics stay internal.
 kongConfig: |
   _format_version: "3.0"
   services:
-    - name: fraud-query-api
+    - name: fraud-api
       url: http://api:8000
       routes:
-        - name: query-transactions
-          paths:
-            - /api/v1/transactions
-          methods:
-            - GET
+        - name: transactions
+          paths: [/api/v1/transactions]
+          methods: [GET]
           strip_path: false
-          plugins:
-            - name: rate-limiting
-              config:
-                minute: 300
-                policy: local
-        - name: query-categories
-          paths:
-            - /api/v1/categories
-          methods:
-            - GET
+        - name: rule-sets
+          paths: [/api/v1/rule-sets]
+          methods: [GET, POST]
           strip_path: false
-          plugins:
-            - name: rate-limiting
-              config:
-                minute: 120
-                policy: local
+      plugins:
+        - name: rate-limiting
+          config:
+            minute: 600
+            limit_by: ip
+            policy: local
+        - name: request-size-limiting
+          config:
+            allowed_payload_size: 64
+            size_unit: kilobytes
   plugins:
     - name: correlation-id
       config:
-        header_name: x-request-id
+        header_name: x-correlation-id
         generator: uuid
         echo_downstream: true
-

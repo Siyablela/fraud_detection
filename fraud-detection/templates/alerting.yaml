@@ -1,57 +1,73 @@
-{{- if .Values.alerting.enabled }}
+{{- if and .Values.alerting.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+{{- $labels := dict "team" .Values.alerting.team "owner" .Values.alerting.owner }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: fraud-alerts
-  labels:
-    app: fraud-detection
-    team: {{ .Values.alerting.team | quote }}
-    owner: {{ .Values.alerting.owner | quote }}
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "alerting") | nindent 4 }}
 spec:
   groups:
-    - name: fraud-service.alerts
+    - name: fraud-detection
       rules:
         - alert: FraudDatabaseDown
-          expr: fraud_database_up{service="fraud-service"} == 0
+          expr: min by (service) (fraud_database_up) == 0
           for: 2m
-          labels:
-            severity: critical
-            team: {{ .Values.alerting.team | quote }}
-            owner: {{ .Values.alerting.owner | quote }}
+          labels: {{- toYaml (merge (dict "severity" "critical") $labels) | nindent 12 }}
           annotations:
-            summary: Fraud service database is unavailable
-            description: The fraud service database gauge has been 0 for more than 2 minutes. Check PostgreSQL availability and connectivity.
+            summary: "{{`{{ $labels.service }}`}} cannot reach PostgreSQL"
+            description: The worker holds its partitions and retries; the API returns 503. Check PostgreSQL health and connectivity.
 
         - alert: FraudKafkaConsumerDown
           expr: fraud_kafka_up{service="fraud-worker", component="consumer"} == 0
           for: 2m
-          labels:
-            severity: critical
-            team: {{ .Values.alerting.team | quote }}
-            owner: {{ .Values.alerting.owner | quote }}
+          labels: {{- toYaml (merge (dict "severity" "critical") $labels) | nindent 12 }}
           annotations:
-            summary: Kafka consumer is down
-            description: The worker Kafka consumer is reporting unhealthy connectivity. Check Kafka and broker connectivity.
+            summary: Fraud worker cannot reach Kafka
+            description: No transactions are being scored. Check broker health and the worker's network path.
 
-        - alert: FraudKafkaProducerDown
-          expr: fraud_kafka_up{service="fraud-worker", component="producer"} == 0
-          for: 2m
-          labels:
-            severity: critical
-            team: {{ .Values.alerting.team | quote }}
-            owner: {{ .Values.alerting.owner | quote }}
+        - alert: FraudMessagesDeadLettered
+          expr: sum(increase(fraud_worker_messages_total{status="dlq"}[15m])) > 0
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
           annotations:
-            summary: Kafka producer is down
-            description: The worker Kafka producer is reporting unhealthy connectivity. Check Kafka broker health and configuration.
+            summary: Transactions were dead-lettered
+            description: "Inspect with scripts/replay_dlq.py --dry-run; the dlq.error.* headers say why. Fix the cause, then replay."
+
+        - alert: FraudWorkerRetryingTransientFailures
+          expr: sum(rate(fraud_worker_retries_total{failure_class="transient"}[5m])) > 0.5
+          for: 5m
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
+          annotations:
+            summary: Worker is retrying transient failures
+            description: A dependency (usually PostgreSQL or Redis) is failing; affected partitions are paused on the failing message.
+
+        - alert: FraudWorkerBacklogGrowing
+          expr: max(fraud_worker_partition_backlog) > 400
+          for: 10m
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
+          annotations:
+            summary: Worker partition backlog is high
+            description: Scoring is falling behind. Scale the worker (up to the partition count) or check dependency latency.
+
+        - alert: FraudRejectedVerdictSpike
+          expr: sum(rate(fraud_worker_decisions_total{verdict="REJECTED"}[15m])) / clamp_min(sum(rate(fraud_worker_decisions_total[15m])), 1e-9) > 0.05
+          for: 15m
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
+          annotations:
+            summary: More than 5% of transactions are REJECTED
+            description: Either an attack or a bad rule-set version. Check the active rule set (GET /api/v1/rule-sets/{key}/active).
 
         - alert: FraudApiHigh5xxRate
-          expr: sum by (service) (rate(fraud_http_requests_total{service="fraud-query-api",status_code=~"5.."}[5m])) > 0.1
+          expr: sum(rate(fraud_http_requests_total{service="fraud-query-api", status_code=~"5.."}[5m])) > 0.1
           for: 5m
-          labels:
-            severity: warning
-            team: {{ .Values.alerting.team | quote }}
-            owner: {{ .Values.alerting.owner | quote }}
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
           annotations:
-            summary: Fraud API has elevated 5xx errors
-            description: The fraud query API is returning elevated server-side errors. Inspect logs and downstream dependencies.
+            summary: Fraud API is returning server errors
+            description: Search logs by correlation_id from the error responses; check PostgreSQL and Redis.
+
+        - alert: FraudRateLimiterFailingOpen
+          expr: sum(increase(fraud_rate_limiter_errors_total[10m])) > 0
+          labels: {{- toYaml (merge (dict "severity" "warning") $labels) | nindent 12 }}
+          annotations:
+            summary: API rate limiting is disabled because Redis is unavailable
+            description: Requests are being allowed without a limit. Restore Redis.
 {{- end }}

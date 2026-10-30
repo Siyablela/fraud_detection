@@ -1,9 +1,10 @@
 {{- if and .Values.alerting.enabled .Values.alerting.alertmanager.enabled }}
 apiVersion: v1
-kind: ConfigMap
+kind: Secret
 metadata:
   name: fraud-alertmanager-config
-data:
+type: Opaque
+stringData:
   alertmanager.yml: |
     global:
       resolve_timeout: 5m

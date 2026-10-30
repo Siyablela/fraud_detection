@@ -1,0 +1,48 @@
+[project]
+name = "fraud-detection"
+version = "1.0.0"
+description = "Scores categorised transaction events against versioned fraud rules and serves the decisions over an API."
+requires-python = ">=3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider --strict-markers"
+# Fail a hung test (e.g. a stalled Docker call) instead of hanging CI forever.
+timeout = 600
+timeout_method = "thread"
+markers = ["integration: needs Docker; starts PostgreSQL, Redis and Kafka containers"]
+filterwarnings = [
+    "ignore:testcontainers.(postgres|redis) is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/main.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = [
+    "B008",   # FastAPI's Depends() in argument defaults is the framework idiom
+    "RUF012", # mutable class attributes are fine on pydantic models
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+known-third-party = ["alembic"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S311", "ASYNC"]
+"app/worker.py" = ["S311"]                  # jitter, not cryptography
+"app/healthcheck.py" = ["S310", "S108"]     # fixed loopback URL; heartbeat in a single-user container
+"app/settings.py" = ["S108"]                # same heartbeat default
+"alembic/versions/*" = ["S608"]     # DDL built from constant table names

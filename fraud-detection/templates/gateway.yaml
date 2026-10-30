@@ -1,0 +1,152 @@
+# Kong API gateway in DB-less mode: the single ingress point for the API. It adds
+# a coarse per-IP rate limit in front of the API's own per-caller limit.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 4 }}
+  annotations:
+    checksum/config: {{ .Values.kongConfig | sha256sum }}
+spec:
+  {{- if not .Values.resilience.autoscaling.enabled }}
+  replicas: {{ .Values.kong.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.kongConfig | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000   # "kong" in the official image
+        seccompProfile: { type: RuntimeDefault }
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      {{- if .Values.resilience.enablePreferredAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.resilience.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: kong
+      {{- end }}
+      containers:
+        - name: kong
+          image: {{ .Values.kong.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - containerPort: 8000
+              name: proxy
+            - containerPort: 8100
+              name: status
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /kong/kong.yml.tpl
+            - name: KONG_STATUS_LISTEN
+              value: 0.0.0.0:8100
+            - name: KONG_PROXY_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_ADMIN_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_LISTEN
+              value: "off"
+            - name: KONG_PREFIX
+              value: /tmp/kong
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8100
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources: {{- toYaml .Values.kong.resources | nindent 12 }}
+          volumeMounts:
+            - name: kong-volume
+              mountPath: /kong/kong.yml.tpl
+              subPath: kong.yml.tpl
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: kong-volume
+          configMap:
+            name: fraud-configs
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong
+  labels: {{- include "fraud-detection.labels" (dict "root" . "component" "kong") | nindent 4 }}
+spec:
+  type: {{ .Values.kong.service.type }}
+  ports:
+    - name: proxy
+      port: {{ .Values.kong.service.port }}
+      targetPort: {{ .Values.kong.service.targetPort }}
+{{- if and (eq .Values.kong.service.type "NodePort") .Values.kong.service.nodePort }}
+      nodePort: {{ .Values.kong.service.nodePort }}
+{{- end }}
+  selector:
+    app: kong
+
+{{- if .Values.kong.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kong
+  {{- if .Values.kong.ingress.annotations }}
+  annotations:
+    {{- toYaml .Values.kong.ingress.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.kong.ingress.className }}
+  ingressClassName: {{ .Values.kong.ingress.className }}
+  {{- end }}
+  rules:
+  {{- range .Values.kong.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+        {{- range .paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: kong
+                port:
+                  number: {{ $.Values.kong.service.port }}
+        {{- end }}
+  {{- end }}
+  {{- if .Values.kong.ingress.tls }}
+  tls:
+    {{- toYaml .Values.kong.ingress.tls | nindent 4 }}
+  {{- end }}
+{{- end }}

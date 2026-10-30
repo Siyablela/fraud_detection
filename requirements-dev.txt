@@ -1,0 +1,9 @@
+# Test and tooling dependencies, on top of the runtime lock.
+-c requirements.lock
+fakeredis>=2.40
+pytest>=9.1
+pytest-cov>=7.1
+pytest-timeout>=2.4
+anyio>=4.14
+testcontainers[postgres,redis,kafka]>=4.15
+ruff>=0.14

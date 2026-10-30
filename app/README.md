@@ -1,76 +1,25 @@
-# Application package
+﻿# app/
 
-## Executive Summary
+| Module | Responsibility |
+|---|---|
+| [main.py](main.py) | ASGI entry point (`uvicorn app.main:app`) |
+| [api.py](api.py) | FastAPI app: routes, lifespan, uniform error handling |
+| [schemas.py](schemas.py) | API request/response models |
+| [security.py](security.py) | JWT verification, scope checks |
+| [rate_limit.py](rate_limit.py) | Redis-backed per-caller rate limit |
+| [worker.py](worker.py) | Kafka consumer: per-partition ordering, retries, DLQ, backpressure, rebalancing |
+| [processing.py](processing.py) | Parse -> score -> persist for one message; shared with the API dry run |
+| [events.py](events.py) | `TransactionCreated` v1 contract |
+| [rules.py](rules.py) | Rule-set model, JsonLogic evaluator, scoring and verdicts, default rule set |
+| [cache.py](cache.py) | Redis client; layered active-rule-set provider |
+| [database.py](database.py) | Schema, engine, repository functions |
+| [dlq.py](dlq.py) | Dead-letter publishing (original bytes + failure headers) |
+| [kafka_config.py](kafka_config.py) | librdkafka consumer/producer configuration and security |
+| [errors.py](errors.py) | Typed errors and transient/permanent/unexpected classification |
+| [observability.py](observability.py) | JSON logging, correlation IDs, Prometheus metrics, tracing |
+| [settings.py](settings.py) | Environment configuration with fail-fast validation |
+| [batch_worker.py](batch_worker.py) | Daily summary (`--once` for a CronJob, or resident) |
+| [healthcheck.py](healthcheck.py) | Container health probe for the API and worker |
 
-The app package implements the runtime behavior of Fraud Detection: a JWT-protected query API, a Kafka-driven fraud worker, and a scheduled batch worker, backed by PostgreSQL and shared observability/security utilities.
-
-## Runtime architecture
-
-```mermaid
-flowchart LR
-    K[(Kafka)] --> W[worker.py]
-    W --> R[rule.py]
-    W --> D[database.py]
-    W --> Q[(DLQ)]
-    C[Client] --> A[api.py]
-    A --> S[security.py]
-    A --> D
-    A --> O[observability.py]
-    W --> O
-```
-
-## Runtime Entrypoints
-
-- [main.py](main.py): application entrypoint exporting app.
-- [api.py](api.py): FastAPI creation, middleware wiring, endpoint definitions.
-- [worker.py](worker.py): Kafka consume loop, fraud decisioning, persistence, DLQ routing.
-- [batch_worker.py](batch_worker.py): scheduled workload for deferred processing.
-
-## Module Map
-
-- [settings.py](settings.py): env loading and runtime configuration validation.
-- [database.py](database.py): async SQLAlchemy engine/session and transaction persistence helpers.
-- [rule.py](rule.py): fraud rule evaluation and trigger generation.
-- [security.py](security.py): JWT validation and principal extraction.
-- [token_service.py](token_service.py): token exchange/service token support.
-- [observability.py](observability.py): structured logging, metrics, trace hooks, IDs.
-- [kafka_security.py](kafka_security.py): Kafka security protocol and TLS/OAuth options.
-- [dlq.py](dlq.py): dead-letter payload shaping and encoding.
-
-## API Surface
-
-Health endpoints:
-
-- GET /live
-- GET /ready
-- GET /health
-
-Protected query endpoints:
-
-- GET /api/v1/transactions/{transaction_id}
-- GET /api/v1/categories/{category_name}
-
-Optional token helper endpoints:
-
-- POST /api/v1/auth/token
-- POST /api/v1/auth/service-token
-
-## Design Decisions And Tradeoffs
-
-### 1. Shared persistence for worker and API
-Benefit: Keeps the data model simpler and more auditable.
-Tradeoff: Read and write paths contend on the same database.
-
-### 2. At-least-once worker semantics
-Benefit: Improves durability and replay safety.
-Tradeoff: Requires idempotency discipline in persistence logic.
-
-### 3. Explicit security and observability modules
-Benefit: Keeps cross-cutting concerns centralized and testable.
-Tradeoff: Onboarding requires understanding a few infrastructure-focused helpers.
-
-## Contributor Guidance
-
-- Keep trigger labels stable and explainable.
-- Preserve worker safety around commit ordering and DLQ behavior.
-- Keep metrics labels bounded and avoid sensitive data in labels.
+Dependencies point one way: `api` / `worker` -> `processing` -> `rules`, `database`,
+`cache` -> `settings`, `errors`, `observability`. `rules` and `events` have no I/O.
