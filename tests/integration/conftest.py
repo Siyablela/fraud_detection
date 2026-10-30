@@ -5,6 +5,7 @@ from ``alembic upgrade head``, so these tests also prove the migrations.
 """
 
 import os
+import socket
 import time
 
 import pytest
@@ -21,7 +22,6 @@ from app.settings import Settings, clear_settings_cache
 
 pytestmark = pytest.mark.integration
 
-KAFKA_HOST_PORT = 59092
 TOPIC = "transactions-it"
 DLQ_TOPIC = f"{TOPIC}.dlq"
 
@@ -41,15 +41,23 @@ def redis_url():
         yield f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(6379)}/0"
 
 
+def _free_port() -> int:
+    """A host port that is free right now; Kafka must advertise it before it starts."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 @pytest.fixture(scope="session")
 def kafka_bootstrap():
+    host_port = _free_port()
     container = (
         DockerContainer("apache/kafka:3.9.0")
-        .with_bind_ports(9092, KAFKA_HOST_PORT)
+        .with_bind_ports(9092, host_port)
         .with_env("KAFKA_NODE_ID", "1")
         .with_env("KAFKA_PROCESS_ROLES", "broker,controller")
         .with_env("KAFKA_LISTENERS", "PLAINTEXT://:9092,CONTROLLER://:9093")
-        .with_env("KAFKA_ADVERTISED_LISTENERS", f"PLAINTEXT://localhost:{KAFKA_HOST_PORT}")
+        .with_env("KAFKA_ADVERTISED_LISTENERS", f"PLAINTEXT://localhost:{host_port}")
         .with_env("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
         .with_env("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT")
         .with_env("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@localhost:9093")
@@ -60,7 +68,7 @@ def kafka_bootstrap():
         .waiting_for(LogMessageWaitStrategy("Kafka Server started").with_startup_timeout(120))
     )
     with container:
-        bootstrap = f"localhost:{KAFKA_HOST_PORT}"
+        bootstrap = f"localhost:{host_port}"
         admin = AdminClient({"bootstrap.servers": bootstrap})
         futures = admin.create_topics(
             [NewTopic(TOPIC, num_partitions=3, replication_factor=1), NewTopic(DLQ_TOPIC, 1, 1)]
