@@ -6,7 +6,7 @@ decisions and rule sets over an authenticated HTTP API.
 
 - **Worker**: Kafka consumer that turns `TransactionCreated` events into fraud decisions.
 - **API**: FastAPI service to read decisions and to publish, inspect and dry-run rule sets.
-- **Batch job**: daily fraud-activity summary.
+- **Batch job**: daily fraud-activity summary (decisions made in the last 24 h: total, fraudulent, by category).
 
 Everything runs from one Docker image; Docker Compose starts the full stack locally
 and the Helm chart in [fraud-detection/](fraud-detection) deploys it to Kubernetes.
@@ -26,15 +26,18 @@ and the Helm chart in [fraud-detection/](fraud-detection) deploys it to Kubernet
 
 ## Requirements coverage
 
+Quoted from the [brief](BRIEF.md). Language: Python. Area: Backend.
+
 | Requirement (from the brief) | Where | Verified by |
 |---|---|---|
-| Process categorised transaction events | [app/events.py](app/events.py) (contract), [app/worker.py](app/worker.py) (consumer) | [tests/unit/test_events.py](tests/unit/test_events.py), [tests/integration/test_pipeline.py](tests/integration/test_pipeline.py) |
-| Apply a set of fraud rules per transaction, based on different criteria | [app/rules.py](app/rules.py), [app/processing.py](app/processing.py) - amount, category, per-user velocity (count and value), currency | [tests/unit/test_rules.py](tests/unit/test_rules.py) (every threshold at, below and above its boundary) |
-| Store the results in a data store | [app/database.py](app/database.py), [alembic/versions/](alembic/versions) | [tests/integration/test_repository.py](tests/integration/test_repository.py) |
-| Allow retrieval via an API | [app/api.py](app/api.py) | [tests/unit/test_api.py](tests/unit/test_api.py), [tests/integration/test_pipeline.py](tests/integration/test_pipeline.py), [scripts/smoke_test.py](scripts/smoke_test.py) |
-| Production grade | Sections below: idempotency, retries and DLQ, auth, observability, migrations, hardened containers, CI | 220+ tests, CI gates in [.github/workflows/ci.yml](.github/workflows/ci.yml) |
-| Runnable Dockerfile | [Dockerfile](Dockerfile) | CI `image` job builds it, checks it runs as non-root, scans it |
-| README explaining build, run and test | This file | - |
+| "processes categorized transaction events" | [app/events.py](app/events.py) (contract), [app/worker.py](app/worker.py) (consumer) | [tests/unit/test_events.py](tests/unit/test_events.py), [tests/integration/test_pipeline.py](tests/integration/test_pipeline.py) |
+| "flags potential fraud" | Each decision carries a `verdict` (`APPROVED` / `REVIEW` / `REJECTED`), `is_fraud`, `risk_score` and the rules that fired - see [Rules, scores and verdicts](#rules-scores-and-verdicts) | [tests/unit/test_rules.py](tests/unit/test_rules.py) (scoring bands), [scripts/smoke_test.py](scripts/smoke_test.py) (each verdict end to end) |
+| "Apply a set of fraud rules per transaction based on different criteria" | [app/rules.py](app/rules.py), [app/processing.py](app/processing.py) - amount, category, per-user velocity (count and value), currency | [tests/unit/test_rules.py](tests/unit/test_rules.py) (every threshold at, below and above its boundary) |
+| "store them in a data store" | [app/database.py](app/database.py), [alembic/versions/](alembic/versions) | [tests/integration/test_repository.py](tests/integration/test_repository.py) |
+| "Allow the retrieval of this data via an API" | [app/api.py](app/api.py) | [tests/unit/test_api.py](tests/unit/test_api.py), [tests/integration/test_pipeline.py](tests/integration/test_pipeline.py), [scripts/smoke_test.py](scripts/smoke_test.py) |
+| "Production-grade" | Sections below: idempotency, retries and DLQ, auth, observability, migrations, hardened containers, CI | 250+ tests, CI gates in [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| "Includes a runnable Dockerfile to build and run the project" | [Dockerfile](Dockerfile) | CI `image` job builds it, checks it runs as non-root, scans it |
+| "a README that explains how to build, run, and test the project" | This file ([Quick start](#quick-start)) | - |
 
 ## Architecture
 
@@ -377,7 +380,14 @@ depth. Transaction amounts and user ids are not logged.
 | `fraud_http_requests_total`, `fraud_http_request_duration_seconds` | API traffic by route template (never raw paths) |
 | `fraud_database_up`, `fraud_kafka_up`, `fraud_rate_limiter_errors_total`, `fraud_rule_cache_lookups_total{layer}` | Dependency health |
 
-Alert rules for these ship with the chart ([fraud-detection/templates/alerting.yaml](fraud-detection/templates/alerting.yaml)).
+Alert rules ([fraud-detection/templates/alerting.yaml](fraud-detection/templates/alerting.yaml)) and a Grafana
+dashboard ([fraud-detection/files/grafana-dashboard.json](fraud-detection/files/grafana-dashboard.json)) for these
+ship with the chart.
+
+**Daily summary** (`python -m app.batch_worker`, a CronJob in Kubernetes): counts decisions by
+when they were *made* (`created_at`), not when the transaction occurred. Consecutive runs
+then count every decision exactly once, including events that arrived late, which an
+event-time window would skip if they landed after that day's run.
 
 **Dead letters**: `python scripts/replay_dlq.py --dry-run` lists them with the failure
 reason. Fix the cause, then run without `--dry-run`.
@@ -417,7 +427,10 @@ can instead be read from a file named by `<NAME>_FILE`.
 
 ## Assumptions and scope
 
-The brief does not specify these, so they were decided and are easy to change:
+The [brief](BRIEF.md) does not specify these, so they were decided and are easy to change:
+
+- **"store them"** could mean the rules or the results of applying them, so both are stored: every decision (with the rule-set version and hash that produced it), and the rules themselves as versioned data that can be changed without a deploy.
+- **"flags potential fraud"** is a graded flag rather than a yes/no: `REVIEW` and `REJECTED` both set `is_fraud`, and the verdict says how strongly to act.
 
 - **Thresholds are in ZAR**, and non-ZAR transactions go to `REVIEW` rather than being converted; FX conversion is out of scope.
 - **"User"** is the subject of velocity rules. If velocity should be per account or per card, key events by that id instead.

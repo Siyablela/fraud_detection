@@ -167,6 +167,12 @@ certManager:
   ingressHost: fraud-api.example.com
   secretName: fraud-api-tls
 
+dashboards:
+  enabled: true
+  # Label Grafana's dashboard sidecar watches (kube-prometheus-stack default).
+  sidecarLabel: grafana_dashboard
+  sidecarLabelValue: "1"
+
 alerting:
   enabled: true
   team: support

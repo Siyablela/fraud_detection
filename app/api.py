@@ -301,7 +301,14 @@ def v1_routes():
         request: Request,
         key: RuleSetKey,
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
-        before_version: Annotated[int | None, Query(ge=2)] = None,
+        before_version: Annotated[
+            int | None,
+            Query(
+                ge=2,
+                description="`next_before_version` from the previous page: return versions older than this one. "
+                "At least 2, since no version precedes version 1.",
+            ),
+        ] = None,
         _principal: AuthenticatedPrincipal = read_rules,
     ) -> Any:
         versions = await list_rule_set_versions(request.app.state.session_factory, key, limit, before_version)

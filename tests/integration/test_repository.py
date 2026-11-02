@@ -13,12 +13,14 @@ from app.database import (
     TransactionFilters,
     create_rule_set_version,
     get_latest_rule_set,
+    get_rule_set_version,
     get_velocity_aggregates,
     list_rule_set_versions,
     list_transactions,
     record_decision,
+    summarize_transactions,
 )
-from app.errors import ConflictingDuplicateError, RuleSetVersionConflictError
+from app.errors import ConflictingDuplicateError, RuleSetNotFoundError, RuleSetVersionConflictError
 from app.rules import DEFAULT_RULE_SET_DEFINITION, content_hash, parse_rule_set_definition
 from tests.conftest import make_decision
 
@@ -216,11 +218,72 @@ class TestListTransactions:
         assert "ix_transactions_category_occurred" in plan
 
 
+class TestBatchSummary:
+    async def record(self, session_factory, offset, **overrides):
+        await record_decision(session_factory, make_decision(**overrides), provenance(offset))
+
+    async def test_counts_decisions_made_since_the_cut_off(self, session_factory):
+        await self.record(session_factory, 1, category="CRYPTO", verdict="REJECTED", is_fraud=True, risk_score=90)
+        await self.record(session_factory, 2, category="CRYPTO")
+        await self.record(session_factory, 3, category="GROCERIES", verdict="REVIEW", is_fraud=True, risk_score=40)
+        old = make_decision(category="GAMBLING", verdict="REVIEW", is_fraud=True, risk_score=50)
+        await record_decision(session_factory, old, provenance(4))
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                sa.text("UPDATE transactions SET created_at = now() - interval '2 days' WHERE transaction_id = :t"),
+                {"t": old.transaction_id},
+            )
+
+        summary = await summarize_transactions(session_factory, datetime.now(UTC) - timedelta(days=1))
+
+        assert summary == {"total": 3, "fraud": 2, "by_category": {"CRYPTO": 2, "GROCERIES": 1}}
+
+    async def test_selects_by_decision_time_not_event_time(self, session_factory):
+        # A late event (occurred long ago, scored now) belongs to today's summary.
+        await self.record(session_factory, 1, occurred_at=T0 - timedelta(days=30))
+
+        summary = await summarize_transactions(session_factory, datetime.now(UTC) - timedelta(days=1))
+
+        assert summary["total"] == 1
+
+    async def test_empty_window(self, session_factory):
+        summary = await summarize_transactions(session_factory, datetime.now(UTC))
+        assert summary == {"total": 0, "fraud": 0, "by_category": {}}
+
+    async def test_summary_query_uses_the_created_at_index(self, session_factory):
+        async with session_factory() as session:
+            await session.execute(sa.text("SET enable_seqscan = off"))
+            plan = "\n".join(
+                row[0]
+                for row in await session.execute(
+                    sa.text("EXPLAIN SELECT count(*) FROM transactions WHERE created_at >= now() - interval '1 day'")
+                )
+            )
+        assert "ix_transactions_created" in plan
+
+    async def test_run_summary_reads_the_real_database(self, session_factory, integration_env):
+        from app.batch_worker import run_summary
+
+        await self.record(session_factory, 1, category="CRYPTO", verdict="REJECTED", is_fraud=True, risk_score=90)
+
+        summary = await run_summary(integration_env)
+
+        assert summary == {"total": 1, "fraud": 1, "by_category": {"CRYPTO": 1}}
+
+
 class TestRuleSetVersions:
     async def test_migration_seeds_default_rule_set(self, session_factory):
         rule_set = await get_latest_rule_set(session_factory, "fraud-default")
         assert rule_set.version == 1
         assert rule_set.content_hash == content_hash(parse_rule_set_definition(DEFAULT_RULE_SET_DEFINITION))
+
+    async def test_get_one_version_and_unknown_version(self, session_factory):
+        rule_set = await get_rule_set_version(session_factory, "fraud-default", 1)
+        assert (rule_set.key, rule_set.version) == ("fraud-default", 1)
+        with pytest.raises(RuleSetNotFoundError, match="has no version 9"):
+            await get_rule_set_version(session_factory, "fraud-default", 9)
+        with pytest.raises(RuleSetNotFoundError):
+            await get_rule_set_version(session_factory, "no-such-key", 1)
 
     async def test_append_and_optimistic_concurrency(self, session_factory):
         definition = parse_rule_set_definition(DEFAULT_RULE_SET_DEFINITION)

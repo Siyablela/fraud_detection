@@ -263,7 +263,9 @@ class Smoke:
         )
 
         time.sleep(7)  # the worker's in-process rule cache refreshes every 5s
-        flagged = self.decision(self.publish(str(uuid4()), "8000.00") if self.flush() is None else "")
+        flagged_id = self.publish(str(uuid4()), "8000.00")
+        self.flush()
+        flagged = self.decision(flagged_id)
         self.check(
             "Worker applies the new version",
             flagged["triggered_rules"] == ["HIGH_VALUE_THRESHOLD"]

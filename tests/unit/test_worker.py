@@ -1,8 +1,10 @@
 import asyncio
 import os
+import signal
 from types import SimpleNamespace
 
 import pytest
+from confluent_kafka import KafkaError, KafkaException
 from prometheus_client import REGISTRY
 
 from app.database import RecordOutcome
@@ -252,3 +254,174 @@ def test_group_membership_resets_the_absence_timer(settings):
     consumer.member_id = None
     now[0] = 1_000.0 + settings.worker_max_group_absence_seconds - 1
     worker._check_group_membership()
+
+
+class PollingConsumer(FakeConsumer):
+    """Replays scripted ``poll`` results, then asks the worker to stop."""
+
+    def __init__(self, worker_ref: list, *polled):
+        super().__init__()
+        self.polled = list(polled)
+        self.worker_ref = worker_ref
+        self.closed = False
+        self.health_at_poll: list[float | None] = []
+
+    def subscribe(self, topics, on_assign, on_revoke, on_lost):
+        self.topics = topics
+
+    def poll(self, _timeout):
+        self.health_at_poll.append(kafka_up())
+        if self.polled:
+            return self.polled.pop(0)
+        self.worker_ref[0].stop()
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+class ErrorMessage:
+    def __init__(self, error: KafkaError):
+        self._error = error
+
+    def error(self):
+        return self._error
+
+
+def kafka_up() -> float | None:
+    return REGISTRY.get_sample_value("fraud_kafka_up", {"service": "fraud-worker", "component": "consumer"})
+
+
+@pytest.fixture
+def run_settings(settings, tmp_path):
+    os.environ["WORKER_HEARTBEAT_PATH"] = str(tmp_path / "heartbeat")
+    return Settings.from_env()
+
+
+def run_worker(settings, *polled):
+    ref: list = [None]
+    consumer = PollingConsumer(ref, *polled)
+    ref[0] = FraudWorker(settings, consumer, ScriptedHandler(), RecordingDeadLetters())
+    return consumer, ref[0]
+
+
+def test_transient_poll_errors_mark_kafka_down_and_keep_polling(run_settings):
+    transport = ErrorMessage(KafkaError(KafkaError._TRANSPORT, "broker gone"))
+    consumer, worker = run_worker(run_settings, FakeMessage(0), transport)
+
+    asyncio.run(worker.run())  # reported, not raised: the loop polls again and stops normally
+
+    assert consumer.health_at_poll[1:] == [1, 0]  # healthy after a message, down after the error
+    assert consumer.closed and consumer.topics == ["transactions"]
+
+
+def test_end_of_partition_is_not_an_error(run_settings):
+    eof = ErrorMessage(KafkaError(KafkaError._PARTITION_EOF))
+    consumer, worker = run_worker(run_settings, FakeMessage(0), eof)
+
+    asyncio.run(worker.run())
+
+    assert consumer.health_at_poll[1:] == [1, 1]  # EOF left the consumer marked healthy
+
+
+def test_fatal_poll_error_stops_the_worker_after_a_clean_shutdown(run_settings):
+    fatal = ErrorMessage(KafkaError(KafkaError._FENCED, "fenced", fatal=True))
+    consumer, worker = run_worker(run_settings, fatal)
+
+    with pytest.raises(KafkaException):
+        asyncio.run(worker.run())
+
+    assert consumer.closed  # offsets committed and the group left even on the way out
+
+
+class TestMain:
+    """``main`` wires real components together; dependencies are replaced by recorders."""
+
+    @pytest.fixture
+    def wiring(self, monkeypatch, run_settings):
+        import app.worker as worker_module
+
+        calls: list[str] = []
+
+        class Recorder:
+            def __init__(self, name):
+                self.name = name
+
+            def __call__(self, *_args, **_kwargs):
+                calls.append(self.name)
+
+        class FakeEngine:
+            async def dispose(self):
+                calls.append("engine.dispose")
+
+        class FakeRedis:
+            async def aclose(self):
+                calls.append("redis.aclose")
+
+        class FakeProducer:
+            def __init__(self, config):
+                self.config = config
+
+            def flush(self, _timeout):
+                calls.append("producer.flush")
+                return 0
+
+        class FakeKafkaConsumer:
+            def __init__(self, config):
+                calls.append("consumer.created")
+                self.config = config
+
+        async def ping(_session_factory, _service):
+            calls.append("ping_database")
+
+        monkeypatch.setattr(worker_module, "get_settings", lambda: run_settings)
+        monkeypatch.setattr(worker_module, "start_http_server", Recorder("metrics_server"))
+        monkeypatch.setattr(worker_module, "create_engine", lambda _settings: FakeEngine())
+        monkeypatch.setattr(worker_module, "create_redis_client", lambda _settings: FakeRedis())
+        monkeypatch.setattr(worker_module, "Producer", FakeProducer)
+        monkeypatch.setattr(worker_module, "Consumer", FakeKafkaConsumer)
+        monkeypatch.setattr(worker_module, "ping_database", ping)
+        return worker_module, calls
+
+    def run_main(self, monkeypatch, worker_module, worker_run):
+        handlers: dict = {}
+        monkeypatch.setattr(worker_module.FraudWorker, "run", worker_run)
+
+        async def go():
+            # add_signal_handler is not available on Windows event loops; record instead.
+            monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", handlers.__setitem__)
+            await worker_module.main()
+
+        asyncio.run(go())
+        return handlers
+
+    def test_wires_dependencies_installs_signal_handlers_and_cleans_up(self, monkeypatch, wiring):
+        worker_module, calls = wiring
+
+        async def run(worker):
+            calls.append("worker.run")
+
+        handlers = self.run_main(monkeypatch, worker_module, run)
+
+        assert calls == [
+            "metrics_server",
+            "consumer.created",
+            "ping_database",
+            "worker.run",
+            "producer.flush",
+            "redis.aclose",
+            "engine.dispose",
+        ]
+        assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
+        assert all(getattr(handler, "__name__", "") == "stop" for handler in handlers.values())
+
+    def test_cleans_up_when_the_worker_fails(self, monkeypatch, wiring):
+        worker_module, calls = wiring
+
+        async def run(worker):
+            raise RuntimeError("not a consumer group member")
+
+        with pytest.raises(RuntimeError):
+            self.run_main(monkeypatch, worker_module, run)
+
+        assert calls[-3:] == ["producer.flush", "redis.aclose", "engine.dispose"]

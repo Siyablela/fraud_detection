@@ -88,7 +88,6 @@ class TransactionRecord(Base):
     rules_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=_UTC_NOW)
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
@@ -99,6 +98,7 @@ class TransactionRecord(Base):
         Index("ix_transactions_user_occurred", "user_id", "occurred_at", "transaction_id"),
         Index("ix_transactions_category_occurred", "category", "occurred_at", "transaction_id"),
         Index("ix_transactions_occurred", "occurred_at", "transaction_id"),
+        Index("ix_transactions_created", "created_at"),
         Index(
             "ix_transactions_fraud_occurred",
             "occurred_at",
@@ -477,7 +477,12 @@ async def list_transactions(
 
 
 async def summarize_transactions(session_factory: SessionFactory, since: datetime) -> dict[str, Any]:
-    """Totals for the batch summary job: all, fraudulent, and per category since ``since``."""
+    """Totals for the batch summary job: all, fraudulent, and per category since ``since``.
+
+    Selects by ``created_at`` (when the decision was made), not ``occurred_at``:
+    consecutive daily runs then count every decision exactly once, including events
+    that arrived late. Served by ``ix_transactions_created``.
+    """
     async with session_factory() as session:
         totals = (
             await session.execute(
