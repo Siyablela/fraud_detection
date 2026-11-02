@@ -52,6 +52,16 @@ from app.settings import Settings
 SessionFactory = async_sessionmaker[AsyncSession]
 _UTC_NOW = text("timezone('UTC', now())")
 
+# Upper bound on rows per page for every list query. The API validates the same
+# bound; enforcing it here too means no caller can issue an unbounded scan.
+MAX_PAGE_SIZE = 100
+
+
+def _check_page_size(limit: int) -> None:
+    """Raises ``ValueError`` unless ``1 <= limit <= MAX_PAGE_SIZE``."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
+        raise ValueError(f"limit must be an integer from 1 to {MAX_PAGE_SIZE}, got {limit!r}")
+
 
 class Base(DeclarativeBase):
     pass
@@ -430,7 +440,11 @@ async def list_transactions(
 
     Keyset pagination keeps every page an index range scan; OFFSET pagination
     re-reads and discards all earlier rows, so deep pages get slower as data grows.
+
+    Raises:
+        ValueError: ``limit`` is outside 1..``MAX_PAGE_SIZE``.
     """
+    _check_page_size(limit)
     query = select(TransactionRecord)
     if filters.user_id is not None:
         query = query.where(TransactionRecord.user_id == filters.user_id)
@@ -529,6 +543,14 @@ async def get_rule_set_version(session_factory: SessionFactory, key: str, versio
 async def list_rule_set_versions(
     session_factory: SessionFactory, key: str, limit: int, before_version: int | None
 ) -> list[RuleSet]:
+    """Return up to ``limit`` versions, newest first, older than ``before_version`` if given.
+
+    Raises:
+        ValueError: ``limit`` is outside 1..``MAX_PAGE_SIZE``, or ``before_version`` is below 1.
+    """
+    _check_page_size(limit)
+    if before_version is not None and before_version < 1:
+        raise ValueError(f"before_version must be at least 1, got {before_version!r}")
     query = select(RuleSetVersionRecord).where(RuleSetVersionRecord.rule_set_key == key)
     if before_version is not None:
         query = query.where(RuleSetVersionRecord.version < before_version)

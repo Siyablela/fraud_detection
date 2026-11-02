@@ -138,7 +138,9 @@ class TestTransactions:
         ("params", "status_code", "code"),
         [
             ({"limit": 0}, 422, "validation_error"),
+            ({"limit": -1}, 422, "validation_error"),
             ({"limit": 101}, 422, "validation_error"),
+            ({"limit": "ten"}, 422, "validation_error"),
             ({"occurred_from": "2026-10-29T00:00:00"}, 422, "validation_error"),  # naive datetime
             ({"cursor": "not-a-cursor"}, 400, "bad_request"),
         ],
@@ -236,6 +238,13 @@ class TestRuleSets:
         assert_error(
             client.get("/api/v1/rule-sets/nope-key/versions", headers=auth(scopes=RULES_READ)), 404, "not_found"
         )
+
+    @pytest.mark.parametrize(
+        "params", [{"limit": 0}, {"limit": -1}, {"limit": 101}, {"before_version": 1}, {"before_version": -5}]
+    )
+    def test_list_versions_rejects_out_of_range_paging(self, client, auth, params):
+        url = "/api/v1/rule-sets/fraud-default/versions"
+        assert_error(client.get(url, params=params, headers=auth(scopes=RULES_READ)), 422, "validation_error")
 
     def test_invalid_rule_set_key_is_422(self, client, auth):
         assert_error(
