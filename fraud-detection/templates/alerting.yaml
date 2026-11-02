@@ -40,6 +40,16 @@ spec:
             summary: Worker is retrying transient failures
             description: A dependency (usually PostgreSQL or Redis) is failing; affected partitions are paused on the failing message.
 
+        - alert: FraudWorkerPartitionBlocked
+          expr: max by (partition) (fraud_worker_partition_blocked_seconds{service="fraud-worker"}) > 600
+          labels: {{- toYaml (merge (dict "severity" "critical") $labels) | nindent 12 }}
+          annotations:
+            summary: "Partition {{`{{ $labels.partition }}`}} has been retrying one message for over 10 minutes"
+            description: >-
+              Transactions on this partition are not being scored. If no dependency alert is firing, a single message
+              keeps failing with an error classed as transient: find its offset in the worker's message_processing_retry
+              logs and fix the cause (or reclassify the error) so it can succeed or be dead-lettered.
+
         - alert: FraudWorkerBacklogGrowing
           expr: max(fraud_worker_partition_backlog) > 400
           for: 10m

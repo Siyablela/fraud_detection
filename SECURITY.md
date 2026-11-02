@@ -49,6 +49,13 @@ browser flows).
   dodged with self-made tokens. If Redis is down it fails open (counted in
   `fraud_rate_limiter_errors_total`, alerted) rather than taking the API down.
 - In Kubernetes, Kong adds a per-IP limit and a 64 KB request-size limit in front.
+- Requests that fail authentication never reach the per-caller limit, because
+  there is no verified caller to count them against (keying on an unverified `sub`
+  would let anyone exhaust someone else's budget). They are bounded instead by
+  Kong's per-IP limit, and each costs only a signature check against cached keys:
+  a token naming an unknown key triggers at most one JWKS fetch per
+  `JWT_JWKS_MIN_REFRESH_INTERVAL_SECONDS`. Docker Compose has no gateway, which is
+  why it publishes the API on `127.0.0.1` only; it is not an exposed deployment.
 - Rule sets are untrusted input to an interpreter: operators are allow-listed, depth
   and size are bounded, variables are checked, and the set is dry-run before storing.
 - Events above 64 KB are rejected before parsing.

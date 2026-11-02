@@ -18,4 +18,5 @@ infra/
 scripts/
 README.md
 SECURITY.md
+BRIEF.md
 integration_test.py

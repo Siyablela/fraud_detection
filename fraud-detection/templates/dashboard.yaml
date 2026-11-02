@@ -1,0 +1,14 @@
+{{- if .Values.dashboards.enabled }}
+# Grafana dashboard for the metrics the worker and API export. Grafana's dashboard
+# sidecar (as in kube-prometheus-stack) loads every ConfigMap carrying the label below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-grafana-dashboard
+  labels:
+    {{- include "fraud-detection.labels" (dict "root" . "component" "dashboard") | nindent 4 }}
+    {{ .Values.dashboards.sidecarLabel }}: {{ .Values.dashboards.sidecarLabelValue | quote }}
+data:
+  fraud-detection.json: |-
+{{ .Files.Get "files/grafana-dashboard.json" | indent 4 }}
+{{- end }}

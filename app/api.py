@@ -16,6 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.cache import create_redis_client, ping_redis, write_rule_set_cache
 from app.database import (
+    MAX_PAGE_SIZE,
     PageCursor,
     TransactionFilters,
     create_engine,
@@ -271,7 +272,7 @@ def v1_routes():
         verdict: Verdict | None = None,
         occurred_from: Annotated[AwareDatetime | None, Query(description="Inclusive lower bound (ISO-8601)")] = None,
         occurred_to: Annotated[AwareDatetime | None, Query(description="Exclusive upper bound (ISO-8601)")] = None,
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
         cursor: Annotated[str | None, Query(max_length=256, description="`next_cursor` from the previous page")] = None,
         _principal: AuthenticatedPrincipal = read_transactions,
     ) -> Any:
@@ -299,8 +300,15 @@ def v1_routes():
     async def list_versions(
         request: Request,
         key: RuleSetKey,
-        limit: Annotated[int, Query(ge=1, le=100)] = 20,
-        before_version: Annotated[int | None, Query(ge=2)] = None,
+        limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
+        before_version: Annotated[
+            int | None,
+            Query(
+                ge=2,
+                description="`next_before_version` from the previous page: return versions older than this one. "
+                "At least 2, since no version precedes version 1.",
+            ),
+        ] = None,
         _principal: AuthenticatedPrincipal = read_rules,
     ) -> Any:
         versions = await list_rule_set_versions(request.app.state.session_factory, key, limit, before_version)

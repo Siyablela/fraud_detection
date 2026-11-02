@@ -15,6 +15,7 @@ Installation, secrets, upgrades, rollback and scaling: [infra/README.md](../infr
 | `networkpolicy.yaml` | Ingress policies for the API, worker and data stores |
 | `resilience.yaml` | PodDisruptionBudgets, HPAs, cert-manager Certificate |
 | `alerting.yaml`, `alertmanager.yaml` | PrometheusRule alerts (when the CRD exists) and Alertmanager config |
+| `dashboard.yaml` | Grafana dashboard ConfigMap (`files/grafana-dashboard.json`), picked up by Grafana's dashboard sidecar; `dashboards.enabled` |
 
 `files/fraud-realm.json` is also mounted by `docker-compose.yml`, so local and
 cluster identity configuration cannot drift.

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -141,3 +142,30 @@ def test_batch_resident_mode_exits_cleanly_when_disabled():
     from app import batch_worker
 
     assert asyncio.run(batch_worker.main([])) == 0
+
+
+def test_batch_resident_mode_survives_a_failed_run_and_stops_on_signal(monkeypatch):
+    from app import batch_worker
+
+    os.environ["BATCH_JOB_ENABLED"] = "true"
+    handlers = {}
+    runs = []
+
+    async def fake_summary(_settings):
+        runs.append(len(runs) + 1)
+        if len(runs) == 1:
+            raise ConnectionError("db down")  # must not end the schedule
+        handlers[signal.SIGTERM]()  # second run done: deliver SIGTERM
+        return {"total": 0, "fraud": 0, "by_category": {}}
+
+    monkeypatch.setattr(batch_worker, "run_summary", fake_summary)
+    monkeypatch.setattr(batch_worker, "seconds_until_next_run", lambda *_args: 0)
+
+    async def go():
+        # add_signal_handler is not available on Windows event loops; record instead.
+        monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", handlers.__setitem__)
+        return await batch_worker.main([])
+
+    assert asyncio.run(go()) == 0
+    assert runs == [1, 2]
+    assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
