@@ -3,6 +3,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from prometheus_client import REGISTRY
 
 from app.database import RecordOutcome
 from app.errors import FailureClass, InvalidEventError, TransientError
@@ -189,6 +190,33 @@ def test_backlog_pauses_partition_and_resumes_when_drained(settings):
     asyncio.run(run())
     assert consumer.resumed == [1]
     assert [offset for _, offset in consumer.stored] == [1, 2, 3, 4, 5]
+
+
+def blocked_seconds(partition: int) -> float | None:
+    return REGISTRY.get_sample_value(
+        "fraud_worker_partition_blocked_seconds", {"service": "fraud-worker", "partition": str(partition)}
+    )
+
+
+def test_blocked_seconds_grows_while_retrying_and_resets_when_handled(settings):
+    clock = iter(range(0, 10_000, 100))  # each reading is 100 s after the last
+    seen = []
+
+    class ObservingHandler(ScriptedHandler):
+        async def process(self, value, provenance):
+            seen.append(blocked_seconds(5))
+            return await super().process(value, provenance)
+
+    handler = ObservingHandler(*[ConnectionError("db down")] * 3)
+    worker = FraudWorker(settings, FakeConsumer(), handler, RecordingDeadLetters(), clock=lambda: next(clock))
+    state = _PartitionState(topic="transactions", partition=5)
+
+    assert asyncio.run(worker._handle(state, FakeMessage(offset=7, partition=5))) is True
+    assert seen[1:] == [100, 200, 300]  # measured from the first failure, updated on every retry
+    assert blocked_seconds(5) == 0
+
+    asyncio.run(worker._stop_partitions([state]))
+    assert blocked_seconds(5) is None  # released partitions cannot keep the alert firing
 
 
 def test_messages_for_revoked_partitions_are_dropped_for_redelivery(settings):

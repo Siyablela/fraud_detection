@@ -372,6 +372,7 @@ depth. Transaction amounts and user ids are not logged.
 | `fraud_worker_decisions_total{verdict}`, `fraud_worker_rule_triggers_total{rule}` | Verdict mix and which rules fire |
 | `fraud_worker_retries_total{failure_class}` | Dependency trouble |
 | `fraud_worker_partition_backlog{partition}` | Falling behind |
+| `fraud_worker_partition_blocked_seconds{partition}` | A partition stuck retrying one message (transient retries never dead-letter) |
 | `fraud_worker_message_duration_seconds` | Scoring latency |
 | `fraud_http_requests_total`, `fraud_http_request_duration_seconds` | API traffic by route template (never raw paths) |
 | `fraud_database_up`, `fraud_kafka_up`, `fraud_rate_limiter_errors_total`, `fraud_rule_cache_lookups_total{layer}` | Dependency health |

@@ -50,6 +50,11 @@ _worker_message_latency_seconds = Histogram(
 _worker_partition_backlog = Gauge(
     "fraud_worker_partition_backlog", "Messages queued in the worker per partition", ["service", "partition"]
 )
+_worker_partition_blocked_seconds = Gauge(
+    "fraud_worker_partition_blocked_seconds",
+    "How long the partition's in-flight message has been failing; 0 when it is not",
+    ["service", "partition"],
+)
 _rule_cache_lookups_total = Counter(
     "fraud_rule_cache_lookups_total", "Active rule-set lookups by the layer that answered", ["layer"]
 )
@@ -266,11 +271,17 @@ def set_partition_backlog(service_name: str, partition: int, size: int) -> None:
     _worker_partition_backlog.labels(service=service_name, partition=str(partition)).set(size)
 
 
-def remove_partition_backlog(service_name: str, partition: int) -> None:
-    try:
-        _worker_partition_backlog.remove(service_name, str(partition))
-    except KeyError:
-        pass
+def set_partition_blocked(service_name: str, partition: int, seconds: float) -> None:
+    _worker_partition_blocked_seconds.labels(service=service_name, partition=str(partition)).set(seconds)
+
+
+def remove_partition_metrics(service_name: str, partition: int) -> None:
+    """Drop a released partition's series so a stale value cannot keep an alert firing."""
+    for gauge in (_worker_partition_backlog, _worker_partition_blocked_seconds):
+        try:
+            gauge.remove(service_name, str(partition))
+        except KeyError:
+            pass
 
 
 def record_rule_cache_lookup(layer: str) -> None:

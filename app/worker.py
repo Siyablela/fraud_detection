@@ -51,9 +51,10 @@ from app.observability import (
     configure_logging,
     get_correlation_id,
     get_logger,
-    remove_partition_backlog,
+    remove_partition_metrics,
     set_kafka_health,
     set_partition_backlog,
+    set_partition_blocked,
     worker_fraud_decision,
     worker_message_outcome,
     worker_message_timer,
@@ -237,7 +238,7 @@ class FraudWorker:
                 await asyncio.gather(*pending, return_exceptions=True)
         for state in states:
             self._partitions.pop((state.topic, state.partition), None)
-            remove_partition_backlog(SERVICE_NAME, state.partition)
+            remove_partition_metrics(SERVICE_NAME, state.partition)
         if states:
             logger.info("partitions_released", partitions=sorted(state.partition for state in states))
 
@@ -286,6 +287,7 @@ class FraudWorker:
         pending_letter: DeadLetter | None = None
         unexpected_failures = 0
         attempt = 0
+        failing_since: float | None = None
 
         while not state.stopping.is_set():
             attempt += 1
@@ -297,8 +299,10 @@ class FraudWorker:
                     worker_message_outcome(SERVICE_NAME, topic, result.outcome.value)
                     if result.outcome is RecordOutcome.EVALUATED:
                         worker_fraud_decision(SERVICE_NAME, result.decision.verdict, result.decision.triggered_rules)
+                    self._clear_blocked(partition, failing_since)
                     return True
                 await self._dead_letters.publish(pending_letter)
+                self._clear_blocked(partition, failing_since)
                 worker_message_outcome(SERVICE_NAME, topic, "dlq")
                 logger.error(
                     "message_dead_lettered",
@@ -314,6 +318,8 @@ class FraudWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if failing_since is None:
+                    failing_since = self._clock()
                 if pending_letter is None:
                     failure = classify_failure(exc)
                     if failure is FailureClass.UNEXPECTED:
@@ -349,6 +355,9 @@ class FraudWorker:
                     self._settings.worker_retry_max_backoff_seconds,
                 )
                 worker_retry(SERVICE_NAME, failure_label)
+                # Transient retries never give up, so this is what reveals one message
+                # (rather than an outage) holding its partition indefinitely.
+                set_partition_blocked(SERVICE_NAME, partition, self._clock() - failing_since)
                 logger.warning(
                     "message_processing_retry",
                     failure_class=failure_label,
@@ -364,6 +373,11 @@ class FraudWorker:
                     pass
         logger.info("message_abandoned_for_redelivery", source_partition=partition, source_offset=offset)
         return False
+
+    @staticmethod
+    def _clear_blocked(partition: int, failing_since: float | None) -> None:
+        if failing_since is not None:
+            set_partition_blocked(SERVICE_NAME, partition, 0)
 
 
 async def main() -> None:
