@@ -20,12 +20,12 @@ api:
   replicaCount: 2
   image:
     repository: ghcr.io/siyablela/fraud_detection
-    tag: b0026c91d558219838f11d9f2d429798c56a95d4
+    tag: 0a8c96fa98b9c2f549b2b5710a1b21380d67e576
 worker:
   replicaCount: 2
   image:
     repository: ghcr.io/siyablela/fraud_detection
-    tag: b0026c91d558219838f11d9f2d429798c56a95d4
+    tag: 0a8c96fa98b9c2f549b2b5710a1b21380d67e576
 resilience:
   autoscaling:
     enabled: true
