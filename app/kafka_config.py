@@ -5,16 +5,17 @@ message is fully handled (decision committed to PostgreSQL, or dead-lettered and
 acknowledged) and librdkafka auto-commits the *stored* offsets. Downstream writes
 are idempotent (see :mod:`app.database`), so redelivery after a crash is harmless.
 
-Security: ``PLAINTEXT`` (local only), ``SSL`` (TLS / mutual TLS), or
-``SASL_PLAINTEXT``/``SASL_SSL`` with OAUTHBEARER client credentials, where
-librdkafka fetches and refreshes tokens from ``KAFKA_OAUTH_TOKEN_URL`` itself.
+Security: ``PLAINTEXT`` (local only), ``SSL`` (TLS / mutual TLS), or ``SASL_SSL``
+with OAUTHBEARER clien credentials, where librdkafka fetches and refreshes tokens
+from ``KAFKA_OAUTH_TOKEN_URL`` itself. ``SASL_PLAINTEXT`` is deliberately not
+supported: it would send those credentials over an unencrypted connection.
 """
 
 from typing import Any
 
 from app.settings import Settings
 
-_SUPPORTED_PROTOCOLS = frozenset({"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"})
+_SUPPORTED_PROTOCOLS = frozenset({"PLAINTEXT", "SSL", "SASL_SSL"})
 
 
 def _security_config(settings: Settings) -> dict[str, Any]:
@@ -32,7 +33,7 @@ def _security_config(settings: Settings) -> dict[str, Any]:
         }
         config.update({name: value for name, value in tls_settings.items() if value})
 
-    if protocol.startswith("SASL_"):
+    if protocol == "SASL_SSL":
         missing = [
             name
             for name, value in (

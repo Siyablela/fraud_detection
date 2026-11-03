@@ -23,7 +23,7 @@ before installing, from your secret store (External Secrets, Vault, sealed secre
 |---|---|
 | `database-url` | always - e.g. `postgresql://fraud:...@postgres:5432/fraud_detection` |
 | `redis-url` | always - e.g. `redis://:...@redis:6379/0` |
-| `kafka-oauth-client-secret` | `config.kafkaSecurityProtocol` is `SASL_*` |
+| `kafka-oauth-client-secret` | `config.kafkaSecurityProtocol` is `SASL_SSL` |
 | `postgres-password`, `redis-password`, `keycloak-admin-password`, `fraud-analyst-client-secret`, `fraud-rules-admin-client-secret` | `inClusterDependencies.enabled` |
 
 Local example only:

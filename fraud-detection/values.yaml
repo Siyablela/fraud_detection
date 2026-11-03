@@ -14,7 +14,7 @@ imagePullSecrets: []
 # Every credential comes from this existing Secret (created by your secret store,
 # e.g. External Secrets / Vault). Keys:
 #   database-url, redis-url                      always
-#   kafka-oauth-client-secret                    when config.kafkaSecurityProtocol is SASL_*
+#   kafka-oauth-client-secret                    when config.kafkaSecurityProtocol is SASL_SSL
 #   postgres-password, redis-password,
 #   keycloak-admin-password,
 #   fraud-analyst-client-secret,
