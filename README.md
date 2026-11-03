@@ -145,6 +145,45 @@ Integration tests start throwaway PostgreSQL, Redis and Kafka containers
 | `tests/integration` | Migrations, idempotent writes under redelivery and re-publication, conflicting duplicates, the velocity window's bounds, keyset pagination, index use, concurrent rule-set writes, Kafka -> worker -> PostgreSQL -> API end to end, DLQ, restart without reprocessing |
 | `scripts/smoke_test.py` | The running Compose stack, through Keycloak, Kafka and the gateway-free API |
 
+### Load test
+
+Two tools in [scripts/loadtest/](scripts/loadtest), both run against the Compose stack:
+
+- **API**: [run_api_load.py](scripts/loadtest/run_api_load.py) drives
+  [k6](https://k6.io) (in Docker, on the Compose network) at fixed request rates, stepping
+  up until a step fails (>1% errors, <95% of the offered rate achieved, or p99 over
+  500 ms). Fixed rates mean a slow server shows up as latency instead of quietly lowering
+  the load. The API's per-caller limit (100/min) must be raised first, or every step
+  measures 429s.
+- **Pipeline**: [pipeline_load.py](scripts/loadtest/pipeline_load.py) publishes tagged
+  events and reads the worker's own per-message timings from `transaction_history`
+  (Kafka produce time to decision commit). Run it inside the Compose network for
+  millisecond accuracy; its docstring shows how.
+
+```bash
+RATE_LIMIT_REQUESTS=100000000 docker compose up --build --wait
+python scripts/loadtest/pipeline_load.py --events 20000            # capacity; also seeds data for the API test
+python scripts/loadtest/run_api_load.py                            # get, list, evaluate, mixed
+```
+
+Reference results, 2026-11-03: everything (Kafka, PostgreSQL, Keycloak, Redis, one
+worker, one API process) on a 2-vCPU, 4 GB Docker VM, so absolute numbers are a floor,
+not production capacity.
+
+| | Sustained throughput | Latency at that load |
+|---|---|---|
+| Worker (one replica, 6 partitions) | ~95 events/s | at 50/s: p50 16 ms, p95 61 ms, p99 236 ms publish-to-decision |
+| API, `GET /transactions/{id}` (one process) | ~80 req/s | p50 8 ms, p99 74 ms |
+| API, mixed (70% get, 25% list, 5% evaluate) | ~70 req/s | p50 8 ms, p99 47 ms |
+
+Both are **CPU-bound on one core** (one Python event loop each; PostgreSQL stayed under
+30% CPU), so they scale out: worker replicas up to the partition count, API replicas
+behind the gateway. Past saturation the API does not degrade gradually: requests queue
+for database connections and return 503 after the 5 s pool timeout. A profile of the
+API under load puts about half its CPU in avoidable overhead: Starlette's
+`BaseHTTPMiddleware` (21%), the thread-pool hop for JWT verification (15%, against 2%
+for the verification itself) and SQLAlchemy query building (16%).
+
 ## API
 
 All endpoints except `/live`, `/ready` and `/metrics` need `Authorization: Bearer <JWT>`

@@ -46,3 +46,4 @@ known-third-party = ["alembic"]
 "app/healthcheck.py" = ["S310", "S108"]     # fixed loopback URL; heartbeat in a single-user container
 "app/settings.py" = ["S108"]                # same heartbeat default
 "alembic/versions/*" = ["S608"]     # DDL built from constant table names
+"scripts/loadtest/*" = ["S311", "S603"]  # synthetic test data; a fixed docker command
