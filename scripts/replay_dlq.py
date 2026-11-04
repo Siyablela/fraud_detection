@@ -16,6 +16,7 @@ from confluent_kafka import Consumer, Producer
 
 
 def main() -> int:
+    """Copy dead letters back to their source topic (or just list them with --dry-run)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bootstrap-servers", default="localhost:29092")
     parser.add_argument("--dlq-topic", default="transactions.dlq")

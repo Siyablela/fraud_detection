@@ -26,11 +26,15 @@ logger = get_logger(__name__)
 
 
 class ActiveRuleSetSource(Protocol):
+    """Anything that returns the active rule set: ``RuleSetProvider`` in production, a fake in tests."""
+
     async def get_active(self) -> RuleSet: ...
 
 
 @dataclass(frozen=True)
 class Score:
+    """The assessment plus the velocity inputs it was based on (logged and returned by dry runs)."""
+
     assessment: Assessment
     prior_count: int
     prior_amount: Decimal
@@ -92,6 +96,8 @@ class TransactionProcessor:
     async def process(self, value: bytes | None, provenance: MessageProvenance) -> RecordResult:
         """Raises the typed errors from :mod:`app.errors`; the caller decides retry vs DLQ."""
         event = parse_transaction_event(value)
+        # From here on, every log line for this message carries the event's correlation
+        # id, so it can be followed from the producer through to the API.
         bind_correlation_id(event.correlation_id or str(event.transaction_id))
         enrichment = event.enrichment.model_dump(exclude_none=True) if event.enrichment else None
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.errors import (
     ConflictingDuplicateError,
+    CorruptRuleSetError,
     FailureClass,
     InvalidEventError,
     RuleEvaluationError,
@@ -41,6 +42,7 @@ def _validation_error() -> ValidationError:
         (sqlalchemy.exc.OperationalError("SELECT 1", {}, asyncpg.PostgresConnectionError()), FailureClass.TRANSIENT),
         (sqlalchemy.exc.DBAPIError("SELECT 1", {}, Exception(), connection_invalidated=True), FailureClass.TRANSIENT),
         (sqlalchemy.exc.TimeoutError(), FailureClass.TRANSIENT),
+        (CorruptRuleSetError("x"), FailureClass.TRANSIENT),  # hold partitions, never dead-letter
         (InvalidEventError("x"), FailureClass.PERMANENT),
         (ConflictingDuplicateError("x"), FailureClass.PERMANENT),
         (_validation_error(), FailureClass.PERMANENT),
@@ -85,12 +87,13 @@ def test_sasl_ssl_uses_oidc_client_credentials_and_tls():
 
 
 def test_sasl_without_credentials_fails_fast():
-    os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_PLAINTEXT"
+    os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_SSL"
     with pytest.raises(RuntimeError, match="KAFKA_OAUTH_CLIENT_SECRET"):
         build_consumer_config(Settings.from_env())
 
 
-def test_unknown_protocol_rejected():
-    os.environ["KAFKA_SECURITY_PROTOCOL"] = "SASL_GSSAPI"
+@pytest.mark.parametrize("protocol", ["SASL_GSSAPI", "SASL_PLAINTEXT"])  # SASL_PLAINTEXT: credentials in clear
+def test_unknown_protocol_rejected(protocol):
+    os.environ["KAFKA_SECURITY_PROTOCOL"] = protocol
     with pytest.raises(RuntimeError, match="KAFKA_SECURITY_PROTOCOL"):
         build_producer_config(Settings.from_env())

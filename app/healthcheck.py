@@ -13,10 +13,13 @@ import sys
 import time
 import urllib.request
 
+# The poll loop touches the file at least once a second; 60 s leaves room for a
+# slow rebalance without declaring a healthy worker dead.
 HEARTBEAT_MAX_AGE_SECONDS = 60
 
 
 def check_api(port: int = 8000) -> bool:
+    """Healthy when ``/ready`` answers 200 (used by Docker; Kubernetes probes the endpoints itself)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/ready", timeout=3) as response:
             return response.status == 200
@@ -25,6 +28,7 @@ def check_api(port: int = 8000) -> bool:
 
 
 def check_worker(path: str) -> bool:
+    """Healthy when the heartbeat file was touched within ``HEARTBEAT_MAX_AGE_SECONDS``."""
     try:
         return time.time() - os.path.getmtime(path) < HEARTBEAT_MAX_AGE_SECONDS
     except OSError:
@@ -32,6 +36,7 @@ def check_worker(path: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    """Return the process exit code Docker and Kubernetes read: 0 healthy, 1 not, 2 bad usage."""
     target = argv[1] if len(argv) > 1 else ""
     if target == "api":
         healthy = check_api(int(os.getenv("API_PORT", "8000")))

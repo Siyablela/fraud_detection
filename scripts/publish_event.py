@@ -16,6 +16,7 @@ from confluent_kafka import Producer
 
 
 def build_event(args: argparse.Namespace, index: int, user_id: str) -> dict:
+    """One TransactionCreated event; the index offsets occurred_at for --count."""
     occurred_at = (args.occurred_at or datetime.now(UTC)) + timedelta(seconds=index)
     return {
         "schema_version": 1,
@@ -23,6 +24,7 @@ def build_event(args: argparse.Namespace, index: int, user_id: str) -> dict:
         "transaction_id": args.transaction_id or str(uuid4()),
         "user_id": user_id,
         "amount": args.amount,
+        "currency": args.currency,
         "category": args.category,
         "occurred_at": occurred_at.isoformat(),
         "correlation_id": f"cli-{uuid4()}",
@@ -30,19 +32,29 @@ def build_event(args: argparse.Namespace, index: int, user_id: str) -> dict:
 
 
 def main() -> int:
+    """Publish the requested events and print each one (its correlation_id finds it in the logs)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bootstrap-servers", default="localhost:29092")
     parser.add_argument("--topic", default="transactions")
     parser.add_argument("--user-id", default=None, help="defaults to a new random UUID")
     parser.add_argument("--transaction-id", default=None, help="reuse to simulate a duplicate publish")
     parser.add_argument("--amount", default="125.50", help="decimal string, e.g. 10000.00")
+    parser.add_argument("--currency", default="ZAR", help="ISO 4217; the rule thresholds are in ZAR")
     parser.add_argument("--category", default="GROCERIES")
     parser.add_argument("--occurred-at", type=datetime.fromisoformat, default=None, help="ISO-8601 with offset")
     parser.add_argument("--count", type=int, default=1, help="events to send, one second apart in event time")
     parser.add_argument("--raw", default=None, help="send this exact payload instead of a generated event")
     args = parser.parse_args()
 
-    producer = Producer({"bootstrap.servers": args.bootstrap_servers, "acks": "all", "enable.idempotence": True})
+    producer = Producer(
+        {
+            "bootstrap.servers": args.bootstrap_servers,
+            "acks": "all",
+            "enable.idempotence": True,
+            # localhost resolves to ::1 first on Windows; each failed IPv6 attempt stalls ~2 s.
+            "broker.address.family": "v4",
+        }
+    )
     user_id = args.user_id or str(uuid4())
     if args.raw is not None:
         producer.produce(args.topic, key=b"raw", value=args.raw.encode("utf-8"))

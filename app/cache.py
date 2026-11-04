@@ -8,6 +8,13 @@ Redis off the per-message hot path.
 Staleness bound: publishing a version writes PostgreSQL, then overwrites the Redis
 entry, so pods normally switch within the local TTL. If that Redis write fails,
 pods may keep the previous version for up to local TTL + Redis TTL.
+
+Integrity: every copy loaded from Redis or PostgreSQL is checked against its
+content hash, validated and dry-run (``load_stored_definition``). There is no
+fallback: if the active version cannot be loaded, or fails that check, scoring
+stops (the caller retries) rather than continuing with rules other than the
+active ones. A row edited in place is refused within local TTL + Redis TTL,
+once the valid copies already cached expire.
 """
 
 import json
@@ -19,12 +26,16 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from app.database import SessionFactory, get_latest_rule_set
-from app.observability import get_logger, record_rule_cache_lookup
-from app.rules import RuleSet, RuleSetDefinition
+from app.errors import CorruptRuleSetError
+from app.observability import get_logger, record_rule_cache_lookup, record_rule_set_rejected
+from app.rules import RuleSet, load_stored_definition
 from app.settings import Settings
 
 logger = get_logger(__name__)
 
+# Bump when the entry format changes. During a rolling deploy, old and new pods share
+# Redis; an entry in an unknown format is ignored (read from PostgreSQL instead) rather
+# than misread.
 _CACHE_ENTRY_SCHEMA = 1
 
 
@@ -35,20 +46,23 @@ def create_redis_client(settings: Settings) -> aioredis.Redis:
         max_connections=settings.redis_max_connections,
         socket_timeout=settings.redis_socket_timeout_seconds,
         socket_connect_timeout=settings.redis_socket_timeout_seconds,
-        health_check_interval=30,
+        health_check_interval=30,  # ping idle connections so a dead one is replaced before use
         decode_responses=True,
     )
 
 
 async def ping_redis(client: aioredis.Redis) -> None:
+    """Raise if Redis is unreachable; used by the API's readiness check."""
     await client.ping()
 
 
 def rule_set_cache_key(key: str) -> str:
+    """The Redis key holding a rule set's active version; publishing overwrites it."""
     return f"fraud:rule-sets:{key}:active"
 
 
 def _serialise(rule_set: RuleSet) -> str:
+    """Cache entry: the stored definition JSON plus its hash, so a reader can verify it."""
     return json.dumps(
         {
             "schema": _CACHE_ENTRY_SCHEMA,
@@ -71,7 +85,9 @@ def _deserialise(payload: str) -> RuleSet | None:
     return RuleSet(
         key=entry["key"],
         version=int(entry["version"]),
-        definition=RuleSetDefinition.model_validate(entry["definition"]),
+        definition=load_stored_definition(
+            entry["definition"], entry["content_hash"], f"{entry['key']}@v{entry['version']}"
+        ),
         content_hash=entry["content_hash"],
         description=entry["description"],
         created_by=entry["created_by"],
@@ -108,8 +124,10 @@ class RuleSetProvider:
         """Return the active rule set.
 
         Raises:
-            RuleSetNotFoundError: No rule set exists and none was cached before.
-            Exception: Database errors when there is no previously loaded copy.
+            RuleSetNotFoundError: No rule set exists.
+            CorruptRuleSetError: The active version fails its integrity check.
+            Exception: Database errors. There is deliberately no fallback to a
+                previously loaded version: scoring stops until the active one loads.
         """
         if self._cached is not None and self._clock() - self._cached_at < self._local_ttl:
             record_rule_cache_lookup("local")
@@ -121,18 +139,11 @@ class RuleSetProvider:
         else:
             try:
                 rule_set = await get_latest_rule_set(self._session_factory, self._key)
-            except Exception as exc:
-                if self._cached is None:
-                    raise
-                # Keep scoring with the last known rules rather than failing every
-                # message; the database outage itself is surfaced by its own alert.
-                logger.warning(
-                    "rule_set_refresh_failed_serving_stale",
-                    rule_set=self._cached.label,
-                    error_type=type(exc).__name__,
-                )
-                self._cached_at = self._clock()
-                return self._cached
+            except CorruptRuleSetError as exc:
+                self._cached = None  # never fall back to a copy loaded before the problem
+                record_rule_set_rejected(self._key)
+                logger.error("rule_set_rejected_scoring_stopped", rule_set_key=self._key, error=str(exc))
+                raise
             record_rule_cache_lookup("database")
             await self._write_redis(rule_set)
 

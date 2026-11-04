@@ -21,6 +21,7 @@ from confluent_kafka import Consumer, Producer
 
 
 def load_env(path: Path) -> dict[str, str]:
+    """Read KEY=VALUE lines from an env file (comments and blanks ignored)."""
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -31,6 +32,8 @@ def load_env(path: Path) -> dict[str, str]:
 
 
 class Smoke:
+    """Runs every documented scenario against the running stack and records pass/fail."""
+
     def __init__(self, env: dict[str, str]):
         self.api = f"http://localhost:{env.get('API_HOST_PORT', '8000')}"
         self.token_url = (
@@ -47,6 +50,7 @@ class Smoke:
     # --- helpers -----------------------------------------------------------------
 
     def token(self, client_id: str, secret_name: str) -> str:
+        """Get an access token for a Keycloak client (client-credentials grant)."""
         response = self.http.post(
             self.token_url,
             data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": self.env[secret_name]},
@@ -64,6 +68,7 @@ class Smoke:
         currency: str = "ZAR",
         **optional,
     ) -> str:
+        """Publish one event; returns its transaction id (not yet flushed)."""
         event = {
             "schema_version": 1,
             "event_type": "TransactionCreated",
@@ -80,10 +85,12 @@ class Smoke:
         return event["transaction_id"]
 
     def flush(self) -> None:
+        """Wait until Kafka has acknowledged everything published so far."""
         if self.producer.flush(15) != 0:
             raise RuntimeError("Kafka did not acknowledge every event")
 
     def decision(self, transaction_id: str, timeout: float = 60) -> dict:
+        """Poll the API until the decision for ``transaction_id`` exists, or fail."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             response = self.http.get(f"{self.api}/api/v1/transactions/{transaction_id}", headers=self.reader)
@@ -93,11 +100,13 @@ class Smoke:
         raise AssertionError(f"no decision for {transaction_id} within {timeout}s")
 
     def check(self, name: str, condition: bool, detail: str = "") -> None:
+        """Record one scenario's result."""
         self.results.append((name, bool(condition), detail))
 
     # --- scenarios -----------------------------------------------------------
 
     def run(self) -> bool:
+        """Run all scenarios; True if every one passed."""
         ready = self.http.get(f"{self.api}/ready")
         self.check("API readiness", ready.status_code == 200, ready.text)
         self.reader = {"Authorization": f"Bearer {self.token('fraud-analyst', 'FRAUD_ANALYST_CLIENT_SECRET')}"}
@@ -214,6 +223,7 @@ class Smoke:
         return all(passed for _, passed, _ in self.results)
 
     def dead_lettered(self, marker: str) -> bool:
+        """True if a DLQ record carrying ``marker`` appears."""
         consumer = Consumer(
             {"bootstrap.servers": self.bootstrap, "group.id": f"smoke-{uuid4()}", "auto.offset.reset": "earliest"}
         )
@@ -232,6 +242,7 @@ class Smoke:
             consumer.close()
 
     def rule_update_scenario(self) -> None:
+        """Publish a rule-set version, see the API and worker use it, then restore."""
         base = f"{self.api}/api/v1/rule-sets/fraud-default"
         active = self.http.get(f"{base}/active", headers=self.reader).json()
         lowered = deepcopy(active["definition"])
@@ -285,6 +296,7 @@ class Smoke:
         self.check("Restore previous rules as a new version", restored.status_code == 201)
 
     def report(self) -> None:
+        """Print one PASS/FAIL line per scenario and a total."""
         width = max(len(name) for name, _, _ in self.results)
         for name, passed, detail in self.results:
             line = f"{'PASS' if passed else 'FAIL'}  {name.ljust(width)}"
@@ -294,6 +306,7 @@ class Smoke:
 
 
 def main() -> int:
+    """Exit code 0 if every scenario passed, 1 otherwise."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     args = parser.parse_args()

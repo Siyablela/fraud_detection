@@ -22,8 +22,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
-from app.errors import InvalidRuleSetError, RuleEvaluationError
+from app.errors import CorruptRuleSetError, InvalidRuleSetError, RuleEvaluationError
 
+# Limits on one rule's condition. Real rules use a handful of nodes; the caps stop a
+# published rule from being a recursion bomb or making every evaluation slow.
 MAX_EXPRESSION_DEPTH = 24
 MAX_EXPRESSION_NODES = 400
 
@@ -49,10 +51,12 @@ OPTIONAL_VARIABLES: frozenset[str] = frozenset(
 )
 CONTEXT_VARIABLES: frozenset[str] = REQUIRED_VARIABLES | OPTIONAL_VARIABLES
 
+# Distinguishes "variable absent" from a variable whose value is None/False/0.
 _MISSING = object()
 
 
 def _to_decimal(value: Any, operator: str) -> Decimal:
+    """Coerce a number to Decimal, rejecting everything else (including bool, an int subclass)."""
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise RuleEvaluationError(f"'{operator}' expects numbers, got {type(value).__name__}")
     return value if isinstance(value, Decimal) else Decimal(str(value))
@@ -63,6 +67,8 @@ def _numbers(args: list[Any], operator: str) -> list[Decimal]:
 
 
 def _compare(operator: str, check: Callable[[Decimal, Decimal], bool]):
+    """Build a numeric comparison operator; comparing non-numbers is an evaluation error."""
+
     def apply(*args: Any) -> bool:
         values = _numbers(list(args), operator)
         # JsonLogic "between": {"<": [a, b, c]} means a < b < c.
@@ -72,6 +78,7 @@ def _compare(operator: str, check: Callable[[Decimal, Decimal], bool]):
 
 
 def _equals(left: Any, right: Any) -> bool:
+    """Numbers compare by value (5 == 5.0); anything else compares as-is."""
     if isinstance(left, (int, float, Decimal)) and not isinstance(left, bool):
         if isinstance(right, (int, float, Decimal)) and not isinstance(right, bool):
             return _to_decimal(left, "==") == _to_decimal(right, "==")
@@ -79,6 +86,7 @@ def _equals(left: Any, right: Any) -> bool:
 
 
 def _membership(needle: Any, haystack: Any) -> bool:
+    """JsonLogic ``in``: an item in a list, or a substring of a string."""
     if isinstance(haystack, str):
         return isinstance(needle, str) and needle in haystack
     if isinstance(haystack, list):
@@ -198,6 +206,7 @@ def validate_expression(expression: Any, path: str = "condition") -> None:
 
 
 def _lookup(context: dict[str, Any], dotted_name: str) -> Any:
+    """Resolve ``velocity.prior_count``-style names; ``_MISSING`` if any part is absent."""
     current: Any = context
     for part in dotted_name.split("."):
         if not isinstance(current, dict) or part not in current:
@@ -207,6 +216,12 @@ def _lookup(context: dict[str, Any], dotted_name: str) -> Any:
 
 
 def _evaluate(node: Any, context: dict[str, Any]) -> Any:
+    """Evaluate one already-validated expression against the transaction's variables.
+
+    ``and``, ``or`` and ``if`` are handled here rather than in ``_OPERATORS`` because
+    they must not evaluate every argument: ``or`` stops at the first truthy one, and
+    ``if`` evaluates only the branch it takes.
+    """
     if isinstance(node, list):
         return [_evaluate(item, context) for item in node]
     if not isinstance(node, dict):
@@ -234,6 +249,8 @@ def _evaluate(node: Any, context: dict[str, Any]) -> Any:
 
 
 class RuleDefinition(BaseModel):
+    """One rule: if ``condition`` is truthy for a transaction, add ``score`` to its risk."""
+
     model_config = ConfigDict(extra="forbid")
 
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,63}$", description="Stable code reported when the rule fires.")
@@ -276,6 +293,7 @@ class RuleSetDefinition(BaseModel):
         return self
 
     def verdict_for(self, risk_score: int) -> Verdict:
+        """Map a total score to a verdict using this version's thresholds."""
         if risk_score >= self.reject_threshold:
             return Verdict.REJECTED
         if risk_score >= self.review_threshold:
@@ -317,14 +335,25 @@ def parse_rule_set_definition(raw: Any) -> RuleSetDefinition:
     return definition
 
 
-def content_hash(definition: RuleSetDefinition) -> str:
-    """SHA-256 of the canonical JSON form; identical rules always hash identically."""
-    canonical = json.dumps(definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+def definition_json_hash(raw: Any) -> str:
+    """SHA-256 of a definition's canonical JSON form (sorted keys, no whitespace)."""
+    canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def content_hash(definition: RuleSetDefinition) -> str:
+    """The hash stored with a new version; identical rules always hash identically.
+
+    It covers exactly the JSON that is stored (``model_dump(mode="json")``), so
+    :func:`load_stored_definition` can recheck it from the stored JSON alone.
+    """
+    return definition_json_hash(definition.model_dump(mode="json"))
 
 
 @dataclass(frozen=True)
 class RuleSet:
+    """One stored version of a rule set, with the metadata recorded on every decision."""
+
     key: str
     version: int
     definition: RuleSetDefinition
@@ -350,6 +379,8 @@ class Verdict(StrEnum):
 
 @dataclass(frozen=True)
 class EvaluationContext:
+    """Everything a rule can read about one transaction, including its velocity."""
+
     amount: Decimal
     currency: str
     category: str
@@ -360,6 +391,7 @@ class EvaluationContext:
     enrichment: dict[str, Any] = field(default_factory=dict)
 
     def as_variables(self) -> dict[str, Any]:
+        """The nested dict that ``var`` paths such as ``velocity.prior_count`` resolve against."""
         variables: dict[str, Any] = {
             "amount": self.amount,
             "currency": self.currency,
@@ -379,6 +411,8 @@ class EvaluationContext:
 
 @dataclass(frozen=True)
 class Assessment:
+    """The outcome of scoring one transaction."""
+
     triggered_rules: list[str]
     risk_score: int
     verdict: Verdict
@@ -396,6 +430,8 @@ def evaluate_rule_set(definition: RuleSetDefinition, context: EvaluationContext)
         RuleEvaluationError: If a rule cannot be evaluated against this context.
     """
     variables = context.as_variables()
+    # Every rule is evaluated, even once the reject threshold is reached, so the
+    # decision lists all the reasons it was flagged.
     triggered: list[str] = []
     risk_score = 0
     for code, score, condition in definition._compiled:
@@ -412,6 +448,33 @@ def evaluate_rule_set(definition: RuleSetDefinition, context: EvaluationContext)
 _DRY_RUN_CONTEXT = EvaluationContext(
     amount=Decimal("100.00"), currency="ZAR", category="GROCERIES", prior_count=1, prior_amount=Decimal("100.00")
 )
+
+
+def load_stored_definition(raw: Any, stored_hash: str, label: str) -> RuleSetDefinition:
+    """Rebuild a stored definition, refusing one that fails any integrity check.
+
+    Run on every load (from PostgreSQL or Redis), because the stored row can be
+    changed outside the API. The hash is checked against the stored JSON itself,
+    not a re-serialised model, so a later change to the model (a new optional
+    field, say) cannot make old versions fail.
+
+    Raises:
+        CorruptRuleSetError: The JSON does not match ``stored_hash`` (edited in
+            place: decisions would record rules that did not produce them), no
+            longer validates, or fails the publish-time dry run.
+    """
+    if definition_json_hash(raw) != stored_hash:
+        raise CorruptRuleSetError(f"rule set {label} does not match its content hash; it was changed after publishing")
+    try:
+        definition = RuleSetDefinition.model_validate(raw)
+    except ValidationError as exc:
+        reason = exc.errors(include_input=False, include_url=False)[0]["msg"]
+        raise CorruptRuleSetError(f"rule set {label} is not a valid definition: {reason}") from None
+    try:
+        evaluate_rule_set(definition, _DRY_RUN_CONTEXT)
+    except RuleEvaluationError as exc:
+        raise CorruptRuleSetError(f"rule set {label} fails the dry run: {exc}") from None
+    return definition
 
 
 # Amounts are in ZAR. Scores: one strong signal reaches REVIEW (>= 30); two

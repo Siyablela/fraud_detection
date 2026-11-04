@@ -65,7 +65,7 @@ capabilities:
   value: {{ .Values.config.kafkaConsumerGroupId | quote }}
 - name: KAFKA_SECURITY_PROTOCOL
   value: {{ .Values.config.kafkaSecurityProtocol | quote }}
-{{- if hasPrefix "SASL_" .Values.config.kafkaSecurityProtocol }}
+{{- if eq .Values.config.kafkaSecurityProtocol "SASL_SSL" }}
 - name: KAFKA_OAUTH_TOKEN_URL
   value: {{ required "config.kafkaOauthTokenUrl is required for SASL" .Values.config.kafkaOauthTokenUrl | quote }}
 - name: KAFKA_OAUTH_CLIENT_ID

@@ -145,6 +145,45 @@ Integration tests start throwaway PostgreSQL, Redis and Kafka containers
 | `tests/integration` | Migrations, idempotent writes under redelivery and re-publication, conflicting duplicates, the velocity window's bounds, keyset pagination, index use, concurrent rule-set writes, Kafka -> worker -> PostgreSQL -> API end to end, DLQ, restart without reprocessing |
 | `scripts/smoke_test.py` | The running Compose stack, through Keycloak, Kafka and the gateway-free API |
 
+### Load test
+
+Two tools in [scripts/loadtest/](scripts/loadtest), both run against the Compose stack:
+
+- **API**: [run_api_load.py](scripts/loadtest/run_api_load.py) drives
+  [k6](https://k6.io) (in Docker, on the Compose network) at fixed request rates, stepping
+  up until a step fails (>1% errors, <95% of the offered rate achieved, or p99 over
+  500 ms). Fixed rates mean a slow server shows up as latency instead of quietly lowering
+  the load. The API's per-caller limit (100/min) must be raised first, or every step
+  measures 429s.
+- **Pipeline**: [pipeline_load.py](scripts/loadtest/pipeline_load.py) publishes tagged
+  events and reads the worker's own per-message timings from `transaction_history`
+  (Kafka produce time to decision commit). Run it inside the Compose network for
+  millisecond accuracy; its docstring shows how.
+
+```bash
+RATE_LIMIT_REQUESTS=100000000 docker compose up --build --wait
+python scripts/loadtest/pipeline_load.py --events 20000            # capacity; also seeds data for the API test
+python scripts/loadtest/run_api_load.py                            # get, list, evaluate, mixed
+```
+
+Reference results, 2026-11-03: everything (Kafka, PostgreSQL, Keycloak, Redis, one
+worker, one API process) on a 2-vCPU, 4 GB Docker VM, so absolute numbers are a floor,
+not production capacity.
+
+| | Sustained throughput | Latency at that load |
+|---|---|---|
+| Worker (one replica, 6 partitions) | ~95 events/s | at 50/s: p50 16 ms, p95 61 ms, p99 236 ms publish-to-decision |
+| API, `GET /transactions/{id}` (one process) | ~80 req/s | p50 8 ms, p99 74 ms |
+| API, mixed (70% get, 25% list, 5% evaluate) | ~70 req/s | p50 8 ms, p99 47 ms |
+
+Both are **CPU-bound on one core** (one Python event loop each; PostgreSQL stayed under
+30% CPU), so they scale out: worker replicas up to the partition count, API replicas
+behind the gateway. Past saturation the API does not degrade gradually: requests queue
+for database connections and return 503 after the 5 s pool timeout. A profile of the
+API under load puts about half its CPU in avoidable overhead: Starlette's
+`BaseHTTPMiddleware` (21%), the thread-pool hop for JWT verification (15%, against 2%
+for the verification itself) and SQLAlchemy query building (16%).
+
 ## API
 
 All endpoints except `/live`, `/ready` and `/metrics` need `Authorization: Bearer <JWT>`
@@ -290,7 +329,9 @@ interpreter ([app/rules.py](app/rules.py)) with these variables: `amount`, `curr
 a default (`{"var": ["enrichment.distance_from_last_tx_km", 0]}`), or events without
 it would fail. Publishing validates operators, arity, variable names, size and depth,
 then dry-runs the set, so a broken rule is rejected with a 422 instead of failing
-every live transaction.
+every live transaction. The same checks run again every time a version is loaded,
+plus one more: the stored JSON must still match the hash recorded when it was
+published (see [Design decisions](#design-decisions-and-trade-offs)).
 
 ## Design decisions and trade-offs
 
@@ -327,7 +368,7 @@ but events already scored are not re-scored to include it.
 
 | Class | Examples | Worker response |
 |---|---|---|
-| transient | PostgreSQL/Redis down, pool timeout, no rule set yet | retry with capped exponential backoff and jitter, indefinitely, holding the partition |
+| transient | PostgreSQL/Redis down, pool timeout, no rule set yet, rule set failing its integrity check | retry with capped exponential backoff and jitter, indefinitely, holding the partition |
 | permanent | invalid event, unknown schema version, conflicting duplicate | dead-letter immediately |
 | unexpected | anything else (likely a bug triggered by that message) | retry 3 times, then dead-letter |
 
@@ -344,8 +385,21 @@ rebalance storm.
 **Rule sets as versioned data behind a cache.** The worker keeps the active version
 for 5 s, Redis for 60 s, PostgreSQL is the source of truth. Publishing overwrites the
 Redis entry, so workers switch within ~5 s. *Trade-off:* if that Redis write fails,
-workers can lag by up to 65 s. If PostgreSQL is down, workers keep the last version
-they loaded rather than stopping.
+workers can lag by up to 65 s.
+
+**A rule set that fails its integrity check stops scoring.** Rows can be changed
+outside the API, so every load re-checks the stored JSON against the hash recorded at
+publish time, revalidates it and dry-runs it. A version that fails is never used, and
+there is no fallback to an earlier one, because every decision records the version
+and hash that produced it: scoring with other rules would make that record false.
+The failure is classified as transient, so each partition holds its message and
+retries (nothing is dead-lettered or lost), the `FraudRuleSetRejected` alert fires,
+and scoring resumes once a valid version is published. The same applies when
+PostgreSQL is down and no valid copy is cached. *Cost:* a bad edit halts scoring
+instead of degrading it, and an edit is detected within ~65 s (once the valid
+copies already cached expire). The hash covers the stored JSON itself, not a
+re-serialised model, so adding a field to the model later cannot invalidate old
+versions.
 
 **Exact money.** `numeric(18,2)` in PostgreSQL, `Decimal` end to end, JSON numbers
 parsed as decimals, rule arithmetic in `Decimal`. With floats, `49999.99 + 0.01` is
@@ -379,6 +433,7 @@ depth. Transaction amounts and user ids are not logged.
 | `fraud_worker_message_duration_seconds` | Scoring latency |
 | `fraud_http_requests_total`, `fraud_http_request_duration_seconds` | API traffic by route template (never raw paths) |
 | `fraud_database_up`, `fraud_kafka_up`, `fraud_rate_limiter_errors_total`, `fraud_rule_cache_lookups_total{layer}` | Dependency health |
+| `fraud_rule_set_rejected_total{rule_set_key}` | The active rule set failed its integrity check; scoring has stopped |
 
 Alert rules ([fraud-detection/templates/alerting.yaml](fraud-detection/templates/alerting.yaml)) and a Grafana
 dashboard ([fraud-detection/files/grafana-dashboard.json](fraud-detection/files/grafana-dashboard.json)) for these
@@ -388,6 +443,19 @@ ship with the chart.
 when they were *made* (`created_at`), not when the transaction occurred. Consecutive runs
 then count every decision exactly once, including events that arrived late, which an
 event-time window would skip if they landed after that day's run.
+
+**Metrics and logs locally**: `docker compose --profile monitoring up --build --wait`
+adds Prometheus (http://localhost:9090), Loki, Grafana Alloy and Grafana
+(http://localhost:3000, anonymous read-only). Grafana opens on the same dashboard the
+chart ships; logs are under *Explore → Loki*. Alloy turns `service` and `level` into
+labels and leaves everything else in the JSON line, so per-request fields never
+become labels:
+
+```logql
+{service="fraud-worker", level="error"}                                  # worker errors
+{compose_project="fraud-detection"} | json | correlation_id="<id>"       # one event or request, API and worker
+{service="fraud-query-api"} | json | status_code >= 400                  # failed API calls
+```
 
 **Dead letters**: `python scripts/replay_dlq.py --dry-run` lists them with the failure
 reason. Fix the cause, then run without `--dry-run`.

@@ -4,7 +4,8 @@ Every failure the worker sees is sorted into one of three classes, because each
 needs a different response:
 
 * ``transient``  - the message is fine but a dependency is not (database down,
-  Redis timeout, no active rule set yet). Retry with backoff, never dead-letter:
+  Redis timeout, no active rule set yet, a rule set that fails its integrity
+  check). Retry with backoff, never dead-letter:
   every other message would fail the same way, so dead-lettering would only move
   good traffic into the DLQ.
 * ``permanent``  - the message itself can never succeed (bad schema, a duplicate
@@ -24,6 +25,8 @@ from pydantic import ValidationError
 
 
 class FailureClass(StrEnum):
+    """How the worker reacts to a failure; see the module docstring."""
+
     TRANSIENT = "transient"
     PERMANENT = "permanent"
     UNEXPECTED = "unexpected"
@@ -35,6 +38,16 @@ class FraudDetectionError(Exception):
 
 class TransientError(FraudDetectionError):
     """A dependency failed in a way that is expected to recover on retry."""
+
+
+class CorruptRuleSetError(TransientError):
+    """A stored rule-set version failed its integrity check: its definition no longer
+    matches its content hash, no longer validates, or fails the dry run.
+
+    Transient on purpose: the event is fine and the rules are not. The worker stops
+    scoring and holds its partitions, retrying until a valid version is published,
+    rather than scoring with different rules or dead-lettering good traffic.
+    """
 
 
 class PermanentError(FraudDetectionError):
@@ -87,10 +100,11 @@ class TransactionNotFoundError(FraudDetectionError):
     """No transaction exists with the requested id."""
 
 
+# Library exceptions that mean "a dependency is unavailable", not "this message is bad".
 _TRANSIENT_LIBRARY_ERRORS: tuple[type[BaseException], ...] = (
     TimeoutError,
     ConnectionError,
-    OSError,
+    OSError,  # socket-level failures (connection refused, reset, unreachable)
     asyncpg.PostgresConnectionError,
     asyncpg.exceptions.CannotConnectNowError,
     asyncpg.exceptions.TooManyConnectionsError,
@@ -107,20 +121,24 @@ def classify_failure(exc: BaseException) -> FailureClass:
     SQLAlchemy wraps driver errors, so the original driver exception is inspected
     as well as the wrapper.
     """
+    # Our own errors first: they state their class explicitly. A missing rule set is
+    # transient because publishing one fixes it without touching the message.
     if isinstance(exc, (TransientError, RuleSetNotFoundError)):
         return FailureClass.TRANSIENT
+    # A pydantic ValidationError here comes from validating the message itself.
     if isinstance(exc, (PermanentError, ValidationError)):
         return FailureClass.PERMANENT
 
     candidates: list[Any] = [exc]
     if isinstance(exc, sqlalchemy.exc.DBAPIError):
-        if exc.connection_invalidated:
+        if exc.connection_invalidated:  # the connection died mid-query; a retry gets a fresh one
             return FailureClass.TRANSIENT
         candidates.append(exc.orig)
         candidates.append(getattr(exc.orig, "__cause__", None))
     for candidate in candidates:
         if isinstance(candidate, _TRANSIENT_LIBRARY_ERRORS):
             return FailureClass.TRANSIENT
+    # Database-side operational problems (failover, disk full, ...) rather than bad SQL.
     if isinstance(exc, (sqlalchemy.exc.OperationalError, sqlalchemy.exc.InterfaceError)):
         return FailureClass.TRANSIENT
     return FailureClass.UNEXPECTED

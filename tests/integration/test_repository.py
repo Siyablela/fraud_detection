@@ -20,13 +20,28 @@ from app.database import (
     record_decision,
     summarize_transactions,
 )
-from app.errors import ConflictingDuplicateError, RuleSetNotFoundError, RuleSetVersionConflictError
+from app.errors import (
+    ConflictingDuplicateError,
+    CorruptRuleSetError,
+    RuleSetNotFoundError,
+    RuleSetVersionConflictError,
+)
 from app.rules import DEFAULT_RULE_SET_DEFINITION, content_hash, parse_rule_set_definition
 from tests.conftest import make_decision
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 T0 = datetime(2026, 10, 29, 12, tzinfo=UTC)
+
+# A valid edit made directly in the database, bypassing the API (and its hash).
+TAMPER_V1 = (
+    "UPDATE rule_set_versions SET definition = jsonb_set(definition, '{review_threshold}', '60') "
+    "WHERE rule_set_key = 'fraud-default' AND version = 1"
+)
+RESTORE_V1 = (
+    "UPDATE rule_set_versions SET definition = jsonb_set(definition, '{review_threshold}', '30') "
+    "WHERE rule_set_key = 'fraud-default' AND version = 1"
+)
 
 
 def provenance(offset: int, partition: int = 0) -> MessageProvenance:
@@ -276,6 +291,30 @@ class TestRuleSetVersions:
         rule_set = await get_latest_rule_set(session_factory, "fraud-default")
         assert rule_set.version == 1
         assert rule_set.content_hash == content_hash(parse_rule_set_definition(DEFAULT_RULE_SET_DEFINITION))
+
+    async def test_a_row_edited_in_place_is_refused_until_a_valid_version_is_published(self, session_factory):
+        async with session_factory() as session, session.begin():
+            await session.execute(sa.text(TAMPER_V1))
+        try:
+            with pytest.raises(CorruptRuleSetError, match="fraud-default@v1 does not match its content hash"):
+                await get_latest_rule_set(session_factory, "fraud-default")
+            with pytest.raises(CorruptRuleSetError):
+                await list_rule_set_versions(session_factory, "fraud-default", limit=10, before_version=None)
+
+            definition = parse_rule_set_definition(DEFAULT_RULE_SET_DEFINITION)
+            await create_rule_set_version(
+                session_factory,
+                key="fraud-default",
+                definition=definition,
+                definition_hash=content_hash(definition),
+                description="repair",
+                created_by="admin",
+                expected_current_version=1,
+            )
+            assert (await get_latest_rule_set(session_factory, "fraud-default")).version == 2
+        finally:
+            async with session_factory() as session, session.begin():
+                await session.execute(sa.text(RESTORE_V1))
 
     async def test_get_one_version_and_unknown_version(self, session_factory):
         rule_set = await get_rule_set_version(session_factory, "fraud-default", 1)

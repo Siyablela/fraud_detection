@@ -24,6 +24,8 @@ _MAX_ERROR_MESSAGE_CHARS = 1024
 
 @dataclass(frozen=True)
 class DeadLetter:
+    """A message that will not be processed: its original bytes plus why and where it failed."""
+
     source_topic: str
     source_partition: int
     source_offset: int
@@ -44,6 +46,7 @@ def describe_error(error: BaseException) -> str:
 
 
 def build_dlq_headers(letter: DeadLetter, failed_at: datetime | None = None) -> list[tuple[str, bytes]]:
+    """The ``dlq.*`` headers described in the module docstring, UTF-8 encoded."""
     failed_at = failed_at or datetime.now(UTC)
     headers = {
         "dlq.schema_version": DLQ_SCHEMA_VERSION,
@@ -62,6 +65,8 @@ def build_dlq_headers(letter: DeadLetter, failed_at: datetime | None = None) -> 
 
 
 class _Producer(Protocol):
+    """The part of confluent-kafka's ``Producer`` used here; tests pass a fake."""
+
     def produce(
         self, topic: str, value: Any = ..., key: Any = ..., headers: Any = ..., on_delivery: Any = ...
     ) -> None: ...
@@ -86,6 +91,8 @@ class DeadLetterPublisher:
         loop = asyncio.get_running_loop()
         delivered: asyncio.Future[None] = loop.create_future()
 
+        # librdkafka calls on_delivery on its own thread, not the event loop's, so the
+        # result is handed back to the loop with call_soon_threadsafe.
         def on_delivery(err: Any, _msg: Any) -> None:
             def settle() -> None:
                 if delivered.done():
@@ -110,6 +117,8 @@ class DeadLetterPublisher:
         # flush() serves the delivery callback; run it off the event loop.
         await asyncio.to_thread(self._producer.flush, self._timeout)
         try:
+            # flush() has returned, so the callback has run or never will; this only
+            # waits for the loop to process the result it scheduled.
             await asyncio.wait_for(delivered, timeout=1.0)
         except TimeoutError as exc:
             raise TransientError("DLQ delivery was not acknowledged in time") from exc

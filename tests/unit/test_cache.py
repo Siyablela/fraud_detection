@@ -3,10 +3,11 @@ import json
 
 import fakeredis
 import pytest
+from prometheus_client import REGISTRY
 
 from app import cache
 from app.cache import RuleSetProvider, rule_set_cache_key, write_rule_set_cache
-from app.errors import RuleSetNotFoundError
+from app.errors import CorruptRuleSetError, RuleSetNotFoundError
 from tests.conftest import default_rule_set
 
 
@@ -90,18 +91,50 @@ def test_redis_outage_falls_back_to_database(database):
     assert rule_set.version == 1
 
 
-def test_database_outage_serves_last_known_rule_set(database):
+def expire_and_fail(database, failure):
+    """Load v1, let every cached copy expire, then make the database lookup fail."""
     redis_client, clock = fakeredis.FakeAsyncRedis(decode_responses=True), Clock()
     rule_sets = provider(redis_client, clock)
 
     async def run():
         await rule_sets.get_active()
         await redis_client.flushall()
-        database["result"] = ConnectionError("db down")
+        database["result"] = failure
         clock.now = 10
         return await rule_sets.get_active()
 
-    assert asyncio.run(run()).version == 1
+    return run
+
+
+def test_database_outage_stops_scoring_rather_than_reusing_a_loaded_copy(database):
+    with pytest.raises(ConnectionError):
+        asyncio.run(expire_and_fail(database, ConnectionError("db down"))())
+
+
+def rejected_count() -> float:
+    return REGISTRY.get_sample_value("fraud_rule_set_rejected_total", {"rule_set_key": "fraud-default"}) or 0.0
+
+
+def test_corrupt_active_version_stops_scoring_and_is_counted(database):
+    before = rejected_count()
+    with pytest.raises(CorruptRuleSetError):
+        asyncio.run(expire_and_fail(database, CorruptRuleSetError("fraud-default@v1 does not match"))())
+    assert rejected_count() == before + 1
+
+
+def test_tampered_redis_entry_is_refused_and_the_database_copy_used(database):
+    redis_client = fakeredis.FakeAsyncRedis(decode_responses=True)
+
+    async def run():
+        await write_rule_set_cache(redis_client, default_rule_set(1), 60)
+        key = rule_set_cache_key("fraud-default")
+        entry = json.loads(await redis_client.get(key))
+        entry["definition"]["review_threshold"] = 60  # edited, hash left as published
+        await redis_client.set(key, json.dumps(entry))
+        return await provider(redis_client, Clock()).get_active()
+
+    assert asyncio.run(run()).definition.review_threshold == 30
+    assert database["calls"] == 1
 
 
 def test_database_outage_without_cached_copy_raises(database):

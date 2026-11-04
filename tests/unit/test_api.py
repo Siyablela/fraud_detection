@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import api
 from app.database import PageCursor
-from app.errors import RuleSetNotFoundError, RuleSetVersionConflictError
+from app.errors import CorruptRuleSetError, RuleSetNotFoundError, RuleSetVersionConflictError
 from app.rate_limit import RateLimiter
 from app.rules import DEFAULT_RULE_SET_DEFINITION
 from tests.conftest import default_rule_set
@@ -250,6 +250,16 @@ class TestRuleSets:
         assert_error(
             client.get("/api/v1/rule-sets/BAD_KEY/active", headers=auth(scopes=RULES_READ)), 422, "validation_error"
         )
+
+    def test_corrupt_version_is_500_naming_it(self, client, auth, monkeypatch):
+        async def fake_latest(_sf, key):
+            raise CorruptRuleSetError(f"rule set {key}@v3 does not match its content hash")
+
+        monkeypatch.setattr(api, "get_latest_rule_set", fake_latest)
+        response = client.get("/api/v1/rule-sets/fraud-default/active", headers=auth(scopes=RULES_READ))
+        error = assert_error(response, 500, "internal_error")
+        assert error["message"] == "rule set fraud-default@v3 does not match its content hash"
+        assert "Retry-After" not in response.headers  # retrying cannot help
 
     def test_missing_version_is_404(self, client, auth, monkeypatch):
         async def fake_get(_sf, key, version):

@@ -3,14 +3,16 @@ from decimal import Decimal
 
 import pytest
 
-from app.errors import InvalidRuleSetError, RuleEvaluationError
+from app.errors import CorruptRuleSetError, InvalidRuleSetError, RuleEvaluationError
 from app.rules import (
     DEFAULT_RULE_SET_DEFINITION,
     MAX_EXPRESSION_DEPTH,
     EvaluationContext,
     Verdict,
     content_hash,
+    definition_json_hash,
     evaluate_rule_set,
+    load_stored_definition,
     parse_rule_set_definition,
     validate_expression,
 )
@@ -241,3 +243,38 @@ class TestOptionalVariables:
         )
         assert fired(rule, context(channel="ONLINE", country="NG")) == ["TEST_RULE"]
         assert fired(rule, context(channel="ONLINE")) == []
+
+
+class TestLoadStoredDefinition:
+    """Every load re-checks the stored JSON, because the row can be edited outside the API."""
+
+    def stored(self, **changes):
+        raw = deepcopy(DEFAULT_RULE_SET_DEFINITION)
+        raw.update(changes)
+        return raw
+
+    def test_an_untouched_version_loads(self):
+        raw = self.stored()
+        assert load_stored_definition(raw, content_hash(DEFAULT), "fraud-default@v1") == DEFAULT
+
+    def test_the_stored_hash_covers_the_stored_json_not_the_model(self):
+        # The invariant the check relies on: hashing what is stored reproduces what was
+        # stored at publish time, so later model changes cannot invalidate old versions.
+        assert definition_json_hash(DEFAULT.model_dump(mode="json")) == content_hash(DEFAULT)
+
+    def test_a_valid_edit_made_in_place_is_refused(self):
+        tampered = self.stored(review_threshold=60)  # still a valid rule set
+        with pytest.raises(CorruptRuleSetError, match=r"fraud-default@v1 does not match its content hash"):
+            load_stored_definition(tampered, content_hash(DEFAULT), "fraud-default@v1")
+
+    def test_an_invalid_definition_is_refused_even_with_a_matching_hash(self):
+        broken = self.stored(rules=[])
+        with pytest.raises(CorruptRuleSetError, match="is not a valid definition"):
+            load_stored_definition(broken, definition_json_hash(broken), "fraud-default@v2")
+
+    def test_a_definition_that_fails_the_dry_run_is_refused(self):
+        # Passes static validation (known operator and variable), fails at evaluation.
+        rules = [{"code": "BAD_TYPES", "description": "x", "score": 10, "condition": {">": [{"var": "category"}, 5]}}]
+        broken = self.stored(rules=rules)
+        with pytest.raises(CorruptRuleSetError, match="fails the dry run"):
+            load_stored_definition(broken, definition_json_hash(broken), "fraud-default@v3")
