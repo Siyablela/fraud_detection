@@ -46,7 +46,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.errors import ConflictingDuplicateError, RuleSetNotFoundError, RuleSetVersionConflictError
 from app.observability import set_database_health
-from app.rules import RuleSet, RuleSetDefinition
+from app.rules import RuleSet, RuleSetDefinition, load_stored_definition
 from app.settings import Settings
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -507,7 +507,9 @@ def _rule_set_from_record(record: RuleSetVersionRecord) -> RuleSet:
     return RuleSet(
         key=record.rule_set_key,
         version=record.version,
-        definition=RuleSetDefinition.model_validate(record.definition),
+        definition=load_stored_definition(
+            record.definition, record.content_hash, f"{record.rule_set_key}@v{record.version}"
+        ),
         content_hash=record.content_hash,
         description=record.description,
         created_by=record.created_by,

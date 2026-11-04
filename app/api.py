@@ -30,6 +30,7 @@ from app.database import (
     ping_database,
 )
 from app.errors import (
+    CorruptRuleSetError,
     FailureClass,
     InvalidRuleSetError,
     RuleSetNotFoundError,
@@ -142,6 +143,12 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RuleSetVersionConflictError)
     async def conflict(_request: Request, exc: RuleSetVersionConflictError) -> JSONResponse:
         return error_response(409, str(exc))
+
+    @app.exception_handler(CorruptRuleSetError)
+    async def corrupt_rule_set(_request: Request, exc: CorruptRuleSetError) -> JSONResponse:
+        # Not a 503: retrying will not help until someone publishes a valid version.
+        logger.error("rule_set_rejected", error=str(exc))
+        return error_response(500, str(exc), code="internal_error")
 
 
 @asynccontextmanager

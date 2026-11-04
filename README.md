@@ -329,7 +329,9 @@ interpreter ([app/rules.py](app/rules.py)) with these variables: `amount`, `curr
 a default (`{"var": ["enrichment.distance_from_last_tx_km", 0]}`), or events without
 it would fail. Publishing validates operators, arity, variable names, size and depth,
 then dry-runs the set, so a broken rule is rejected with a 422 instead of failing
-every live transaction.
+every live transaction. The same checks run again every time a version is loaded,
+plus one more: the stored JSON must still match the hash recorded when it was
+published (see [Design decisions](#design-decisions-and-trade-offs)).
 
 ## Design decisions and trade-offs
 
@@ -366,7 +368,7 @@ but events already scored are not re-scored to include it.
 
 | Class | Examples | Worker response |
 |---|---|---|
-| transient | PostgreSQL/Redis down, pool timeout, no rule set yet | retry with capped exponential backoff and jitter, indefinitely, holding the partition |
+| transient | PostgreSQL/Redis down, pool timeout, no rule set yet, rule set failing its integrity check | retry with capped exponential backoff and jitter, indefinitely, holding the partition |
 | permanent | invalid event, unknown schema version, conflicting duplicate | dead-letter immediately |
 | unexpected | anything else (likely a bug triggered by that message) | retry 3 times, then dead-letter |
 
@@ -383,8 +385,21 @@ rebalance storm.
 **Rule sets as versioned data behind a cache.** The worker keeps the active version
 for 5 s, Redis for 60 s, PostgreSQL is the source of truth. Publishing overwrites the
 Redis entry, so workers switch within ~5 s. *Trade-off:* if that Redis write fails,
-workers can lag by up to 65 s. If PostgreSQL is down, workers keep the last version
-they loaded rather than stopping.
+workers can lag by up to 65 s.
+
+**A rule set that fails its integrity check stops scoring.** Rows can be changed
+outside the API, so every load re-checks the stored JSON against the hash recorded at
+publish time, revalidates it and dry-runs it. A version that fails is never used, and
+there is no fallback to an earlier one, because every decision records the version
+and hash that produced it: scoring with other rules would make that record false.
+The failure is classified as transient, so each partition holds its message and
+retries (nothing is dead-lettered or lost), the `FraudRuleSetRejected` alert fires,
+and scoring resumes once a valid version is published. The same applies when
+PostgreSQL is down and no valid copy is cached. *Cost:* a bad edit halts scoring
+instead of degrading it, and an edit is detected within ~65 s (once the valid
+copies already cached expire). The hash covers the stored JSON itself, not a
+re-serialised model, so adding a field to the model later cannot invalidate old
+versions.
 
 **Exact money.** `numeric(18,2)` in PostgreSQL, `Decimal` end to end, JSON numbers
 parsed as decimals, rule arithmetic in `Decimal`. With floats, `49999.99 + 0.01` is
@@ -418,6 +433,7 @@ depth. Transaction amounts and user ids are not logged.
 | `fraud_worker_message_duration_seconds` | Scoring latency |
 | `fraud_http_requests_total`, `fraud_http_request_duration_seconds` | API traffic by route template (never raw paths) |
 | `fraud_database_up`, `fraud_kafka_up`, `fraud_rate_limiter_errors_total`, `fraud_rule_cache_lookups_total{layer}` | Dependency health |
+| `fraud_rule_set_rejected_total{rule_set_key}` | The active rule set failed its integrity check; scoring has stopped |
 
 Alert rules ([fraud-detection/templates/alerting.yaml](fraud-detection/templates/alerting.yaml)) and a Grafana
 dashboard ([fraud-detection/files/grafana-dashboard.json](fraud-detection/files/grafana-dashboard.json)) for these
@@ -427,6 +443,19 @@ ship with the chart.
 when they were *made* (`created_at`), not when the transaction occurred. Consecutive runs
 then count every decision exactly once, including events that arrived late, which an
 event-time window would skip if they landed after that day's run.
+
+**Metrics and logs locally**: `docker compose --profile monitoring up --build --wait`
+adds Prometheus (http://localhost:9090), Loki, Grafana Alloy and Grafana
+(http://localhost:3000, anonymous read-only). Grafana opens on the same dashboard the
+chart ships; logs are under *Explore → Loki*. Alloy turns `service` and `level` into
+labels and leaves everything else in the JSON line, so per-request fields never
+become labels:
+
+```logql
+{service="fraud-worker", level="error"}                                  # worker errors
+{compose_project="fraud-detection"} | json | correlation_id="<id>"       # one event or request, API and worker
+{service="fraud-query-api"} | json | status_code >= 400                  # failed API calls
+```
 
 **Dead letters**: `python scripts/replay_dlq.py --dry-run` lists them with the failure
 reason. Fix the cause, then run without `--dry-run`.

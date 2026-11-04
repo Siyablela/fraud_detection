@@ -19,4 +19,5 @@ scripts/
 README.md
 SECURITY.md
 BRIEF.md
+prep/
 integration_test.py

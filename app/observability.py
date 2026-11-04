@@ -58,6 +58,11 @@ _worker_partition_blocked_seconds = Gauge(
 _rule_cache_lookups_total = Counter(
     "fraud_rule_cache_lookups_total", "Active rule-set lookups by the layer that answered", ["layer"]
 )
+_rule_set_rejected_total = Counter(
+    "fraud_rule_set_rejected_total",
+    "Loads of the active rule set refused by the integrity check; scoring stops while this rises",
+    ["rule_set_key"],
+)
 _rate_limiter_errors_total = Counter(
     "fraud_rate_limiter_errors_total", "Rate-limit checks that failed open because Redis was unavailable"
 )
@@ -111,6 +116,20 @@ def _redaction_processor(sensitive_keys: Iterable[str]):
     return processor
 
 
+def _service_processor(service_name: str):
+    """Stamp ``service`` on every record.
+
+    A processor rather than a context variable: the worker and API clear the log
+    context for every message and request, which would otherwise drop it too.
+    """
+
+    def processor(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        event_dict["service"] = service_name
+        return event_dict
+
+    return processor
+
+
 def configure_logging(service_name: str, level: str = "INFO", redact_fields: Iterable[str] = ()) -> None:
     """Emit one JSON object per line on stdout, for collection by the platform.
 
@@ -119,6 +138,7 @@ def configure_logging(service_name: str, level: str = "INFO", redact_fields: Ite
     """
     shared_processors = [
         structlog.contextvars.merge_contextvars,
+        _service_processor(service_name),
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
@@ -152,7 +172,6 @@ def configure_logging(service_name: str, level: str = "INFO", redact_fields: Ite
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-    structlog.contextvars.bind_contextvars(service=service_name)
 
 
 def get_logger(name: str):
@@ -286,6 +305,10 @@ def remove_partition_metrics(service_name: str, partition: int) -> None:
 
 def record_rule_cache_lookup(layer: str) -> None:
     _rule_cache_lookups_total.labels(layer=layer).inc()
+
+
+def record_rule_set_rejected(rule_set_key: str) -> None:
+    _rule_set_rejected_total.labels(rule_set_key=rule_set_key).inc()
 
 
 def record_rate_limiter_error() -> None:

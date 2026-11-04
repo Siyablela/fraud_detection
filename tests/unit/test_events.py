@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
@@ -102,3 +103,21 @@ def test_invalid_optional_fields(overrides, field):
     with pytest.raises(InvalidEventError) as error:
         parse_transaction_event(encode_event(make_event(**overrides)))
     assert any(detail["field"] == field for detail in error.value.details)
+
+
+def test_publish_event_script_produces_valid_events():
+    # scripts/publish_event.py is the README's "Try it" step; its events must pass the
+    # same contract the worker enforces, or the demo dead-letters instead of scoring.
+    import importlib.util
+    from argparse import Namespace
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "publish_event.py"
+    spec = importlib.util.spec_from_file_location("publish_event", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    args = Namespace(occurred_at=None, transaction_id=None, amount="14500.00", currency="ZAR", category="CRYPTO")
+
+    event = parse_transaction_event(json.dumps(module.build_event(args, 0, str(uuid4()))).encode())
+
+    assert (event.amount, event.currency, event.category) == (Decimal("14500.00"), "ZAR", "CRYPTO")

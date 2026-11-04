@@ -96,7 +96,7 @@
       "id": 2,
       "gridPos": {
         "h": 5,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 1
       }
@@ -160,8 +160,8 @@
       "id": 3,
       "gridPos": {
         "h": 5,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 6,
         "y": 1
       }
     },
@@ -189,10 +189,60 @@
       "id": 4,
       "gridPos": {
         "h": 5,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 1
       }
+    },
+    {
+      "type": "stat",
+      "title": "Rule set rejected (scoring stopped)",
+      "description": "Loads of the active rule set refused by the integrity check in the last 5 minutes. Above 0 means the worker has stopped scoring; FraudRuleSetRejected fires. Publish a valid version to resume.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "id": 17,
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(fraud_rule_set_rejected_total[5m]))",
+          "legendFormat": "rejections"
+        }
+      ]
     },
     {
       "type": "row",

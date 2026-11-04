@@ -50,6 +50,17 @@ spec:
               keeps failing with an error classed as transient: find its offset in the worker's message_processing_retry
               logs and fix the cause (or reclassify the error) so it can succeed or be dead-lettered.
 
+        - alert: FraudRuleSetRejected
+          expr: sum by (rule_set_key) (increase(fraud_rule_set_rejected_total[5m])) > 0
+          labels: {{- toYaml (merge (dict "severity" "critical") $labels) | nindent 12 }}
+          annotations:
+            summary: "Rule set {{`{{ $labels.rule_set_key }}`}} failed its integrity check; scoring has stopped"
+            description: >-
+              The active version was edited after publishing or no longer validates, so the worker refuses it and
+              holds every message (nothing is dead-lettered). The worker's rule_set_rejected_scoring_stopped log names
+              the version and the reason. Publish a valid version (POST /api/v1/rule-sets/{key}/versions) to resume,
+              then find out who changed the row.
+
         - alert: FraudWorkerBacklogGrowing
           expr: max(fraud_worker_partition_backlog) > 400
           for: 10m

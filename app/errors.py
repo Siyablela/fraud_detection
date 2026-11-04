@@ -4,7 +4,8 @@ Every failure the worker sees is sorted into one of three classes, because each
 needs a different response:
 
 * ``transient``  - the message is fine but a dependency is not (database down,
-  Redis timeout, no active rule set yet). Retry with backoff, never dead-letter:
+  Redis timeout, no active rule set yet, a rule set that fails its integrity
+  check). Retry with backoff, never dead-letter:
   every other message would fail the same way, so dead-lettering would only move
   good traffic into the DLQ.
 * ``permanent``  - the message itself can never succeed (bad schema, a duplicate
@@ -35,6 +36,16 @@ class FraudDetectionError(Exception):
 
 class TransientError(FraudDetectionError):
     """A dependency failed in a way that is expected to recover on retry."""
+
+
+class CorruptRuleSetError(TransientError):
+    """A stored rule-set version failed its integrity check: its definition no longer
+    matches its content hash, no longer validates, or fails the dry run.
+
+    Transient on purpose: the event is fine and the rules are not. The worker stops
+    scoring and holds its partitions, retrying until a valid version is published,
+    rather than scoring with different rules or dead-lettering good traffic.
+    """
 
 
 class PermanentError(FraudDetectionError):

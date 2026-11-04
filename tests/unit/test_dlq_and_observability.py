@@ -8,7 +8,13 @@ import structlog
 
 from app.dlq import DeadLetter, DeadLetterPublisher, build_dlq_headers, describe_error
 from app.errors import FailureClass, InvalidEventError, TransientError
-from app.observability import configure_logging, get_logger, sanitise_correlation_id
+from app.observability import (
+    bind_correlation_id,
+    clear_log_context,
+    configure_logging,
+    get_logger,
+    sanitise_correlation_id,
+)
 
 
 def letter(**overrides) -> DeadLetter:
@@ -102,3 +108,20 @@ def test_logs_are_json_and_redact_sensitive_keys(capsys):
     assert record["nested"] == {"Authorization": "[REDACTED]", "ok": 1}
     assert record["service"] == "test-service"
     assert record["level"] == "info"
+
+
+def test_service_survives_the_per_message_context_reset(capsys):
+    # The worker and API clear the log context for every message and request; that
+    # must reset the correlation id but never drop the service name.
+    configure_logging("test-service", "INFO")
+    try:
+        bind_correlation_id("first")
+        get_logger("test").info("one")
+        clear_log_context()
+        get_logger("test").info("two")
+        first, second = (json.loads(line) for line in capsys.readouterr().err.strip().splitlines()[-2:])
+    finally:
+        structlog.reset_defaults()
+        logging.getLogger().handlers = []
+    assert first["service"] == second["service"] == "test-service"
+    assert first["correlation_id"] == "first" and "correlation_id" not in second

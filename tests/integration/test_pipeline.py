@@ -10,16 +10,20 @@ import httpx
 import pytest
 import sqlalchemy as sa
 from confluent_kafka import Consumer, Producer, TopicPartition
+from prometheus_client import REGISTRY
 
 from app.api import create_app
-from app.cache import RuleSetProvider, create_redis_client
+from app.cache import RuleSetProvider, create_redis_client, rule_set_cache_key
+from app.database import create_rule_set_version
 from app.dlq import DeadLetterPublisher
 from app.kafka_config import build_consumer_config, build_producer_config
 from app.processing import TransactionProcessor
+from app.rules import DEFAULT_RULE_SET_DEFINITION, content_hash, parse_rule_set_definition
 from app.settings import Settings, clear_settings_cache
 from app.worker import FraudWorker
 from tests.conftest import encode_event, make_event
 from tests.integration.conftest import DLQ_TOPIC, TOPIC
+from tests.integration.test_repository import RESTORE_V1, TAMPER_V1
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -247,3 +251,54 @@ async def test_api_rule_publish_updates_shared_cache(integration_env, session_fa
     assert dry_run.json()["triggered_rules"] == ["HIGH_VALUE_THRESHOLD"]
     assert dry_run.json()["rule_set"] == "fraud-default@v2"
     assert ready.status_code == 200
+
+
+def metric(name: str, **labels) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+async def test_tampered_rule_set_stops_scoring_without_dead_lettering(pipeline_settings, session_factory):
+    rejected_before = metric("fraud_rule_set_rejected_total", rule_set_key="fraud-default")
+    async with session_factory() as session, session.begin():
+        await session.execute(sa.text(TAMPER_V1))
+    redis = create_redis_client(pipeline_settings)
+    await redis.delete(rule_set_cache_key("fraud-default"))  # no valid copy to hide behind
+    try:
+        async with RunningWorker(pipeline_settings, session_factory):
+            event = make_event(occurred_at=T0.isoformat())
+            produce(pipeline_settings, [(event["user_id"].encode(), encode_event(event))])
+            stored = "SELECT count(*) FROM transactions WHERE transaction_id = :t"
+
+            # The worker keeps retrying the message: refused and not scored.
+            async def refused_repeatedly():
+                return metric("fraud_rule_set_rejected_total", rule_set_key="fraud-default") >= rejected_before + 3
+
+            await wait_for(refused_repeatedly)
+            assert await count(session_factory, stored, t=event["transaction_id"]) == 0
+
+            # Publishing a valid version is the fix; the held message is then scored with it.
+            # That it can still be scored proves it was held, not dead-lettered: a
+            # dead-lettered message's offset is committed and it is never seen again.
+            definition = parse_rule_set_definition(DEFAULT_RULE_SET_DEFINITION)
+            await create_rule_set_version(
+                session_factory,
+                key="fraud-default",
+                definition=definition,
+                definition_hash=content_hash(definition),
+                description="repair after tampering",
+                created_by="admin",
+                expected_current_version=1,
+            )
+
+            async def scored():
+                return await count(session_factory, stored, t=event["transaction_id"]) == 1
+
+            await wait_for(scored)
+            version = "SELECT rules_version FROM transactions WHERE transaction_id = :t"
+            async with session_factory() as session:
+                assert await session.scalar(sa.text(version), {"t": event["transaction_id"]}) == "fraud-default@v2"
+    finally:
+        async with session_factory() as session, session.begin():
+            await session.execute(sa.text(RESTORE_V1))
+        await redis.delete(rule_set_cache_key("fraud-default"))
+        await redis.aclose()

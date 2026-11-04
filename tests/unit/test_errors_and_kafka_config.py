@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.errors import (
     ConflictingDuplicateError,
+    CorruptRuleSetError,
     FailureClass,
     InvalidEventError,
     RuleEvaluationError,
@@ -41,6 +42,7 @@ def _validation_error() -> ValidationError:
         (sqlalchemy.exc.OperationalError("SELECT 1", {}, asyncpg.PostgresConnectionError()), FailureClass.TRANSIENT),
         (sqlalchemy.exc.DBAPIError("SELECT 1", {}, Exception(), connection_invalidated=True), FailureClass.TRANSIENT),
         (sqlalchemy.exc.TimeoutError(), FailureClass.TRANSIENT),
+        (CorruptRuleSetError("x"), FailureClass.TRANSIENT),  # hold partitions, never dead-letter
         (InvalidEventError("x"), FailureClass.PERMANENT),
         (ConflictingDuplicateError("x"), FailureClass.PERMANENT),
         (_validation_error(), FailureClass.PERMANENT),

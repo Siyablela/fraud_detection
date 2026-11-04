@@ -22,7 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator, model_validator
 
-from app.errors import InvalidRuleSetError, RuleEvaluationError
+from app.errors import CorruptRuleSetError, InvalidRuleSetError, RuleEvaluationError
 
 MAX_EXPRESSION_DEPTH = 24
 MAX_EXPRESSION_NODES = 400
@@ -317,10 +317,19 @@ def parse_rule_set_definition(raw: Any) -> RuleSetDefinition:
     return definition
 
 
-def content_hash(definition: RuleSetDefinition) -> str:
-    """SHA-256 of the canonical JSON form; identical rules always hash identically."""
-    canonical = json.dumps(definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+def definition_json_hash(raw: Any) -> str:
+    """SHA-256 of a definition's canonical JSON form (sorted keys, no whitespace)."""
+    canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def content_hash(definition: RuleSetDefinition) -> str:
+    """The hash stored with a new version; identical rules always hash identically.
+
+    It covers exactly the JSON that is stored (``model_dump(mode="json")``), so
+    :func:`load_stored_definition` can recheck it from the stored JSON alone.
+    """
+    return definition_json_hash(definition.model_dump(mode="json"))
 
 
 @dataclass(frozen=True)
@@ -412,6 +421,33 @@ def evaluate_rule_set(definition: RuleSetDefinition, context: EvaluationContext)
 _DRY_RUN_CONTEXT = EvaluationContext(
     amount=Decimal("100.00"), currency="ZAR", category="GROCERIES", prior_count=1, prior_amount=Decimal("100.00")
 )
+
+
+def load_stored_definition(raw: Any, stored_hash: str, label: str) -> RuleSetDefinition:
+    """Rebuild a stored definition, refusing one that fails any integrity check.
+
+    Run on every load (from PostgreSQL or Redis), because the stored row can be
+    changed outside the API. The hash is checked against the stored JSON itself,
+    not a re-serialised model, so a later change to the model (a new optional
+    field, say) cannot make old versions fail.
+
+    Raises:
+        CorruptRuleSetError: The JSON does not match ``stored_hash`` (edited in
+            place: decisions would record rules that did not produce them), no
+            longer validates, or fails the publish-time dry run.
+    """
+    if definition_json_hash(raw) != stored_hash:
+        raise CorruptRuleSetError(f"rule set {label} does not match its content hash; it was changed after publishing")
+    try:
+        definition = RuleSetDefinition.model_validate(raw)
+    except ValidationError as exc:
+        reason = exc.errors(include_input=False, include_url=False)[0]["msg"]
+        raise CorruptRuleSetError(f"rule set {label} is not a valid definition: {reason}") from None
+    try:
+        evaluate_rule_set(definition, _DRY_RUN_CONTEXT)
+    except RuleEvaluationError as exc:
+        raise CorruptRuleSetError(f"rule set {label} fails the dry run: {exc}") from None
+    return definition
 
 
 # Amounts are in ZAR. Scores: one strong signal reaches REVIEW (>= 30); two
