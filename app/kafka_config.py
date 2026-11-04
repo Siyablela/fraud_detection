@@ -19,6 +19,11 @@ _SUPPORTED_PROTOCOLS = frozenset({"PLAINTEXT", "SSL", "SASL_SSL"})
 
 
 def _security_config(settings: Settings) -> dict[str, Any]:
+    """Connection security shared by the consumer and the DLQ producer (same brokers).
+
+    Raises:
+        RuntimeError: Unknown protocol, or SASL_SSL without its OAuth settings.
+    """
     protocol = settings.kafka_security_protocol.upper()
     if protocol not in _SUPPORTED_PROTOCOLS:
         raise RuntimeError(f"KAFKA_SECURITY_PROTOCOL must be one of {sorted(_SUPPORTED_PROTOCOLS)}")
@@ -60,30 +65,42 @@ def _security_config(settings: Settings) -> dict[str, Any]:
 
 
 def build_consumer_config(settings: Settings) -> dict[str, Any]:
+    """librdkafka settings for the worker's consumer (at-least-once, manual offset store)."""
     return {
         "bootstrap.servers": settings.kafka_bootstrap_servers,
         "group.id": settings.kafka_consumer_group_id,
         "client.id": "fraud-worker",
+        # The pair that gives at-least-once: librdkafka commits in the background, but
+        # only offsets the worker has explicitly stored, which it does after a message
+        # is fully handled. A polled-but-unfinished message is never committed.
         "enable.auto.commit": True,
         "enable.auto.offset.store": False,
         "auto.commit.interval.ms": 1000,
+        # A brand-new consumer group starts from the oldest retained event, not the
+        # newest, so nothing published before the first deploy is skipped.
         "auto.offset.reset": "earliest",
         # Cooperative rebalancing: partitions that stay with this consumer keep
         # processing while others move.
         "partition.assignment.strategy": "cooperative-sticky",
+        # No heartbeat for 45 s: the broker treats this consumer as dead and moves its partitions.
         "session.timeout.ms": 45000,
+        # poll() must be called at least this often or the consumer is evicted; the
+        # worker's backpressure pauses partitions instead of ever blocking the poll loop.
         "max.poll.interval.ms": 300000,
         **_security_config(settings),
     }
 
 
 def build_producer_config(settings: Settings) -> dict[str, Any]:
+    """librdkafka settings for the dead-letter producer."""
     return {
         "bootstrap.servers": settings.kafka_bootstrap_servers,
         "client.id": "fraud-worker-dlq",
+        # A dead letter is acknowledged only once every in-sync replica has it, and
+        # librdkafka's internal retries cannot write it twice.
         "acks": "all",
         "enable.idempotence": True,
         "linger.ms": 5,
-        "delivery.timeout.ms": 30000,
+        "delivery.timeout.ms": 30000,  # matches DeadLetterPublisher's wait for the acknowledgement
         **_security_config(settings),
     }

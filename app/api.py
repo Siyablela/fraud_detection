@@ -68,6 +68,7 @@ logger = get_logger(__name__)
 
 RuleSetKey = Annotated[str, Path(pattern=r"^[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]$", description="Rule-set key")]
 
+# Status code -> the machine-readable ``error.code`` clients branch on.
 _ERROR_CODES = {
     400: "bad_request",
     401: "unauthorized",
@@ -80,6 +81,7 @@ _ERROR_CODES = {
     429: "rate_limited",
     503: "service_unavailable",
 }
+# Error responses every v1 route can return, so OpenAPI documents them once.
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     code: {"model": ErrorResponse, "description": HTTPStatus(code).phrase} for code in (401, 403, 422, 429, 503)
 }
@@ -92,6 +94,7 @@ def error_response(
     headers: dict[str, str] | None = None,
     code: str | None = None,
 ) -> JSONResponse:
+    """Build the one error shape every endpoint returns, with the request's correlation id."""
     body = {
         "error": {
             "code": code or _ERROR_CODES.get(status_code, "error"),
@@ -120,6 +123,12 @@ class UnhandledErrorMiddleware(BaseHTTPMiddleware):
 
 
 def _install_error_handlers(app: FastAPI) -> None:
+    """Map exceptions to status codes in one place.
+
+    Route handlers raise domain errors (``TransactionNotFoundError`` and so on) and
+    never build error responses themselves, so every error has the same shape.
+    """
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
         return error_response(exc.status_code, str(exc.detail), headers=getattr(exc, "headers", None))
@@ -153,6 +162,7 @@ def _install_error_handlers(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Create the shared clients at startup and close them at shutdown."""
     settings = get_settings()
     configure_logging(SERVICE_NAME, settings.observability_log_level, settings.logs_redact_fields)
     if settings.observability_enable_tracing:
@@ -178,6 +188,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Build the FastAPI application (``app.main`` creates the instance uvicorn serves)."""
     settings = get_settings()
     app = FastAPI(
         title="Fraud Detection API",
@@ -186,6 +197,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     _install_error_handlers(app)
+    # Middleware added later wraps middleware added earlier. The request-context
+    # middleware (added by install_fastapi_observability) therefore wraps the error
+    # middleware, so even a 500 gets correlation headers, a metric and a log line.
     app.add_middleware(UnhandledErrorMiddleware)
     install_fastapi_observability(app, SERVICE_NAME)
     if settings.cors_allowed_origins:
@@ -205,6 +219,12 @@ def create_app() -> FastAPI:
 
 
 def health_routes():
+    """``/live``: is the process serving? ``/ready``: can it reach PostgreSQL and Redis?
+
+    Kept separate on purpose: Kubernetes restarts pods that fail liveness, and a
+    database outage must not restart every API pod; it only takes them out of
+    the load balancer (readiness) until the database is back.
+    """
     router = APIRouter(tags=["health"])
 
     @router.get("/live", summary="Liveness: the process is serving requests")
@@ -242,6 +262,7 @@ def health_routes():
 
 
 def v1_routes():
+    """The versioned public API: decisions, and rule-set management."""
     # Prefix on the router itself (not include_router) so each route's own path is
     # the full template used for metric labels.
     router = APIRouter(prefix="/api/v1", responses=_ERROR_RESPONSES)
@@ -321,6 +342,7 @@ def v1_routes():
         versions = await list_rule_set_versions(request.app.state.session_factory, key, limit, before_version)
         if not versions and before_version is None:
             raise RuleSetNotFoundError(f"No rule set exists for key '{key}'")
+        # A full page means there may be older versions; nothing precedes version 1.
         next_before = versions[-1].version if len(versions) == limit and versions[-1].version > 1 else None
         return {
             "data": [RuleSetVersionResponse.from_rule_set(version) for version in versions],

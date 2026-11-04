@@ -45,6 +45,7 @@ def seconds(duration: str) -> float:
 
 
 def run_step(args, env: dict[str, str], endpoint: str, rate: int, out_dir: Path) -> dict:
+    """Run k6 at one fixed rate for one endpoint and return its key numbers."""
     summary = out_dir / f"{endpoint}-{rate}.json"
     command = [
         "docker", "run", "--rm", "--network", args.network,
@@ -71,6 +72,7 @@ def run_step(args, env: dict[str, str], endpoint: str, rate: int, out_dir: Path)
 
 
 def verdict(result: dict, rate: int, p99_slo_ms: float) -> str:
+    """'ok' if the step was sustained within the error and latency limits, else the reason."""
     if result["failed"] > 0.01:
         return f"errors {result['failed']:.1%}"
     if result["achieved"] < 0.95 * rate:
@@ -81,6 +83,7 @@ def verdict(result: dict, rate: int, p99_slo_ms: float) -> str:
 
 
 def main() -> int:
+    """Step the rate up per endpoint until it fails; print a table and the sustainable rates."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--network", default="fraud-detection_default", help="Compose network (<project>_default)")

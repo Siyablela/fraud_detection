@@ -68,10 +68,14 @@ logger = get_logger(__name__)
 
 
 class MessageHandler(Protocol):
+    """Processes one message value (``TransactionProcessor`` in production, fakes in tests)."""
+
     async def process(self, value: bytes | None, provenance: MessageProvenance) -> Any: ...
 
 
 class DeadLetterSink(Protocol):
+    """Publishes a dead letter and returns only once it is safely stored."""
+
     async def publish(self, letter: DeadLetter) -> None: ...
 
 
@@ -87,15 +91,25 @@ def retry_delay(attempt: int, initial: float, maximum: float) -> float:
 
 @dataclass
 class _PartitionState:
+    """One assigned partition: its queue of polled messages and the task that drains it in order."""
+
     topic: str
     partition: int
     queue: asyncio.Queue = field(default_factory=asyncio.Queue)
-    stopping: asyncio.Event = field(default_factory=asyncio.Event)
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)  # set on revoke or shutdown
     task: asyncio.Task | None = None
     paused: bool = False
 
 
 class FraudWorker:
+    """Consumes transaction events and hands each one to ``handler``, one in-order task per partition.
+
+    Threads: ``consumer.poll`` runs in a worker thread so it never blocks the event
+    loop, and librdkafka calls the rebalance callbacks (``_on_assign`` and friends)
+    on that same thread. Those callbacks therefore hand their work to the event loop
+    and wait for it, rather than touching partition state directly.
+    """
+
     def __init__(
         self,
         settings: Settings,
@@ -118,6 +132,10 @@ class FraudWorker:
     # --- lifecycle ------------------------------------------------------------
 
     def stop(self) -> None:
+        """Ask the poll loop to finish; :meth:`run` then drains partitions and closes the consumer.
+
+        Called from a signal handler, so it only sets a flag.
+        """
         if self._running:
             logger.info("worker_stop_requested")
         self._running = False
@@ -165,17 +183,20 @@ class FraudWorker:
             raise RuntimeError(f"not a consumer group member for {absent_for:.0f}s; exiting for a restart")
 
     def _handle_poll_error(self, error: KafkaError) -> None:
+        """Fatal errors stop the worker; anything else is logged and librdkafka recovers by itself."""
         if error.fatal():
             logger.error("kafka_fatal_error", error=error.str())
             raise KafkaException(error)
-        if error.code() != KafkaError._PARTITION_EOF:
+        if error.code() != KafkaError._PARTITION_EOF:  # EOF just means "caught up"
             set_kafka_health(SERVICE_NAME, "consumer", False)
             logger.warning("kafka_consumer_error", error=error.str(), retriable=error.retriable())
 
     async def _shutdown(self) -> None:
+        """Finish or abandon in-flight messages, commit stored offsets and leave the group."""
         logger.info("worker_draining", partitions=len(self._partitions))
         await self._stop_partitions(list(self._partitions.values()))
-        # close() commits stored offsets and leaves the group cleanly.
+        # close() commits stored offsets and leaves the group cleanly, so the partitions
+        # are reassigned at once instead of after the session timeout.
         await asyncio.to_thread(self._consumer.close)
         set_kafka_health(SERVICE_NAME, "consumer", False)
         logger.info("worker_stopped")
@@ -183,15 +204,26 @@ class FraudWorker:
     # --- rebalancing (callbacks run on the poll thread) -----------------------
 
     def _run_on_loop(self, coroutine: Any) -> None:
+        """Run ``coroutine`` on the event loop and block the calling (poll) thread until it finishes.
+
+        Blocking is the point: librdkafka must not finish a rebalance until partition
+        tasks have started or stopped.
+        """
         if self._loop is None:
             raise RuntimeError("rebalance callback fired before the worker started")
         future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         future.result(timeout=self._settings.worker_shutdown_timeout_seconds + 5)
 
     def _on_assign(self, _consumer: Any, partitions: list[TopicPartition]) -> None:
+        """Partitions were given to this consumer: start a task for each."""
         self._run_on_loop(self._start_partitions(partitions))
 
     def _on_revoke(self, consumer: Any, partitions: list[TopicPartition]) -> None:
+        """Partitions are moving to another consumer: stop their tasks, then commit what they finished.
+
+        Committing here (synchronously) means the next owner resumes exactly after the
+        last handled message instead of reprocessing up to a second's worth.
+        """
         self._run_on_loop(self._stop_partitions(self._states_for(partitions)))
         try:
             consumer.commit(asynchronous=False)
@@ -200,14 +232,18 @@ class FraudWorker:
                 logger.warning("offset_commit_on_revoke_failed", error=str(exc))
 
     def _on_lost(self, _consumer: Any, partitions: list[TopicPartition]) -> None:
-        # Ownership is already gone; never commit for lost partitions.
+        """Partitions were taken away without a clean revoke (e.g. after a long pause)."""
+        # Ownership is already gone, so nothing is committed: another consumer may be
+        # processing these partitions now. Unfinished messages are simply redelivered.
         logger.warning("partitions_lost", partitions=[tp.partition for tp in partitions])
         self._run_on_loop(self._stop_partitions(self._states_for(partitions)))
 
     def _states_for(self, partitions: list[TopicPartition]) -> list[_PartitionState]:
+        """The states for those partitions this worker currently holds."""
         return [state for tp in partitions if (state := self._partitions.get((tp.topic, tp.partition))) is not None]
 
     async def _start_partitions(self, partitions: list[TopicPartition]) -> None:
+        """Create a queue and a draining task for each newly assigned partition."""
         for tp in partitions:
             key = (tp.topic, tp.partition)
             if key in self._partitions:
@@ -245,6 +281,11 @@ class FraudWorker:
     # --- dispatch and per-partition processing -------------------------------
 
     def _dispatch(self, message: Any) -> None:
+        """Queue a polled message on its partition, pausing the partition if its backlog is full.
+
+        Pausing (rather than blocking) keeps the poll loop running, so the consumer
+        stays in its group even while a partition is slow.
+        """
         state = self._partitions.get((message.topic(), message.partition()))
         if state is None or state.stopping.is_set():
             return  # partition is being revoked; the message will be redelivered
@@ -257,6 +298,7 @@ class FraudWorker:
             logger.warning("partition_paused", partition=state.partition, backlog=backlog)
 
     async def _consume_partition(self, state: _PartitionState) -> None:
+        """Process one partition's messages strictly in offset order, storing each offset when done."""
         while not state.stopping.is_set():
             message = await state.queue.get()
             if message is None or state.stopping.is_set():
@@ -278,7 +320,12 @@ class FraudWorker:
                 logger.info("partition_resumed", partition=state.partition, backlog=backlog)
 
     async def _handle(self, state: _PartitionState, message: Any) -> bool:
-        """Process one message to completion. Returns ``False`` only if stopped mid-retry."""
+        """Process one message to completion. Returns ``False`` only if stopped mid-retry.
+
+        Each pass of the loop either processes the message or, once it has been judged
+        undeliverable (``pending_letter``), retries publishing it to the DLQ. Failures
+        are classified to decide between retrying and dead-lettering; see app/errors.py.
+        """
         topic, partition, offset = message.topic(), message.partition(), message.offset()
         timestamp_type, timestamp_ms = message.timestamp()
         provenance = MessageProvenance(
@@ -291,7 +338,7 @@ class FraudWorker:
 
         while not state.stopping.is_set():
             attempt += 1
-            clear_log_context()
+            clear_log_context()  # a fresh correlation id per attempt; processing binds it
             try:
                 if pending_letter is None:
                     with worker_message_timer(SERVICE_NAME, topic):
@@ -315,7 +362,7 @@ class FraudWorker:
                     attempts=pending_letter.attempts,
                 )
                 return True
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # shutdown timed out: let the cancellation through
                 raise
             except Exception as exc:
                 if failing_since is None:
@@ -334,6 +381,7 @@ class FraudWorker:
                         failure is FailureClass.UNEXPECTED
                         and unexpected_failures >= self._settings.worker_max_unexpected_error_attempts
                     ):
+                        # From now on the loop retries the DLQ publish, never the processing.
                         pending_letter = DeadLetter(
                             source_topic=topic,
                             source_partition=partition,
@@ -376,19 +424,28 @@ class FraudWorker:
 
     @staticmethod
     def _clear_blocked(partition: int, failing_since: float | None) -> None:
+        """Reset the blocked-seconds gauge once a message that had been failing is handled."""
         if failing_since is not None:
             set_partition_blocked(SERVICE_NAME, partition, 0)
 
 
 async def main() -> None:
+    """Wire up the worker's dependencies, run until SIGTERM/SIGINT, then release everything.
+
+    Each client (database pool, Redis, Kafka producer and consumer) is created once
+    here and shared for the life of the process.
+    """
     settings = get_settings()
     configure_logging(SERVICE_NAME, settings.observability_log_level, settings.logs_redact_fields)
+    # Serves /metrics for Prometheus from a background daemon thread.
     start_http_server(settings.worker_metrics_port)
 
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
     redis_client = create_redis_client(settings)
     producer = Producer(build_producer_config(settings))
+    # error_cb reports client-level problems (all brokers down, transport errors),
+    # which never reach poll() as message errors.
     consumer = Consumer({**build_consumer_config(settings), "error_cb": _log_kafka_client_error})
     try:
         await ping_database(session_factory, SERVICE_NAME)
@@ -405,17 +462,23 @@ async def main() -> None:
             TransactionProcessor(session_factory, rule_sets),
             DeadLetterPublisher(producer, settings.kafka_dlq_topic_name),
         )
+
+        # SIGTERM (docker stop, Kubernetes) and SIGINT (Ctrl+C) call worker.stop() on the
+        # event loop, which starts a graceful drain instead of killing the process mid-message.
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, worker.stop)
         await worker.run()
     finally:
+        # Deliver any dead letter still queued (normally none: each publish already
+        # waits for its acknowledgement). flush() blocks, so it runs off the event loop.
         await asyncio.to_thread(producer.flush, 10)
         await redis_client.aclose()
         await engine.dispose()
 
 
 def _log_kafka_client_error(error: KafkaError) -> None:
+    """librdkafka's error callback: mark Kafka unhealthy when the brokers are unreachable."""
     if error.code() in (KafkaError._ALL_BROKERS_DOWN, KafkaError._TRANSPORT):
         set_kafka_health(SERVICE_NAME, "consumer", False)
     logger.warning("kafka_client_error", error=error.str(), fatal=error.fatal())

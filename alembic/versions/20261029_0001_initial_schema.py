@@ -69,11 +69,13 @@ _UTC_NOW = sa.text("timezone('UTC', now())")
 
 
 def _content_hash(definition: dict) -> str:
+    """Same canonical hash as ``app.rules.definition_json_hash`` (a test checks they agree)."""
     canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _decision_columns() -> list[sa.Column]:
+    """Columns shared by ``transactions`` and its audit table ``transaction_history``."""
     return [
         sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("amount", sa.Numeric(18, 2), nullable=False),

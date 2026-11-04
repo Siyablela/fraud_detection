@@ -12,11 +12,15 @@ from app.rules import RuleSet, Verdict
 
 
 class ErrorDetail(BaseModel):
+    """One problem with one field of the request."""
+
     field: str = Field(examples=["query.limit"])
     message: str = Field(examples=["Input should be less than or equal to 100"])
 
 
 class ErrorBody(BaseModel):
+    """What went wrong, in a form both people and programs can use."""
+
     code: str = Field(examples=["validation_error"], description="Stable, machine-readable error code.")
     message: str = Field(examples=["Request validation failed."])
     details: list[ErrorDetail] = Field(default_factory=list)
@@ -30,6 +34,8 @@ class ErrorResponse(BaseModel):
 
 
 class TransactionResponse(BaseModel):
+    """The fraud decision stored for one transaction."""
+
     model_config = ConfigDict(from_attributes=True)
 
     transaction_id: UUID
@@ -57,12 +63,16 @@ class TransactionResponse(BaseModel):
 
 
 class TransactionPage(BaseModel):
+    """One page of decisions, newest first."""
+
     data: list[TransactionResponse]
     limit: int
     next_cursor: str | None = Field(description="Pass as `cursor` to fetch the next page; null on the last page.")
 
 
 class RuleSetVersionResponse(BaseModel):
+    """One stored version of a rule set."""
+
     key: str
     version: int
     label: str = Field(examples=["fraud-default@v2"])
@@ -87,12 +97,16 @@ class RuleSetVersionResponse(BaseModel):
 
 
 class RuleSetVersionPage(BaseModel):
+    """One page of rule-set versions, newest first."""
+
     data: list[RuleSetVersionResponse]
     limit: int
     next_before_version: int | None = Field(description="Pass as `before_version` for older versions.")
 
 
 class CreateRuleSetVersionRequest(BaseModel):
+    """A new version to publish; it becomes active as soon as it is stored."""
+
     model_config = ConfigDict(extra="forbid")
 
     description: str = Field(min_length=1, max_length=500, examples=["Lower high-value threshold to 8,000"])
@@ -121,12 +135,16 @@ class EvaluateRequest(BaseModel):
 
 
 class VelocityContext(BaseModel):
+    """The velocity inputs the dry run used, so a result can be explained."""
+
     window_seconds: int
     prior_count: int
     prior_amount: Decimal
 
 
 class EvaluateResponse(BaseModel):
+    """What the active rule set would decide for the hypothetical transaction."""
+
     rule_set: str = Field(examples=["fraud-default@v1"])
     risk_score: int
     verdict: Verdict

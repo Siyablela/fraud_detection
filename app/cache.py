@@ -33,6 +33,9 @@ from app.settings import Settings
 
 logger = get_logger(__name__)
 
+# Bump when the entry format changes. During a rolling deploy, old and new pods share
+# Redis; an entry in an unknown format is ignored (read from PostgreSQL instead) rather
+# than misread.
 _CACHE_ENTRY_SCHEMA = 1
 
 
@@ -43,20 +46,23 @@ def create_redis_client(settings: Settings) -> aioredis.Redis:
         max_connections=settings.redis_max_connections,
         socket_timeout=settings.redis_socket_timeout_seconds,
         socket_connect_timeout=settings.redis_socket_timeout_seconds,
-        health_check_interval=30,
+        health_check_interval=30,  # ping idle connections so a dead one is replaced before use
         decode_responses=True,
     )
 
 
 async def ping_redis(client: aioredis.Redis) -> None:
+    """Raise if Redis is unreachable; used by the API's readiness check."""
     await client.ping()
 
 
 def rule_set_cache_key(key: str) -> str:
+    """The Redis key holding a rule set's active version; publishing overwrites it."""
     return f"fraud:rule-sets:{key}:active"
 
 
 def _serialise(rule_set: RuleSet) -> str:
+    """Cache entry: the stored definition JSON plus its hash, so a reader can verify it."""
     return json.dumps(
         {
             "schema": _CACHE_ENTRY_SCHEMA,

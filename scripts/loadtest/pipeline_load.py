@@ -67,6 +67,7 @@ async def clock_offset_seconds(connection: asyncpg.Connection, samples: int = 7)
 
 
 def build_event(user_id: str, correlation_id: str) -> dict:
+    """A random valid event for ``user_id``, tagged with the run's correlation id."""
     return {
         "schema_version": 1,
         "event_type": "TransactionCreated",

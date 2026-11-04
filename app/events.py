@@ -49,8 +49,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 from app.errors import InvalidEventError, UnsupportedSchemaVersionError
 
 SUPPORTED_SCHEMA_VERSIONS = frozenset({1})
+# A real event is well under 1 KB; the cap stops one oversized message from costing
+# a JSON parse of arbitrary size.
 MAX_EVENT_BYTES = 64 * 1024
 
+# Field types. Values are normalised (trimmed, upper-cased) so the rules compare
+# like with like. Categories allow digits, so merchant category codes such as 7995 fit.
 Category = Annotated[
     str,
     StringConstraints(strip_whitespace=True, to_upper=True, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$"),
@@ -90,6 +94,8 @@ class Enrichment(BaseModel):
 
 
 class TransactionCreatedV1(BaseModel):
+    """Version 1 of the event. Unknown fields are ignored, so producers can add optional ones."""
+
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     schema_version: Literal[1]
@@ -113,10 +119,12 @@ class TransactionCreatedV1(BaseModel):
     @field_validator("occurred_at")
     @classmethod
     def _normalise_timezone(cls, value: datetime) -> datetime:
+        # Velocity windows compare these across producers; store everything in UTC.
         return value.astimezone(UTC)
 
 
 def _field_errors(exc: ValidationError) -> list[dict[str, str]]:
+    """Field names and messages only: input values are left out so the result is safe to log."""
     return [
         {"field": ".".join(str(part) for part in error["loc"]) or "event", "message": error["msg"]}
         for error in exc.errors(include_input=False, include_url=False)
@@ -135,12 +143,16 @@ def parse_transaction_event(raw: bytes | str | None) -> TransactionCreatedV1:
     if len(raw) > MAX_EVENT_BYTES:
         raise InvalidEventError(f"Event payload exceeds {MAX_EVENT_BYTES} bytes")
     try:
+        # parse_float=Decimal: a JSON number such as 49999.99 must not pass through a
+        # binary float, or amounts at a threshold could compare the wrong way.
         document = json.loads(raw, parse_float=Decimal)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InvalidEventError(f"Event payload is not valid JSON: {exc.__class__.__name__}") from None
     if not isinstance(document, dict):
         raise InvalidEventError("Event payload must be a JSON object")
 
+    # Check the version before the rest, so an event from a newer producer is reported
+    # as "unsupported version" rather than as a list of confusing field errors.
     version = document.get("schema_version")
     if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise UnsupportedSchemaVersionError(

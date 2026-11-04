@@ -22,6 +22,11 @@ def seconds_until_next_run(now: datetime, run_hour: int, run_minute: int) -> flo
 
 
 async def run_summary(settings: Settings) -> dict:
+    """Summarise the last ``BATCH_SUMMARY_WINDOW_HOURS`` of decisions and log the result.
+
+    Uses its own short-lived connection pool: the job runs once a day, so holding
+    connections open between runs would only waste them.
+    """
     since = datetime.now(UTC) - timedelta(hours=settings.batch_summary_window_hours)
     async with database_session_factory(settings) as session_factory:
         await ping_database(session_factory, SERVICE_NAME)

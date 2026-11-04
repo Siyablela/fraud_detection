@@ -1,3 +1,10 @@
+"""Configuration for every process, read from environment variables once at startup.
+
+Any variable can instead be supplied as a file named by ``<NAME>_FILE`` (how Docker
+and Kubernetes mount secrets). Problems are reported by variable name, never by
+value, so a misconfigured secret is not printed into the logs.
+"""
+
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -38,6 +45,7 @@ def _read_env(name: str) -> str | None:
 
 
 def _split_csv(value: object) -> object:
+    """Turn ``"a, b,c"`` from an environment variable into ``["a", "b", "c"]``."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -170,7 +178,10 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _derive_defaults(self) -> Settings:
+        """Fill defaults that depend on other settings, and check settings that must agree."""
         if not self.kafka_dlq_topic_name:
+            # The model is frozen (settings never change after startup), so the
+            # derived value is set the one way pydantic still allows.
             object.__setattr__(self, "kafka_dlq_topic_name", f"{self.kafka_topic_name}.dlq")
         if self.worker_retry_max_backoff_seconds < self.worker_retry_initial_backoff_seconds:
             raise ValueError("WORKER_RETRY_MAX_BACKOFF_SECONDS must be >= WORKER_RETRY_INITIAL_BACKOFF_SECONDS")

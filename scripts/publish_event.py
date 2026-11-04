@@ -16,6 +16,7 @@ from confluent_kafka import Producer
 
 
 def build_event(args: argparse.Namespace, index: int, user_id: str) -> dict:
+    """One TransactionCreated event; the index offsets occurred_at for --count."""
     occurred_at = (args.occurred_at or datetime.now(UTC)) + timedelta(seconds=index)
     return {
         "schema_version": 1,
@@ -31,6 +32,7 @@ def build_event(args: argparse.Namespace, index: int, user_id: str) -> dict:
 
 
 def main() -> int:
+    """Publish the requested events and print each one (its correlation_id finds it in the logs)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bootstrap-servers", default="localhost:29092")
     parser.add_argument("--topic", default="transactions")

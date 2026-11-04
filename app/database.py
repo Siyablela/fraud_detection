@@ -68,6 +68,8 @@ class Base(DeclarativeBase):
 
 
 class TransactionRecord(Base):
+    """One fraud decision per transaction id. Written once (first decision wins), never updated."""
+
     __tablename__ = "transactions"
 
     transaction_id: Mapped[UUID] = mapped_column(sa.Uuid, primary_key=True)
@@ -94,11 +96,14 @@ class TransactionRecord(Base):
         CheckConstraint("risk_score >= 0", name="ck_transactions_risk_score_non_negative"),
         CheckConstraint("verdict IN ('APPROVED', 'REVIEW', 'REJECTED')", name="ck_transactions_verdict"),
         CheckConstraint("is_fraud = (verdict <> 'APPROVED')", name="ck_transactions_is_fraud_matches_verdict"),
+        # One index per list filter, each ending in the keyset sort order (occurred_at,
+        # transaction_id) so a filtered page is a single index range scan.
         Index("ix_transactions_verdict_occurred", "verdict", "occurred_at", "transaction_id"),
+        # Also serves the velocity look-back (one user, a time range).
         Index("ix_transactions_user_occurred", "user_id", "occurred_at", "transaction_id"),
         Index("ix_transactions_category_occurred", "category", "occurred_at", "transaction_id"),
         Index("ix_transactions_occurred", "occurred_at", "transaction_id"),
-        Index("ix_transactions_created", "created_at"),
+        Index("ix_transactions_created", "created_at"),  # the daily batch summary
         Index(
             "ix_transactions_fraud_occurred",
             "occurred_at",
@@ -109,6 +114,8 @@ class TransactionRecord(Base):
 
 
 class TransactionHistoryRecord(Base):
+    """Append-only audit: one row per Kafka message handled, including duplicates."""
+
     __tablename__ = "transaction_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -144,6 +151,8 @@ class TransactionHistoryRecord(Base):
 
 
 class RuleSetVersionRecord(Base):
+    """Append-only rule-set versions. The highest version of a key is the active one."""
+
     __tablename__ = "rule_set_versions"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -165,6 +174,7 @@ class RuleSetVersionRecord(Base):
 
 
 def _async_url(url: str) -> str:
+    """Accept the plain ``postgresql://`` URL deployments pass in, and select the asyncpg driver."""
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
     return url
@@ -177,8 +187,11 @@ def create_engine(settings: Settings) -> AsyncEngine:
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_pool_max_overflow,
         pool_timeout=settings.db_pool_timeout_seconds,
+        # Test each pooled connection before use: replaces ones dropped while idle
+        # (database restart, firewall timeout) instead of failing a request with them.
         pool_pre_ping=True,
         connect_args={
+            # A stuck query is cancelled instead of holding a pooled connection forever.
             "server_settings": {"statement_timeout": str(settings.db_statement_timeout_ms)},
             "timeout": settings.db_pool_timeout_seconds,
         },
@@ -186,6 +199,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
 
 
 def create_session_factory(engine: AsyncEngine) -> SessionFactory:
+    # expire_on_commit=False: records stay readable after their session ends; the API
+    # returns them after the query's session has closed.
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -214,12 +229,16 @@ async def ping_database(session_factory: SessionFactory, service_name: str) -> N
 
 
 class RecordOutcome(StrEnum):
+    """Whether this message produced the stored decision or repeated an earlier one."""
+
     EVALUATED = "evaluated"
     DUPLICATE = "duplicate"
 
 
 @dataclass(frozen=True)
 class TransactionDecision:
+    """A scored transaction, as stored in ``transactions``."""
+
     transaction_id: UUID
     user_id: UUID
     amount: Decimal
@@ -240,6 +259,8 @@ class TransactionDecision:
 
 @dataclass(frozen=True)
 class MessageProvenance:
+    """Where a message came from in Kafka; recorded on the audit row and in the DLQ."""
+
     topic: str
     partition: int
     offset: int
@@ -274,6 +295,7 @@ def _decision_from_record(record: TransactionRecord) -> TransactionDecision:
 
 
 def _same_transaction(left: TransactionDecision, right: TransactionDecision) -> bool:
+    """True if two events describe the same transaction (scores are ours, so not compared)."""
     return (
         left.user_id == right.user_id
         and left.amount == right.amount
@@ -347,6 +369,8 @@ async def record_decision(
         if inserted is not None:
             outcome, stored = RecordOutcome.EVALUATED, decision
         else:
+            # Already stored: return the first decision, not this one. Raising below
+            # rolls the whole transaction back, so nothing at all is written.
             existing = await session.scalar(
                 select(TransactionRecord).where(TransactionRecord.transaction_id == decision.transaction_id)
             )
@@ -397,12 +421,15 @@ async def get_velocity_aggregates(
 
 
 async def get_transaction(session_factory: SessionFactory, transaction_id: UUID) -> TransactionRecord | None:
+    """The stored decision for ``transaction_id``, or ``None``."""
     async with session_factory() as session:
         return await session.get(TransactionRecord, transaction_id)
 
 
 @dataclass(frozen=True)
 class TransactionFilters:
+    """Optional filters for :func:`list_transactions`; ``None`` means "any"."""
+
     user_id: UUID | None = None
     category: str | None = None
     is_fraud: bool | None = None
@@ -459,10 +486,13 @@ async def list_transactions(
     if filters.occurred_to is not None:
         query = query.where(TransactionRecord.occurred_at < filters.occurred_to)
     if cursor is not None:
+        # Row-value comparison: continue exactly after the last row of the previous
+        # page, even when several rows share the same occurred_at.
         query = query.where(
             sa.tuple_(TransactionRecord.occurred_at, TransactionRecord.transaction_id)
             < sa.tuple_(sa.literal(cursor.occurred_at), sa.literal(cursor.transaction_id))
         )
+    # One extra row tells us whether another page exists, without a COUNT query.
     query = query.order_by(TransactionRecord.occurred_at.desc(), TransactionRecord.transaction_id.desc()).limit(
         limit + 1
     )
@@ -504,6 +534,7 @@ async def summarize_transactions(session_factory: SessionFactory, since: datetim
 
 
 def _rule_set_from_record(record: RuleSetVersionRecord) -> RuleSet:
+    """Rebuild a stored version; raises ``CorruptRuleSetError`` if it fails its integrity check."""
     return RuleSet(
         key=record.rule_set_key,
         version=record.version,
@@ -536,6 +567,11 @@ async def get_latest_rule_set(session_factory: SessionFactory, key: str) -> Rule
 
 
 async def get_rule_set_version(session_factory: SessionFactory, key: str, version: int) -> RuleSet:
+    """Return one version of ``key``.
+
+    Raises:
+        RuleSetNotFoundError: The key or the version does not exist.
+    """
     async with session_factory() as session:
         record = await session.scalar(
             select(RuleSetVersionRecord).where(

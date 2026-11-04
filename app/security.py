@@ -29,12 +29,16 @@ _REQUIRED_CLAIMS = ["exp", "iat", "sub", "iss", "aud"]
 
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
+    """The verified caller: who they are (``sub``) and what they may do (scopes)."""
+
     subject: str
     scopes: frozenset[str]
     claims: dict[str, Any]
 
 
 class _TokenVerifier(ABC):
+    """Verifies tokens; subclasses only decide where the signing key comes from."""
+
     def __init__(self, settings: Settings):
         self._settings = settings
 
@@ -50,6 +54,8 @@ class _TokenVerifier(ABC):
         return jwt.decode(
             token,
             self._signing_key(token),
+            # An explicit allowlist (asymmetric only, see Settings): accepting the
+            # algorithm the token itself names would allow algorithm-confusion attacks.
             algorithms=self._settings.jwt_algorithms,
             audience=self._settings.jwt_audience,
             issuer=self._settings.jwt_issuer,
@@ -78,22 +84,31 @@ class _JwksTokenVerifier(_TokenVerifier):
 
     @staticmethod
     def _http_fetch(url: str) -> dict[str, Any]:
+        """Download the identity provider's published key set (JWKS)."""
         response = httpx.get(url, timeout=5.0)
         response.raise_for_status()
         return response.json()
 
     def _refresh(self) -> None:
+        """Replace the cached keys with the current key set, indexed by key id."""
         jwk_set = jwt.PyJWKSet.from_dict(self._fetch(self._url))
         self._keys = {key.key_id: key.key for key in jwk_set.keys if key.key_id}
         self._last_fetch = time.monotonic()
 
     def _signing_key(self, token: str) -> Any:
+        """The public key for the token's ``kid``, refreshing the key set if it is unknown.
+
+        Reading the header before verification is safe: it only selects which of
+        the provider's keys to check the signature against.
+        """
         kid = jwt.get_unverified_header(token).get("kid")
         if not kid:
             raise jwt.InvalidTokenError("token header has no 'kid'")
         key = self._keys.get(kid)
         if key is not None:
             return key
+        # Double-checked under the lock: when keys rotate, many concurrent requests
+        # miss at once, and only one of them should fetch the new key set.
         with self._lock:
             key = self._keys.get(kid)
             if key is None and time.monotonic() - self._last_fetch >= self._min_interval:
@@ -108,6 +123,8 @@ class _JwksTokenVerifier(_TokenVerifier):
 
 
 class _PublicKeyTokenVerifier(_TokenVerifier):
+    """One fixed public key from a file (tests, or providers without JWKS)."""
+
     def __init__(self, settings: Settings):
         super().__init__(settings)
         self._public_key = Path(settings.jwt_public_key_path).read_text(encoding="utf-8")
@@ -132,6 +149,7 @@ def get_token_verifier() -> _TokenVerifier:
 
 
 def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
+    """Scopes from ``scope`` (space-separated, the OAuth standard) or ``scp`` (a list, some providers)."""
     scope_value = claims.get("scope") or claims.get("scp") or ""
     if isinstance(scope_value, str):
         return frozenset(part for part in scope_value.split() if part)
@@ -141,6 +159,7 @@ def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
 
 
 def _unauthorized(detail: str, error: str | None = None) -> HTTPException:
+    """A 401 with the ``WWW-Authenticate`` challenge that RFC 6750 requires for bearer tokens."""
     challenge = 'Bearer realm="fraud-detection"' + (f', error="{error}"' if error else "")
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail=detail, headers={"WWW-Authenticate": challenge}

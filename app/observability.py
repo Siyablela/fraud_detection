@@ -1,4 +1,10 @@
-"""Structured logging, correlation IDs, Prometheus metrics, and optional tracing."""
+"""Structured logging, correlation IDs, Prometheus metrics, and optional tracing.
+
+Logs are one JSON object per line on stdout, for the platform to collect. Metrics
+are only touched through the small functions at the bottom of this module, so
+metric names and labels live in one place, and every label has a small, fixed set
+of values (route templates, never raw paths or ids).
+"""
 
 import logging
 import re
@@ -17,9 +23,13 @@ from starlette.routing import Match, Route
 
 CORRELATION_ID_HEADER = "x-correlation-id"
 REQUEST_ID_HEADER = "x-request-id"
+# Caller-supplied ids are echoed into logs and response headers; this pattern keeps
+# out newlines and other characters that could forge log lines or headers.
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:\-]{1,128}$")
 _REDACTED = "[REDACTED]"
 
+# A ContextVar is per asyncio task, so concurrent requests and partition tasks each
+# see their own correlation id.
 _correlation_id_context: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
 _http_requests_total = Counter(
@@ -81,6 +91,7 @@ def sanitise_correlation_id(value: object) -> str | None:
 
 
 def get_correlation_id() -> str | None:
+    """The correlation id bound to the current request or message, if any."""
     return _correlation_id_context.get()
 
 
@@ -93,6 +104,7 @@ def bind_correlation_id(correlation_id: str | None = None) -> str:
 
 
 def clear_log_context() -> None:
+    """Forget the previous request's or message's context; called at the start of each one."""
     _correlation_id_context.set(None)
     structlog.contextvars.clear_contextvars()
 
@@ -101,6 +113,7 @@ def clear_log_context() -> None:
 
 
 def _redaction_processor(sensitive_keys: Iterable[str]):
+    """Mask the value of any key named in ``sensitive_keys`` (case-insensitive), at any depth."""
     keys = frozenset(key.lower() for key in sensitive_keys)
 
     def redact(value: Any) -> Any:
@@ -175,6 +188,7 @@ def configure_logging(service_name: str, level: str = "INFO", redact_fields: Ite
 
 
 def get_logger(name: str):
+    """A structlog logger; output format and processors come from :func:`configure_logging`."""
     return structlog.get_logger(name)
 
 
@@ -237,6 +251,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 def install_fastapi_observability(app: FastAPI, service_name: str) -> None:
+    """Add per-request logging and metrics, and expose ``/metrics`` for Prometheus.
+
+    ``/metrics`` has no authentication: it is scraped inside the cluster, and the Kong
+    gateway does not route it from outside.
+    """
     app.add_middleware(RequestContextMiddleware, service_name=service_name)
 
     @app.get("/metrics", include_in_schema=False)
@@ -249,6 +268,8 @@ def setup_tracing(service_name: str, endpoint: str, app: FastAPI | None = None) 
     if not endpoint:
         get_logger(__name__).warning("tracing_enabled_without_endpoint", service_name=service_name)
         return
+    # Imported here, not at module level: tracing is off by default, and these
+    # imports are only worth their startup cost when it is switched on.
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
@@ -266,6 +287,7 @@ def setup_tracing(service_name: str, endpoint: str, app: FastAPI | None = None) 
 
 
 # --- Worker and dependency metrics -------------------------------------------
+# Thin wrappers, so the rest of the code never handles Prometheus objects or label names.
 
 
 def worker_message_timer(service_name: str, topic: str):

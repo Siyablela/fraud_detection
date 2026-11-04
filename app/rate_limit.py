@@ -27,6 +27,8 @@ logger = get_logger(__name__)
 
 
 class RateLimiter:
+    """Fixed-window request counter per caller, shared by all API replicas through Redis."""
+
     def __init__(
         self,
         redis_client: aioredis.Redis,
@@ -54,6 +56,8 @@ class RateLimiter:
         window = int(now // self._window_seconds)
         key = self._bucket_key(subject, window)
         try:
+            # INCR and EXPIRE in one round trip; the key expires just after its window,
+            # so counters never accumulate.
             async with self._redis.pipeline(transaction=True) as pipe:
                 pipe.incr(key)
                 pipe.expire(key, self._window_seconds + 1)
