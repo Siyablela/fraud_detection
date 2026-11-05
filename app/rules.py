@@ -29,27 +29,46 @@ from app.errors import CorruptRuleSetError, InvalidRuleSetError, RuleEvaluationE
 MAX_EXPRESSION_DEPTH = 24
 MAX_EXPRESSION_NODES = 400
 
-# Variables every transaction provides. ``velocity.*`` describe the same user's
-# *other* transactions whose event time falls inside the rule set's velocity
-# window; ``velocity.prior_amount`` only sums transactions in the same currency.
-REQUIRED_VARIABLES: frozenset[str] = frozenset(
-    {"amount", "currency", "category", "velocity.prior_count", "velocity.prior_amount"}
-)
-# Variables only present when the producer sends them. A rule that reads one must
-# give a default (``{"var": ["channel", "UNKNOWN"]}``); otherwise every event
-# without the field would fail evaluation.
-OPTIONAL_VARIABLES: frozenset[str] = frozenset(
-    {
-        "channel",
-        "country",
-        "enrichment.distance_from_last_tx_km",
-        "enrichment.minutes_since_last_tx",
-        "enrichment.user_historical_avg_spend",
-        "enrichment.is_new_merchant_for_user",
-        "enrichment.is_travel_itinerary_active",
-    }
-)
-CONTEXT_VARIABLES: frozenset[str] = REQUIRED_VARIABLES | OPTIONAL_VARIABLES
+
+class ValueType(StrEnum):
+    """The type of a value in a condition, as reported in validation errors."""
+
+    NUMBER = "a number"
+    TEXT = "text"
+    BOOLEAN = "true/false"
+    NULL = "null"
+
+
+@dataclass(frozen=True)
+class Variable:
+    """A value a rule can read about a transaction."""
+
+    type: ValueType
+    required: bool  # False: only present when the producer sends it, so rules need a default
+
+
+# Every variable a rule can read. All but ``velocity.*`` are fields of the event
+# (``TransactionCreatedV1`` and its ``Enrichment``) with the same type and the same
+# required/optional status; tests/unit/test_rules.py checks that they stay in step.
+# ``velocity.*`` are computed by the worker from the same user's *other* transactions
+# whose event time falls inside the rule set's velocity window; ``prior_amount`` only
+# sums transactions in the same currency.
+VARIABLES: dict[str, Variable] = {
+    "amount": Variable(ValueType.NUMBER, required=True),
+    "currency": Variable(ValueType.TEXT, required=True),
+    "category": Variable(ValueType.TEXT, required=True),
+    "velocity.prior_count": Variable(ValueType.NUMBER, required=True),
+    "velocity.prior_amount": Variable(ValueType.NUMBER, required=True),
+    "channel": Variable(ValueType.TEXT, required=False),
+    "country": Variable(ValueType.TEXT, required=False),
+    "enrichment.distance_from_last_tx_km": Variable(ValueType.NUMBER, required=False),
+    "enrichment.minutes_since_last_tx": Variable(ValueType.NUMBER, required=False),
+    "enrichment.user_historical_avg_spend": Variable(ValueType.NUMBER, required=False),
+    "enrichment.is_new_merchant_for_user": Variable(ValueType.BOOLEAN, required=False),
+    "enrichment.is_travel_itinerary_active": Variable(ValueType.BOOLEAN, required=False),
+}
+# A default of the variable's type, suggested when a rule leaves one out.
+_EXAMPLE_DEFAULTS = {ValueType.NUMBER: "0", ValueType.TEXT: '"UNKNOWN"', ValueType.BOOLEAN: "false"}
 
 # Distinguishes "variable absent" from a variable whose value is None/False/0.
 _MISSING = object()
@@ -150,16 +169,38 @@ def _operator_args(node: dict[str, Any]) -> tuple[str, list[Any]]:
     return operator, raw_args if isinstance(raw_args, list) else [raw_args]
 
 
+def _list_of(element: str | None) -> str:
+    """The type of a list literal; ``element`` is None for an empty list."""
+    return f"a list of {element or 'anything'}"
+
+
+def _literal_type(value: Any) -> str:
+    if value is None:
+        return ValueType.NULL
+    if isinstance(value, bool):  # before numbers: bool is a subclass of int
+        return ValueType.BOOLEAN
+    if isinstance(value, (int, float, Decimal)):
+        return ValueType.NUMBER
+    return ValueType.TEXT
+
+
 def validate_expression(expression: Any, path: str = "condition") -> None:
-    """Statically check an expression before it is stored.
+    """Statically check a condition before it is stored, including its types.
+
+    Every node's type is worked out from its literals and the declared type of each
+    variable, and checked against what its operator needs. This catches type mistakes
+    anywhere in the tree, including branches a short-circuiting ``and``/``or``/``if``
+    would skip on any particular transaction.
 
     Raises:
-        InvalidRuleSetError: For unknown operators, wrong arity, unknown variables,
-            or expressions that are too deep or too large.
+        InvalidRuleSetError: For unknown operators, wrong arity, unknown variables, a
+            missing or wrongly typed default, a type mismatch, a condition that is not
+            true/false, or an expression that is too deep or too large.
     """
     node_count = 0
 
-    def visit(node: Any, location: str, depth: int) -> None:
+    def visit(node: Any, location: str, depth: int) -> str:
+        """Check ``node`` and return its type."""
         nonlocal node_count
         node_count += 1
         if node_count > MAX_EXPRESSION_NODES:
@@ -167,15 +208,18 @@ def validate_expression(expression: Any, path: str = "condition") -> None:
         if depth > MAX_EXPRESSION_DEPTH:
             raise InvalidRuleSetError(f"{location}: expression is nested deeper than {MAX_EXPRESSION_DEPTH}")
         if isinstance(node, list):
-            for index, item in enumerate(node):
-                visit(item, f"{location}[{index}]", depth + 1)
-            return
+            element_types = {visit(item, f"{location}[{index}]", depth + 1) for index, item in enumerate(node)}
+            if len(element_types) > 1:
+                raise InvalidRuleSetError(
+                    f"{location}: a list must hold values of one type, got {sorted(element_types)}"
+                )
+            return _list_of(next(iter(element_types), None))
         if not isinstance(node, dict):
             if not (node is None or isinstance(node, (bool, int, float, str, Decimal))):
                 raise InvalidRuleSetError(f"{location}: unsupported literal")
             if isinstance(node, (float, Decimal)) and not Decimal(str(node)).is_finite():
                 raise InvalidRuleSetError(f"{location}: numbers must be finite")
-            return
+            return _literal_type(node)
         if len(node) != 1:
             raise InvalidRuleSetError(f"{location}: an operation must have exactly one operator key")
         operator, args = _operator_args(node)
@@ -185,24 +229,78 @@ def validate_expression(expression: Any, path: str = "condition") -> None:
         if len(args) < minimum or (maximum is not None and len(args) > maximum):
             expected = f"{minimum}" if minimum == maximum else f"{minimum}..{maximum or 'n'}"
             raise InvalidRuleSetError(f"{location}: '{operator}' takes {expected} arguments, got {len(args)}")
-        if operator == "var":
-            name = args[0]
-            if not isinstance(name, str) or name not in CONTEXT_VARIABLES:
-                raise InvalidRuleSetError(
-                    f"{location}: unknown variable {name!r}; allowed: {sorted(CONTEXT_VARIABLES)}"
-                )
-            if name in OPTIONAL_VARIABLES and len(args) != 2:
-                raise InvalidRuleSetError(
-                    f"{location}: '{name}' is optional in events, so it needs a default, "
-                    f'e.g. {{"var": ["{name}", 0]}}'
-                )
-            if len(args) == 2:
-                visit(args[1], f"{location}.var[1]", depth + 1)
-            return
-        for index, arg in enumerate(args):
-            visit(arg, f"{location}.{operator}[{index}]", depth + 1)
 
-    visit(expression, path, 1)
+        if operator == "var":
+            return check_variable(args, location, depth)
+        types = [visit(arg, f"{location}.{operator}[{index}]", depth + 1) for index, arg in enumerate(args)]
+
+        def require(expected: str, purpose: str) -> None:
+            for index, actual in enumerate(types):
+                if actual != expected:
+                    raise InvalidRuleSetError(
+                        f"{location}.{operator}[{index}]: '{operator}' {purpose}, but this is {actual}"
+                    )
+
+        if operator in {">", ">=", "<", "<=", "+", "-", "*", "min", "max"}:
+            require(ValueType.NUMBER, "works on numbers")
+            return ValueType.BOOLEAN if operator in {">", ">=", "<", "<="} else ValueType.NUMBER
+        if operator in {"and", "or", "!"}:
+            require(ValueType.BOOLEAN, "combines true/false conditions")
+            return ValueType.BOOLEAN
+        if operator == "if":
+            condition, when_true, when_false = types
+            if condition != ValueType.BOOLEAN:
+                raise InvalidRuleSetError(
+                    f"{location}.if[0]: the condition of 'if' must be true/false, not {condition}"
+                )
+            if when_true != when_false:
+                raise InvalidRuleSetError(
+                    f"{location}: both branches of 'if' must have the same type, got {when_true} and {when_false}"
+                )
+            return when_true
+        if operator in {"==", "!="}:
+            left, right = types
+            if left != right and ValueType.NULL not in (left, right):
+                raise InvalidRuleSetError(
+                    f"{location}: '{operator}' compares {left} with {right}, which can never be equal"
+                )
+            return ValueType.BOOLEAN
+        # "in": a value in a list of the same type, or text inside text.
+        needle, haystack = types
+        if haystack == ValueType.TEXT:
+            if needle != ValueType.TEXT:
+                raise InvalidRuleSetError(f"{location}: 'in' looks for text inside text, but the value is {needle}")
+        elif haystack.startswith("a list of "):
+            element = haystack.removeprefix("a list of ")
+            if element != "anything" and element != needle:
+                raise InvalidRuleSetError(f"{location}: 'in' looks for {needle} in {haystack}, which can never match")
+        else:
+            raise InvalidRuleSetError(f"{location}.in[1]: 'in' needs a list or text, but this is {haystack}")
+        return ValueType.BOOLEAN
+
+    def check_variable(args: list[Any], location: str, depth: int) -> str:
+        name = args[0]
+        if not isinstance(name, str) or name not in VARIABLES:
+            raise InvalidRuleSetError(f"{location}: unknown variable {name!r}; allowed: {sorted(VARIABLES)}")
+        variable = VARIABLES[name]
+        if len(args) == 1:
+            if not variable.required:
+                raise InvalidRuleSetError(
+                    f"{location}: '{name}' is optional in events, so it needs a default of type "
+                    f'{variable.type}, e.g. {{"var": ["{name}", {_EXAMPLE_DEFAULTS[variable.type]}]}}'
+                )
+            return variable.type
+        default_type = visit(args[1], f"{location}.var[1]", depth + 1)
+        if default_type != variable.type:
+            raise InvalidRuleSetError(
+                f"{location}: the default for '{name}' must be {variable.type} (its type), "
+                f'not {default_type}, e.g. {{"var": ["{name}", {_EXAMPLE_DEFAULTS[variable.type]}]}}'
+            )
+        return variable.type
+
+    result = visit(expression, path, 1)
+    if result != ValueType.BOOLEAN:
+        raise InvalidRuleSetError(f"{path}: a condition must be true/false, but this one is {result}")
 
 
 def _lookup(context: dict[str, Any], dotted_name: str) -> Any:
@@ -477,6 +575,14 @@ def load_stored_definition(raw: Any, stored_hash: str, label: str) -> RuleSetDef
     return definition
 
 
+# The default rule set: version 1 of "fraud-default", seeded by the first migration.
+# The migration keeps its own frozen copy; a test checks the two have the same hash.
+# Change live rules by publishing a new version through the API, not by editing this.
+#
+# Rules carry no type annotations: each variable's type is declared once in VARIABLES,
+# and validate_expression infers the rest (``amount >= 10000`` is number >= number,
+# giving true/false). A test checks every rule here passes that type check.
+#
 # Amounts are in ZAR. Scores: one strong signal reaches REVIEW (>= 30); two
 # signals together, or one very strong one, reach REJECTED (>= 75).
 DEFAULT_RULE_SET_DEFINITION: dict[str, Any] = {

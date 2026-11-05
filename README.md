@@ -328,10 +328,15 @@ interpreter ([app/rules.py](app/rules.py)) with these variables: `amount`, `curr
 `channel`, `country`, `enrichment.*`. A rule that reads an optional variable must give
 a default (`{"var": ["enrichment.distance_from_last_tx_km", 0]}`), or events without
 it would fail. Publishing validates operators, arity, variable names, size and depth,
-then dry-runs the set, so a broken rule is rejected with a 422 instead of failing
-every live transaction. The same checks run again every time a version is loaded,
+type-checks every condition as a whole (each variable has a declared type that matches
+the event model), then dry-runs the set, so a broken rule is rejected with a 422
+instead of failing live transactions. The same checks run again every time a version is loaded,
 plus one more: the stored JSON must still match the hash recorded when it was
 published (see [Design decisions](#design-decisions-and-trade-offs)).
+
+**[RULES.md](RULES.md)** is the full guide: the variables and operators a rule can use,
+worked examples and common mistakes, how to dry-run, publish and roll back a version
+(with real requests and error responses), and how the engine works inside.
 
 ## Design decisions and trade-offs
 
@@ -507,4 +512,4 @@ The [brief](BRIEF.md) does not specify these, so they were decided and are easy 
 - **Scores and bands are starting values.** Without labelled fraud data they cannot be calibrated; publish new versions as outcomes are learned.
 - **Upstream enrichment features are optional inputs.** The service computes its own velocity aggregates, which keeps it correct without a feature platform.
 
-Security details: [SECURITY.md](SECURITY.md). Module map: [app/README.md](app/README.md).
+Rules guide: [RULES.md](RULES.md). Security details: [SECURITY.md](SECURITY.md). Module map: [app/README.md](app/README.md).
