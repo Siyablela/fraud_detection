@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from confluent_kafka import Consumer, KafkaError, KafkaException, Producer, TopicPartition
+from confluent_kafka import Consumer, KafkaError, KafkaException, Message, Producer, TopicPartition
 from prometheus_client import start_http_server
 
 from app.cache import RuleSetProvider, create_redis_client
@@ -71,6 +71,19 @@ class MessageHandler(Protocol):
     """Processes one message value (``TransactionProcessor`` in production, fakes in tests)."""
 
     async def process(self, value: bytes | None, provenance: MessageProvenance) -> Any: ...
+
+
+class KafkaConsumer(Protocol):
+    """The consumer calls the worker makes (``confluent_kafka.Consumer`` in production, fakes in tests)."""
+
+    def subscribe(self, topics: list[str], **callbacks: Any) -> None: ...
+    def poll(self, timeout: float) -> Message | None: ...
+    def memberid(self) -> str | None: ...
+    def pause(self, partitions: list[TopicPartition]) -> None: ...
+    def resume(self, partitions: list[TopicPartition]) -> None: ...
+    def store_offsets(self, *, offsets: list[TopicPartition]) -> None: ...
+    def commit(self, *, asynchronous: bool) -> Any: ...
+    def close(self) -> None: ...
 
 
 class DeadLetterSink(Protocol):
@@ -113,7 +126,7 @@ class FraudWorker:
     def __init__(
         self,
         settings: Settings,
-        consumer: Any,
+        consumer: KafkaConsumer,
         handler: MessageHandler,
         dead_letters: DeadLetterSink,
         clock: Callable[[], float] = time.monotonic,
@@ -152,8 +165,18 @@ class FraudWorker:
         logger.info("worker_started", topic=self._settings.kafka_topic_name)
         try:
             while self._running:
+                # 1. Check that the consumer is still a member of its group. If not, exit so the
+                #    orchestrator restarts it.
+                # 2. Touch the heartbeat file to indicate the worker is alive.
+                # 3. Poll for a message with a 1-second timeout. If no message is received, continue
+                #    the loop. Use a thread to avoid blocking the event loop: poll() is C code that
+                #    releases the GIL while it waits, so the event loop keeps running partition tasks
+                #    meanwhile. Rebalance callbacks run on this poll thread, inside poll().
+                # 4. If a message is received, check for errors. If there is an error, handle it and
+                #    continue the loop. If there is no error, mark Kafka as healthy and dispatch the
+                #    message to its partition's queue.
                 self._check_group_membership()
-                self._heartbeat.touch()
+                self._heartbeat.touch()  # liveness: the health check fails if this file goes stale
                 message = await asyncio.to_thread(self._consumer.poll, 1.0)
                 if message is None:
                     continue
@@ -286,6 +309,11 @@ class FraudWorker:
         Pausing (rather than blocking) keeps the poll loop running, so the consumer
         stays in its group even while a partition is slow.
         """
+
+        # 1. Get the partition state for this message. If the partition is being revoked,
+        #    ignore the message (it will be redelivered).
+        # 2. Put the message on the partition's queue. If the queue size exceeds the high
+        #    watermark, pause the partition and log a warning.
         state = self._partitions.get((message.topic(), message.partition()))
         if state is None or state.stopping.is_set():
             return  # partition is being revoked; the message will be redelivered

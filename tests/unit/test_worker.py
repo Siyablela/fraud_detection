@@ -59,6 +59,19 @@ class FakeConsumer:
     def resume(self, partitions):
         self.resumed.extend(tp.partition for tp in partitions)
 
+    # The rest of the KafkaConsumer protocol; these tests drive the worker without polling.
+    def subscribe(self, topics, **callbacks):
+        pass
+
+    def poll(self, timeout):
+        return None
+
+    def commit(self, *, asynchronous):
+        pass
+
+    def close(self):
+        pass
+
 
 class ScriptedHandler:
     """Raises the scripted exceptions in order, then succeeds."""
