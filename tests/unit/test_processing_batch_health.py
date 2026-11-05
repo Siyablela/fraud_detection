@@ -7,11 +7,12 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+import structlog
 
 from app import processing
 from app.batch_worker import seconds_until_next_run
 from app.database import MessageProvenance, RecordOutcome, RecordResult
-from app.errors import InvalidEventError
+from app.errors import InvalidEventError, TransientError
 from app.healthcheck import check_worker
 from app.healthcheck import main as healthcheck_main
 from app.observability import get_correlation_id
@@ -86,6 +87,25 @@ def test_processor_uses_transaction_id_as_correlation_fallback(fake_database):
     _, correlation_id = process(encode_event(event))
     assert correlation_id == event["transaction_id"]
     assert fake_database["decision"].correlation_id is None
+
+
+def test_both_ids_stay_on_the_callers_log_context_when_processing_fails(monkeypatch):
+    # The worker logs retries and dead letters after process() raises; those lines
+    # must still carry the transaction id, so it has to outlive the failed call.
+    async def database_down(*_args, **_kwargs):
+        raise TransientError("database down")
+
+    monkeypatch.setattr(processing, "get_velocity_aggregates", database_down)
+    event = make_event(correlation_id="c-9")
+
+    async def run():
+        with pytest.raises(TransientError):
+            await TransactionProcessor(None, StaticRuleSets()).process(encode_event(event), PROVENANCE)
+        return structlog.contextvars.get_contextvars()
+
+    context = asyncio.run(run())
+    assert context["transaction_id"] == event["transaction_id"]
+    assert context["correlation_id"] == "c-9"
 
 
 def test_processor_rejects_invalid_event_before_touching_the_database(fake_database):

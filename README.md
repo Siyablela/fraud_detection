@@ -422,8 +422,9 @@ code; secrets come from the environment or `<NAME>_FILE` mounts.
 ## Operations
 
 **Logs** are one JSON object per line on stdout: `timestamp`, `level`, `service`,
-`event`, `correlation_id` (from the event, or the `X-Correlation-ID` request header)
-and context. Keys such as `authorization`, `password` and `token` are redacted at any
+`event`, `correlation_id` (from the event, or the `X-Correlation-ID` request header;
+the transaction id when an event has none), `transaction_id` on every worker line for a
+readable event, including retries and dead letters, and context. Keys such as `authorization`, `password` and `token` are redacted at any
 depth. Transaction amounts and user ids are not logged.
 
 **Metrics** (`/metrics` on the API, `:9100/metrics` on the worker):
@@ -459,6 +460,7 @@ become labels:
 ```logql
 {service="fraud-worker", level="error"}                                  # worker errors
 {compose_project="fraud-detection"} | json | correlation_id="<id>"       # one event or request, API and worker
+{service="fraud-worker"} | json | transaction_id="<id>"                 # everything about one transaction
 {service="fraud-query-api"} | json | status_code >= 400                  # failed API calls
 ```
 

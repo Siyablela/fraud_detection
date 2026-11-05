@@ -103,6 +103,11 @@ def bind_correlation_id(correlation_id: str | None = None) -> str:
     return resolved
 
 
+def bind_log_context(**fields: str) -> None:
+    """Add ``fields`` to every log line written in the current context until it is cleared."""
+    structlog.contextvars.bind_contextvars(**fields)
+
+
 def clear_log_context() -> None:
     """Forget the previous request's or message's context; called at the start of each one."""
     _correlation_id_context.set(None)

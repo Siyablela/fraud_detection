@@ -19,7 +19,7 @@ from app.database import (
     record_decision,
 )
 from app.events import parse_transaction_event
-from app.observability import bind_correlation_id, get_logger
+from app.observability import bind_correlation_id, bind_log_context, get_logger
 from app.rules import Assessment, EvaluationContext, RuleSet, evaluate_rule_set
 
 logger = get_logger(__name__)
@@ -96,9 +96,12 @@ class TransactionProcessor:
     async def process(self, value: bytes | None, provenance: MessageProvenance) -> RecordResult:
         """Raises the typed errors from :mod:`app.errors`; the caller decides retry vs DLQ."""
         event = parse_transaction_event(value)
-        # From here on, every log line for this message carries the event's correlation
-        # id, so it can be followed from the producer through to the API.
+        # From here on, every log line for this message carries both ids, including the
+        # worker's retry and dead-letter logs after a failure. The correlation id follows
+        # the flow from the producer through to the API; when the producer sends none, the
+        # transaction id stands in, as it is stable across retries and redeliveries.
         bind_correlation_id(event.correlation_id or str(event.transaction_id))
+        bind_log_context(transaction_id=str(event.transaction_id))
         enrichment = event.enrichment.model_dump(exclude_none=True) if event.enrichment else None
 
         rule_set = await self._rule_sets.get_active()
@@ -138,7 +141,6 @@ class TransactionProcessor:
         result = await record_decision(self._session_factory, decision, provenance)
         logger.info(
             "transaction_processed",
-            transaction_id=str(event.transaction_id),
             outcome=result.outcome.value,
             verdict=result.decision.verdict,
             risk_score=result.decision.risk_score,
