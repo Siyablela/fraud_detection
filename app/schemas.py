@@ -110,7 +110,7 @@ class CreateRuleSetVersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str = Field(min_length=1, max_length=500, examples=["Lower high-value threshold to 8,000"])
-    definition: dict[str, Any] = Field(description="Rule-set body; see README 'Rule sets'.")
+    definition: dict[str, Any] = Field(description="The complete rule set: thresholds and every rule. See RULES.md.")
     expected_current_version: int | None = Field(
         default=None,
         ge=0,

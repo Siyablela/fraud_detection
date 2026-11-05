@@ -1,13 +1,19 @@
 from copy import deepcopy
 from decimal import Decimal
+from types import UnionType
+from typing import Annotated, Union, get_args, get_origin
 
 import pytest
 
+from app import rules
 from app.errors import CorruptRuleSetError, InvalidRuleSetError, RuleEvaluationError
+from app.events import Enrichment, TransactionCreatedV1
 from app.rules import (
     DEFAULT_RULE_SET_DEFINITION,
     MAX_EXPRESSION_DEPTH,
+    VARIABLES,
     EvaluationContext,
+    ValueType,
     Verdict,
     content_hash,
     definition_json_hash,
@@ -111,11 +117,17 @@ class TestOperators:
     def test_var_default_applies_only_when_variable_is_missing(self):
         assert fired(single_rule({"==": [{"var": ["amount", 0]}, 100]}), context()) == ["TEST_RULE"]
 
-    def test_type_error_at_runtime_raises_rule_evaluation_error(self):
-        # Passes the dry run because "and" short-circuits on the GROCERIES sample.
-        rule = single_rule({"and": [{"==": [{"var": "category"}, "CRYPTO"]}, {">": [{"var": "category"}, 1]}]})
-        with pytest.raises(RuleEvaluationError, match="TEST_RULE"):
-            fired(rule, context(category="CRYPTO"))
+    def test_type_mistake_behind_a_short_circuit_is_refused_at_publish(self):
+        # The dry run would never reach the ">" (the sample is GROCERIES, so "and"
+        # stops early); the static type check still sees it.
+        with pytest.raises(InvalidRuleSetError) as error:
+            single_rule({"and": [{"==": [{"var": "category"}, "CRYPTO"]}, {">": [{"var": "category"}, 1]}]})
+        assert "'>' works on numbers, but this is text" in str(error.value.details)
+
+    def test_evaluator_still_refuses_a_type_mistake_it_is_given(self):
+        # Defence in depth: the evaluator checks types itself if handed an unchecked tree.
+        with pytest.raises(RuleEvaluationError, match="expects numbers"):
+            rules._evaluate({">": [{"var": "category"}, 1]}, context().as_variables())
 
 
 class TestValidation:
@@ -127,13 +139,13 @@ class TestValidation:
             ({">": [1]}, "takes 2 arguments"),
             ({">": [1, 2], "<": [1, 2]}, "exactly one operator"),
             ({">": [{"var": "amount"}, float("inf")]}, "finite"),
-            ({">": [{"var": "category"}, 5]}, "expects numbers"),  # caught by the dry run
+            ({">": [{"var": "category"}, 5]}, "'>' works on numbers, but this is text"),
         ],
     )
     def test_invalid_conditions_are_rejected_at_write_time(self, condition, message):
         with pytest.raises(InvalidRuleSetError) as error:
             single_rule(condition)
-        assert message in str(error.value.details)
+        assert message in " ".join(detail["message"] for detail in error.value.details)
 
     def test_depth_limit(self):
         condition: dict = {"var": "amount"}
@@ -272,9 +284,133 @@ class TestLoadStoredDefinition:
         with pytest.raises(CorruptRuleSetError, match="is not a valid definition"):
             load_stored_definition(broken, definition_json_hash(broken), "fraud-default@v2")
 
-    def test_a_definition_that_fails_the_dry_run_is_refused(self):
-        # Passes static validation (known operator and variable), fails at evaluation.
-        rules = [{"code": "BAD_TYPES", "description": "x", "score": 10, "condition": {">": [{"var": "category"}, 5]}}]
-        broken = self.stored(rules=rules)
+    def test_a_definition_that_fails_the_dry_run_is_refused(self, monkeypatch):
+        # The static type check now stops anything that would fail evaluation, so the
+        # load-time dry run is a second line of defence; force it to fail.
+        def failing_evaluation(*_args):
+            raise RuleEvaluationError("rule X: boom")
+
+        monkeypatch.setattr(rules, "evaluate_rule_set", failing_evaluation)
         with pytest.raises(CorruptRuleSetError, match="fails the dry run"):
-            load_stored_definition(broken, definition_json_hash(broken), "fraud-default@v3")
+            load_stored_definition(self.stored(), content_hash(DEFAULT), "fraud-default@v3")
+
+
+class TestTypeChecking:
+    """Types are checked when publishing, across the whole tree."""
+
+    @pytest.mark.parametrize(
+        ("condition", "message"),
+        [
+            # a default must have its variable's type
+            (
+                {">": [{"var": ["enrichment.is_new_merchant_for_user", 0]}, 0]},
+                "the default for 'enrichment.is_new_merchant_for_user' must be true/false (its type), not a number",
+            ),
+            ({"==": [{"var": ["channel", 0]}, "ONLINE"]}, "the default for 'channel' must be text"),
+            # comparisons, arithmetic and logic need the right types
+            ({"==": [{"var": "category"}, 7995]}, "'==' compares text with a number, which can never be equal"),
+            ({">=": [{"var": "amount"}, "5000"]}, "'>=' works on numbers, but this is text"),
+            ({"==": [{"+": [{"var": "currency"}, 1]}, 2]}, "'+' works on numbers, but this is text"),
+            ({"and": [{"var": "amount"}, True]}, "'and' combines true/false conditions, but this is a number"),
+            ({"!": [{"var": "category"}]}, "'!' combines true/false conditions, but this is text"),
+            ({"if": [{"var": "amount"}, True, False]}, "the condition of 'if' must be true/false"),
+            ({"if": [True, 1, "x"]}, "both branches of 'if' must have the same type"),
+            # "in"
+            (
+                {"in": [{"var": "amount"}, ["A", "B"]]},
+                "'in' looks for a number in a list of text, which can never match",
+            ),
+            ({"in": [{"var": "category"}, 5]}, "'in' needs a list or text, but this is a number"),
+            ({"in": [{"var": "category"}, ["A", 1]]}, "a list must hold values of one type"),
+            # the whole condition must be true/false
+            ({"+": [{"var": "amount"}, 1]}, "a condition must be true/false, but this one is a number"),
+        ],
+    )
+    def test_type_mistakes_are_refused_at_publish(self, condition, message):
+        with pytest.raises(InvalidRuleSetError) as error:
+            single_rule(condition)
+        assert message in " ".join(detail["message"] for detail in error.value.details)
+
+    @pytest.mark.parametrize(
+        ("name", "suggestion"),
+        [
+            ("channel", '{"var": ["channel", "UNKNOWN"]}'),
+            ("enrichment.minutes_since_last_tx", '{"var": ["enrichment.minutes_since_last_tx", 0]}'),
+            ("enrichment.is_travel_itinerary_active", '{"var": ["enrichment.is_travel_itinerary_active", false]}'),
+        ],
+    )
+    def test_missing_default_suggests_one_of_the_right_type(self, name, suggestion):
+        with pytest.raises(InvalidRuleSetError) as error:
+            single_rule({"==": [{"var": name}, None]})
+        assert suggestion in " ".join(detail["message"] for detail in error.value.details)
+
+    @pytest.mark.parametrize(
+        "condition",
+        [
+            {"==": [{"var": ["channel", "UNKNOWN"]}, None]},  # null may be compared with anything
+            {"in": ["GROC", {"var": "category"}]},  # text inside text
+            {"in": [{"var": "category"}, []]},  # an empty list matches nothing, but is well typed
+            {"!": {"var": ["enrichment.is_new_merchant_for_user", False]}},
+            {"if": [{">": [{"var": "amount"}, 1]}, {"==": [{"var": "currency"}, "ZAR"]}, False]},
+        ],
+    )
+    def test_well_typed_conditions_are_accepted(self, condition):
+        single_rule(condition)
+
+
+class TestDefaultRuleSet:
+    @pytest.mark.parametrize("rule", DEFAULT_RULE_SET_DEFINITION["rules"], ids=lambda rule: rule["code"])
+    def test_every_default_rule_passes_the_type_check(self, rule):
+        validate_expression(rule["condition"])  # raises, naming the problem, if a type is wrong
+
+
+class TestVariables:
+    """The variables rules can read must match the event model and what the worker supplies."""
+
+    @staticmethod
+    def _type_of(annotation: object) -> ValueType:
+        """The rule type of a model field's annotation, e.g. ``Annotated[str, ...] | None`` -> text."""
+        python_type = annotation
+        while get_origin(python_type) in (Annotated, UnionType, Union):
+            python_type = next(arg for arg in get_args(python_type) if arg is not type(None))
+        if python_type is bool:
+            return ValueType.BOOLEAN
+        if python_type in (int, Decimal):
+            return ValueType.NUMBER
+        assert python_type is str, f"no rule type for {python_type}"
+        return ValueType.TEXT
+
+    def test_event_variables_exist_on_the_event_model_with_the_same_type(self):
+        for name, variable in VARIABLES.items():
+            if name.startswith("velocity."):
+                continue  # computed by the worker, not sent in the event
+            model, field = (
+                (Enrichment, name.removeprefix("enrichment."))
+                if name.startswith("enrichment.")
+                else (
+                    TransactionCreatedV1,
+                    name,
+                )
+            )
+            assert field in model.model_fields, f"{name} is not a field of {model.__name__}"
+            info = model.model_fields[field]
+            assert self._type_of(info.annotation) == variable.type, f"{name}: type differs from the event model"
+            required_in_event = info.is_required() and model is TransactionCreatedV1
+            assert required_in_event == variable.required, f"{name}: required/optional differs from the event model"
+
+    def test_the_worker_supplies_every_variable_with_its_declared_type(self):
+        full = context(
+            channel="ONLINE",
+            country="ZA",
+            enrichment={
+                "distance_from_last_tx_km": Decimal("5.2"),
+                "minutes_since_last_tx": 45,
+                "user_historical_avg_spend": Decimal("1200.00"),
+                "is_new_merchant_for_user": True,
+                "is_travel_itinerary_active": False,
+            },
+        ).as_variables()
+        for name, variable in VARIABLES.items():
+            value = rules._lookup(full, name)
+            assert value is not rules._MISSING, f"{name} is not provided to rules"
+            assert rules._literal_type(value) == variable.type, f"{name}: runtime value is not {variable.type}"
