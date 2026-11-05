@@ -20,9 +20,14 @@ FROM ${PYTHON_IMAGE} AS runtime
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+# The digest pin freezes the base's Debian packages, so apply security fixes
+# released since; otherwise each new Debian advisory fails the image scan.
 # Nothing installs packages at runtime, and pip's vendored libraries (urllib3,
 # msgpack, setuptools) carry CVEs that would fail the image scan.
-RUN python -m pip uninstall --yes --root-user-action=ignore pip \
+RUN apt-get update \
+    && apt-get upgrade --yes --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall --yes --root-user-action=ignore pip \
     && groupadd --system --gid 10001 fraud \
     && useradd --system --uid 10001 --gid fraud --no-create-home --shell /usr/sbin/nologin fraud
 WORKDIR /app
