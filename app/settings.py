@@ -211,6 +211,7 @@ class Settings(BaseModel):
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
+            # Do NOT output the values, only the variable names and error messages, so secrets are not logged.
             problems = "; ".join(
                 f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
                 for error in exc.errors(include_input=False)

@@ -6,7 +6,7 @@ acknowledged) and librdkafka auto-commits the *stored* offsets. Downstream write
 are idempotent (see :mod:`app.database`), so redelivery after a crash is harmless.
 
 Security: ``PLAINTEXT`` (local only), ``SSL`` (TLS / mutual TLS), or ``SASL_SSL``
-with OAUTHBEARER clien credentials, where librdkafka fetches and refreshes tokens
+with OAUTHBEARER client credentials, where librdkafka fetches and refreshes tokens
 from ``KAFKA_OAUTH_TOKEN_URL`` itself. ``SASL_PLAINTEXT`` is deliberately not
 supported: it would send those credentials over an unencrypted connection.
 """

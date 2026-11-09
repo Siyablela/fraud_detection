@@ -191,26 +191,26 @@ async def get_current_principal(
     return AuthenticatedPrincipal(subject=subject, scopes=_parse_scopes(claims), claims=claims)
 
 
-def require_scope(scope_name: str) -> Callable[..., Any]:
+def require_scope(scope_of: Callable[[Settings], str]) -> Callable[..., Any]:
     """Build a dependency that authenticates, checks one scope, and applies rate limiting.
 
     Args:
-        scope_name: Name of a ``Settings`` attribute holding the scope, e.g.
-            ``"scope_transactions_read"``; resolved per request so tests and
+        scope_of: Picks the scope out of the settings, e.g.
+            ``lambda s: s.scope_transactions_read``. Called per request, so tests and
             deployments can rename scopes through configuration.
     """
 
     async def dependency(
         request: Request, principal: AuthenticatedPrincipal = Depends(get_current_principal)
     ) -> AuthenticatedPrincipal:
-        required = getattr(get_settings(), scope_name)
+        required = scope_of(get_settings())
         if required not in principal.scopes:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access token does not include the required scope '{required}'.",
                 headers={"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{required}"'},
             )
-        limiter = getattr(request.app.state, "rate_limiter", None)
+        limiter = request.app.state.rate_limiter  # None when rate limiting is disabled
         if limiter is not None:
             await limiter.enforce(principal.subject)
         return principal

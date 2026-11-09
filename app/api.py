@@ -266,9 +266,9 @@ def v1_routes():
     # Prefix on the router itself (not include_router) so each route's own path is
     # the full template used for metric labels.
     router = APIRouter(prefix="/api/v1", responses=_ERROR_RESPONSES)
-    read_transactions = Depends(require_scope("scope_transactions_read"))
-    read_rules = Depends(require_scope("scope_rules_read"))
-    write_rules = Depends(require_scope("scope_rules_write"))
+    read_transactions = Depends(require_scope(lambda s: s.scope_transactions_read))
+    read_rules = Depends(require_scope(lambda s: s.scope_rules_read))
+    write_rules = Depends(require_scope(lambda s: s.scope_rules_write))
 
     @router.get(
         "/transactions/{transaction_id}",
